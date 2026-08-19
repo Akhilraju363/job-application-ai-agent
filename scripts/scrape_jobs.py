@@ -6,6 +6,7 @@ Docs: https://apify.com/curious_coder/linkedin-jobs-scraper
 import os
 import sys
 import json
+import time
 from pathlib import Path
 
 import requests
@@ -16,6 +17,9 @@ load_dotenv(ROOT / ".env")
 
 ACTOR_ID = "curious_coder~linkedin-jobs-scraper"
 RUN_URL = f"https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items"
+
+CACHE_PATH = ROOT / "output" / "raw_jobs.json"
+CACHE_MAX_AGE_SECONDS = 6 * 60 * 60  # 6h -- each real scrape is a paid Apify call
 
 
 def scrape_jobs(keywords="Full Stack Java Developer", location="United States", date_posted="pastWeek", limit=25):
@@ -48,8 +52,18 @@ def scrape_jobs(keywords="Full Stack Java Developer", location="United States", 
 
 
 if __name__ == "__main__":
+    force = "--force" in sys.argv
+    cache_age = time.time() - CACHE_PATH.stat().st_mtime if CACHE_PATH.exists() else None
+
+    if not force and cache_age is not None and cache_age < CACHE_MAX_AGE_SECONDS:
+        cached = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        print(
+            f"Using cached {CACHE_PATH} ({len(cached)} jobs, "
+            f"{cache_age / 60:.0f}m old) -- pass --force to re-scrape from Apify"
+        )
+        sys.exit(0)
+
     jobs = scrape_jobs()
-    out_path = ROOT / "output" / "raw_jobs.json"
-    out_path.parent.mkdir(exist_ok=True)
-    out_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
-    print(f"Scraped {len(jobs)} jobs -> {out_path}")
+    CACHE_PATH.parent.mkdir(exist_ok=True)
+    CACHE_PATH.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+    print(f"Scraped {len(jobs)} jobs -> {CACHE_PATH}")

@@ -1,7 +1,6 @@
-"""Company research (PRD 3.5). Per successfully-tailored job, one web-search-grounded
-OpenRouter call returning 3-5 talking points -- context for Sai, never written into
-the resume itself. Adds a "company_notes" field to each saved entry in
-output/tailored_jobs.json.
+"""Company research (PRD 3.5). Per successfully-tailored job, one OpenRouter call
+returning 3-5 talking points -- context for Akhil, never written into the resume
+itself. Adds a "company_notes" field to each saved entry in output/tailored_jobs.json.
 """
 import json
 import os
@@ -14,12 +13,13 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "perplexity/sonar"
+MODEL = "nvidia/nemotron-3.5-lightning:free"
 
 RESEARCH_PROMPT = """Give 3-5 short talking points about __COMPANY__ useful for someone
-interviewing for a __TITLE__ role there -- recent news, product/what they do, engineering
-culture or tech stack if known, anything relevant to bring up in an interview. Plain text,
-one point per line, no headers, no commentary before or after."""
+interviewing for a __TITLE__ role there -- what they do/their product, engineering culture
+or tech stack if known, anything relevant to bring up in an interview. Only include things
+you're confident about; skip recent news or specifics you're not sure of rather than
+guessing. Plain text, one point per line, no headers, no commentary before or after."""
 
 
 def research_company(company, title, api_key):
