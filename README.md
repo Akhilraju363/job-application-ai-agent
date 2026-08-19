@@ -86,7 +86,7 @@ modal secret create gws-credentials \
 modal deploy modal_app.py
 ```
 
-Runs daily at 7am America/Chicago. See [`GWS_SETUP.md`](GWS_SETUP.md) for how to get the
+Runs daily at 7am Asia/Kolkata (IST). See [`GWS_SETUP.md`](GWS_SETUP.md) for how to get the
 `gws-credentials` values, and the Telegram section below for the bot token.
 
 ## Telegram Failure Alerts

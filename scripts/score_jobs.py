@@ -101,7 +101,7 @@ def score_job(job, resume_text, api_key):
             content = resp.json()["choices"][0]["message"]["content"]
             result = json.loads(content)
             break
-        except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError) as e:
+        except (requests.exceptions.RequestException, FutureTimeoutError, json.JSONDecodeError, KeyError) as e:
             if attempt == MAX_RETRIES:
                 raise
             wait = 2 ** attempt
@@ -123,7 +123,7 @@ def score_jobs(jobs, resume_text, api_key, out_path=None, scored=None):
     for job in jobs:
         try:
             scored.append(score_job(job, resume_text, api_key))
-        except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError) as e:
+        except (requests.exceptions.RequestException, FutureTimeoutError, json.JSONDecodeError, KeyError) as e:
             print(f"FAILED after {MAX_RETRIES} retries, skipping {job.get('title')!r}: {e}")
             continue
         if out_path is not None:

@@ -39,8 +39,10 @@ image = (
         modal.Secret.from_name("job-apply-agent-secrets"),
         modal.Secret.from_name("gws-credentials"),
     ],
-    schedule=modal.Cron("0 7 * * *", timezone="America/Chicago"),
-    timeout=900,
+    schedule=modal.Cron("0 7 * * *", timezone="Asia/Kolkata"),
+    # 25 jobs scored sequentially through a free-tier OpenRouter model (plus retries
+    # on rate limits/timeouts) can run well past 15 minutes -- observed 20+ min locally.
+    timeout=3600,
 )
 def run_pipeline():
     import json
