@@ -22,7 +22,7 @@ CACHE_PATH = ROOT / "output" / "raw_jobs.json"
 CACHE_MAX_AGE_SECONDS = 6 * 60 * 60  # 6h -- each real scrape is a paid Apify call
 
 
-def scrape_jobs(keywords="Full Stack Java Developer", location="India", date_posted="pastWeek", limit=25):
+def scrape_jobs(keywords="Full Stack Java Developer", location="India", date_posted="past24Hours", limit=25):
     api_key = os.environ["apify_api_key"]
 
     payload = {
