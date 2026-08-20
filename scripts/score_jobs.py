@@ -101,7 +101,13 @@ def score_job(job, resume_text, api_key):
             content = resp.json()["choices"][0]["message"]["content"]
             result = json.loads(content)
             break
-        except (requests.exceptions.RequestException, FutureTimeoutError, json.JSONDecodeError, KeyError) as e:
+        except Exception as e:
+            # Deliberately broad: this has already crashed the whole batch on three
+            # different exception types (RequestException on a dropped connection,
+            # FutureTimeoutError on a hung request, TypeError on a null `content`
+            # field from a model refusal/empty completion). The intent is "retry
+            # transient failures, skip permanent ones" regardless of the specific
+            # exception shape a bad response happens to raise.
             if attempt == MAX_RETRIES:
                 raise
             wait = 2 ** attempt
@@ -123,8 +129,8 @@ def score_jobs(jobs, resume_text, api_key, out_path=None, scored=None):
     for job in jobs:
         try:
             scored.append(score_job(job, resume_text, api_key))
-        except (requests.exceptions.RequestException, FutureTimeoutError, json.JSONDecodeError, KeyError) as e:
-            print(f"FAILED after {MAX_RETRIES} retries, skipping {job.get('title')!r}: {e}")
+        except Exception as e:
+            print(f"FAILED after {MAX_RETRIES} retries, skipping {job.get('title')!r}: {type(e).__name__}: {e}")
             continue
         if out_path is not None:
             out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
