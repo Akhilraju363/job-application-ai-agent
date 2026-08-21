@@ -5,6 +5,7 @@ so reject counts stay auditable).
 """
 import os
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
@@ -53,6 +54,9 @@ MAX_RETRIES = 3
 REQUEST_DEADLINE = 90  # hard wall-clock cap per attempt -- requests' own `timeout` can be
                        # bypassed by a server that trickles bytes slowly enough to keep
                        # resetting the per-read timeout window without ever finishing.
+MAX_WORKERS = 5  # score jobs concurrently -- 25 jobs at ~90s worst case each, run
+                  # sequentially through a free-tier model, can exceed an hour and blow
+                  # past the Modal function timeout before the retry logic even kicks in.
 
 
 def _post(payload, api_key):
@@ -126,14 +130,22 @@ def score_job(job, resume_text, api_key):
 
 def score_jobs(jobs, resume_text, api_key, out_path=None, scored=None):
     scored = list(scored) if scored else []
-    for job in jobs:
+    lock = threading.Lock()
+
+    def _score_and_record(job):
         try:
-            scored.append(score_job(job, resume_text, api_key))
+            result = score_job(job, resume_text, api_key)
         except Exception as e:
             print(f"FAILED after {MAX_RETRIES} retries, skipping {job.get('title')!r}: {type(e).__name__}: {e}")
-            continue
-        if out_path is not None:
-            out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
+            return
+        with lock:
+            scored.append(result)
+            if out_path is not None:
+                out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        list(pool.map(_score_and_record, jobs))
+
     return scored
 
 

@@ -40,9 +40,13 @@ image = (
         modal.Secret.from_name("gws-credentials"),
     ],
     schedule=modal.Cron("0 7 * * *", timezone="Asia/Kolkata"),
-    # 25 jobs scored sequentially through a free-tier OpenRouter model (plus retries
-    # on rate limits/timeouts) can run well past 15 minutes -- observed 20+ min locally.
-    timeout=3600,
+    # Generous outer cap -- the per-step timeouts below (which sum to well under this)
+    # are what's meant to actually fire first. A platform-level timeout kill bypasses
+    # the try/except/Telegram-alert logic entirely, which violates the "no silent
+    # failures" rule -- so each step gets its own subprocess timeout that raises
+    # TimeoutExpired *inside* run_pipeline, where it's caught and alerted like any
+    # other failure, well before this outer timeout could ever be hit.
+    timeout=9000,
 )
 def run_pipeline():
     import json
@@ -83,15 +87,15 @@ def run_pipeline():
         workdir = Path("/app")
         (workdir / "output").mkdir(exist_ok=True)
 
-        def run(script):
+        def run(script, timeout):
             print(f"--- {script} ---")
-            subprocess.run(["python3", f"scripts/{script}"], check=True, cwd=workdir)
+            subprocess.run(["python3", f"scripts/{script}"], check=True, cwd=workdir, timeout=timeout)
 
-        run("scrape_jobs.py")
-        run("score_jobs.py")
-        run("tailor_job.py")
-        run("company_research.py")
-        run("write_sheet.py")
+        run("scrape_jobs.py", timeout=600)
+        run("score_jobs.py", timeout=3600)
+        run("tailor_job.py", timeout=1800)
+        run("company_research.py", timeout=900)
+        run("write_sheet.py", timeout=300)
 
         print("JOB-APPLY-AGENT — daily run complete")
     except Exception as e:
