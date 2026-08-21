@@ -39,7 +39,10 @@ image = (
         modal.Secret.from_name("job-apply-agent-secrets"),
         modal.Secret.from_name("gws-credentials"),
     ],
-    schedule=modal.Cron("0 7 * * *", timezone="Asia/Kolkata"),
+    # Mon-Fri only -- skips 2 paid Apify scrapes/week. NOTE: scrape_jobs.py's window is
+    # a fixed past24Hours, so postings from Fri evening through Sunday are never caught
+    # (accepted tradeoff, not a bug -- see CLAUDE.md/commit history if revisiting this).
+    schedule=modal.Cron("0 7 * * 1-5", timezone="Asia/Kolkata"),
     # Generous outer cap -- the per-step timeouts below (which sum to well under this)
     # are what's meant to actually fire first. A platform-level timeout kill bypasses
     # the try/except/Telegram-alert logic entirely, which violates the "no silent
