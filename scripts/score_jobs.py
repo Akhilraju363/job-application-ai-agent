@@ -5,7 +5,6 @@ so reject counts stay auditable).
 """
 import os
 import json
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
@@ -54,9 +53,10 @@ MAX_RETRIES = 3
 REQUEST_DEADLINE = 90  # hard wall-clock cap per attempt -- requests' own `timeout` can be
                        # bypassed by a server that trickles bytes slowly enough to keep
                        # resetting the per-read timeout window without ever finishing.
-MAX_WORKERS = 5  # score jobs concurrently -- 25 jobs at ~90s worst case each, run
-                  # sequentially through a free-tier model, can exceed an hour and blow
-                  # past the Modal function timeout before the retry logic even kicks in.
+                       # NOTE: measured single-flight calls to the free-tier model complete
+                       # in ~10-40s, but firing requests concurrently makes the free tier
+                       # throttle/serialize them -- 2 concurrent calls measured at 171s and
+                       # 181s each. Score sequentially; do not parallelize this.
 
 
 def _post(payload, api_key):
@@ -130,22 +130,14 @@ def score_job(job, resume_text, api_key):
 
 def score_jobs(jobs, resume_text, api_key, out_path=None, scored=None):
     scored = list(scored) if scored else []
-    lock = threading.Lock()
-
-    def _score_and_record(job):
+    for job in jobs:
         try:
-            result = score_job(job, resume_text, api_key)
+            scored.append(score_job(job, resume_text, api_key))
         except Exception as e:
             print(f"FAILED after {MAX_RETRIES} retries, skipping {job.get('title')!r}: {type(e).__name__}: {e}")
-            return
-        with lock:
-            scored.append(result)
-            if out_path is not None:
-                out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        list(pool.map(_score_and_record, jobs))
-
+            continue
+        if out_path is not None:
+            out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
     return scored
 
 
@@ -164,6 +156,13 @@ if __name__ == "__main__":
 
     scored = score_jobs(remaining, resume_text, api_key, out_path=out_path, scored=already_scored) if remaining else already_scored
     out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
+
+    if remaining and len(scored) == len(already_scored):
+        # Every job in this run failed (e.g. OpenRouter free-tier daily quota exhausted).
+        # exit 0 here would look like a normal "0 qualified" day to modal_app.py's
+        # subprocess.run(check=True) -- raise so the pipeline's failure path (and Telegram
+        # alert) actually fires instead of silently producing an empty scored_jobs.json.
+        raise RuntimeError(f"scored 0/{len(remaining)} jobs this run -- every job failed, see retry logs above")
 
     qualified_count = sum(1 for j in scored if j["qualified"])
     print(f"{len(scored)} scraped, {qualified_count} qualified -> {out_path}")
