@@ -22,7 +22,12 @@ CACHE_PATH = ROOT / "output" / "raw_jobs.json"
 CACHE_MAX_AGE_SECONDS = 6 * 60 * 60  # 6h -- each real scrape is a paid Apify call
 
 
-def scrape_jobs(keywords="Full Stack Java Spring Boot Angular AWS Developer", location="India", date_posted="past24Hours", limit=25):
+def scrape_jobs(keywords="Full Stack Java Spring Boot Angular AWS Developer", location="India", date_posted="past24Hours", limit=10):
+    # limit=10, not 25 -- score_jobs.py + tailor_job.py + company_research.py all share
+    # OpenRouter's free-tier 50-req/day cap (no paid credits added). Worst case (10 jobs,
+    # every job maxes retries and qualifies) is 3*10 + 2*10 = 50 requests, right at the
+    # cap; typical case is ~16. At limit=25 this was regularly exceeding 50 and causing
+    # silent/partial-failure runs -- see commit history on scripts/score_jobs.py.
     api_key = os.environ["apify_api_key"]
 
     payload = {
