@@ -49,7 +49,7 @@ image = (
     # failures" rule -- so each step gets its own subprocess timeout that raises
     # TimeoutExpired *inside* run_pipeline, where it's caught and alerted like any
     # other failure, well before this outer timeout could ever be hit.
-    timeout=9000,
+    timeout=21600,
 )
 def run_pipeline():
     import json
@@ -94,10 +94,14 @@ def run_pipeline():
             print(f"--- {script} ---")
             subprocess.run(["python3", f"scripts/{script}"], check=True, cwd=workdir, timeout=timeout)
 
+        # score/tailor/research timeouts sized for worst case at limit=10 jobs: each now
+        # retries at REQUEST_DEADLINE=240s x MAX_RETRIES=2 (see scripts/score_jobs.py),
+        # so worst case per job is ~482s -> ~4820s for all 10, plus margin for
+        # tailor's extra Drive/Docs API calls per job.
         run("scrape_jobs.py", timeout=600)
-        run("score_jobs.py", timeout=3600)
-        run("tailor_job.py", timeout=1800)
-        run("company_research.py", timeout=900)
+        run("score_jobs.py", timeout=5400)
+        run("tailor_job.py", timeout=6000)
+        run("company_research.py", timeout=5400)
         run("write_sheet.py", timeout=300)
 
         print("JOB-APPLY-AGENT — daily run complete")

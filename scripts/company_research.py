@@ -4,6 +4,8 @@ itself. Adds a "company_notes" field to each saved entry in output/tailored_jobs
 """
 import json
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 
 import requests
@@ -22,16 +24,47 @@ you're confident about; skip recent news or specifics you're not sure of rather 
 guessing. Plain text, one point per line, no headers, no commentary before or after."""
 
 
-def research_company(company, title, api_key):
-    prompt = RESEARCH_PROMPT.replace("__COMPANY__", company).replace("__TITLE__", title)
-    resp = requests.post(
+MAX_RETRIES = 2
+REQUEST_DEADLINE = 240  # see scripts/score_jobs.py for why -- same reasoning model and
+                        # same hidden-"thinking"-tokens behavior applies here too.
+
+
+def _post(payload, api_key):
+    return requests.post(
         OPENROUTER_URL,
         headers={"Authorization": f"Bearer {api_key}"},
-        json={"model": MODEL, "messages": [{"role": "user", "content": prompt}]},
-        timeout=60,
+        json=payload,
+        timeout=REQUEST_DEADLINE,
     )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+def research_company(company, title, api_key):
+    prompt = RESEARCH_PROMPT.replace("__COMPANY__", company).replace("__TITLE__", title)
+    payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}]}
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        ex = ThreadPoolExecutor(max_workers=1)
+        try:
+            resp = ex.submit(_post, payload, api_key).result(timeout=REQUEST_DEADLINE)
+        except FutureTimeoutError:
+            ex.shutdown(wait=False)
+            if attempt == MAX_RETRIES:
+                raise
+            wait = 2 ** attempt
+            print(f"  retry {attempt}/{MAX_RETRIES} for {company!r} after hard timeout ({REQUEST_DEADLINE}s, waiting {wait}s)")
+            time.sleep(wait)
+            continue
+        ex.shutdown(wait=False)
+
+        try:
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            if attempt == MAX_RETRIES:
+                raise
+            wait = 2 ** attempt
+            print(f"  retry {attempt}/{MAX_RETRIES} for {company!r} after {type(e).__name__}: {e} (waiting {wait}s)")
+            time.sleep(wait)
 
 
 if __name__ == "__main__":

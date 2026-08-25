@@ -14,6 +14,8 @@ import os
 import re
 import shutil
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 
 import requests
@@ -86,6 +88,21 @@ def slugify(title):
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", title.lower())).strip("-")
 
 
+MAX_RETRIES = 2
+REQUEST_DEADLINE = 240  # see scripts/score_jobs.py for why -- same reasoning model, same
+                        # hidden-"thinking"-tokens-scale-with-prompt-complexity behavior,
+                        # and tailoring prompts are at least as long as scoring prompts.
+
+
+def _post(payload, api_key):
+    return requests.post(
+        OPENROUTER_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json=payload,
+        timeout=REQUEST_DEADLINE,
+    )
+
+
 def tailor_text(job, resume_text, api_key):
     prompt = (
         TAILOR_PROMPT
@@ -96,14 +113,31 @@ def tailor_text(job, resume_text, api_key):
         .replace("__MISSING__", ", ".join(job.get("missing_must_haves", [])))
         .replace("__DESCRIPTION__", str(job.get("description")))
     )
-    resp = requests.post(
-        OPENROUTER_URL,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={"model": MODEL, "messages": [{"role": "user", "content": prompt}]},
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}]}
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        ex = ThreadPoolExecutor(max_workers=1)
+        try:
+            resp = ex.submit(_post, payload, api_key).result(timeout=REQUEST_DEADLINE)
+        except FutureTimeoutError:
+            ex.shutdown(wait=False)
+            if attempt == MAX_RETRIES:
+                raise
+            wait = 2 ** attempt
+            print(f"  retry {attempt}/{MAX_RETRIES} for {job.get('title')!r} after hard timeout ({REQUEST_DEADLINE}s, waiting {wait}s)")
+            time.sleep(wait)
+            continue
+        ex.shutdown(wait=False)
+
+        try:
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            if attempt == MAX_RETRIES:
+                raise
+            wait = 2 ** attempt
+            print(f"  retry {attempt}/{MAX_RETRIES} for {job.get('title')!r} after {type(e).__name__}: {e} (waiting {wait}s)")
+            time.sleep(wait)
 
 
 def create_job_folder(company, slug, parent_folder_id):

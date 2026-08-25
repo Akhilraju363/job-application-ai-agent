@@ -49,12 +49,18 @@ __DESCRIPTION__
 """
 
 
-MAX_RETRIES = 3
-REQUEST_DEADLINE = 90  # hard wall-clock cap per attempt -- requests' own `timeout` can be
+MAX_RETRIES = 2
+REQUEST_DEADLINE = 240  # hard wall-clock cap per attempt -- requests' own `timeout` can be
                        # bypassed by a server that trickles bytes slowly enough to keep
                        # resetting the per-read timeout window without ever finishing.
                        # NOTE: measured single-flight calls to the free-tier model complete
-                       # in ~10-40s, but firing requests concurrently makes the free tier
+                       # in ~10-40s typically, but this is a reasoning model whose hidden
+                       # "thinking" tokens scale with prompt/JD complexity -- a real Modal
+                       # run saw 7/10 jobs blow past a 90s deadline on all 3 attempts
+                       # identically, meaning the deadline (not transient flakiness) was
+                       # the bottleneck. Retrying against too short a deadline just repeats
+                       # the same failure, so this trades retry count for headroom per
+                       # attempt. Also: firing requests concurrently makes the free tier
                        # throttle/serialize them -- 2 concurrent calls measured at 171s and
                        # 181s each. Score sequentially; do not parallelize this.
 
