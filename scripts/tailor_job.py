@@ -113,7 +113,8 @@ def tailor_text(job, resume_text, api_key):
         .replace("__MISSING__", ", ".join(job.get("missing_must_haves", [])))
         .replace("__DESCRIPTION__", str(job.get("description")))
     )
-    payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}]}
+    # see scripts/score_jobs.py for why -- caps hidden reasoning tokens to cut timeout rate.
+    payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "reasoning": {"effort": "low"}}
 
     for attempt in range(1, MAX_RETRIES + 1):
         ex = ThreadPoolExecutor(max_workers=1)

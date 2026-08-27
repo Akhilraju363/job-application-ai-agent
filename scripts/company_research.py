@@ -40,7 +40,8 @@ def _post(payload, api_key):
 
 def research_company(company, title, api_key):
     prompt = RESEARCH_PROMPT.replace("__COMPANY__", company).replace("__TITLE__", title)
-    payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}]}
+    # see scripts/score_jobs.py for why -- caps hidden reasoning tokens to cut timeout rate.
+    payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "reasoning": {"effort": "low"}}
 
     for attempt in range(1, MAX_RETRIES + 1):
         ex = ThreadPoolExecutor(max_workers=1)

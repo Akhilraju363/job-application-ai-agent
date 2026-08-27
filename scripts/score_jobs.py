@@ -86,6 +86,11 @@ def score_job(job, resume_text, api_key):
         "model": MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"},
+        # Caps this reasoning model's hidden "thinking" tokens -- measured cutting a
+        # trivial prompt's reasoning trace from 22k+ chars to 377 chars. Doesn't fix
+        # OpenRouter's separate mid-stream connection drops (see the retry loop above),
+        # but should reduce how often a job blows the REQUEST_DEADLINE from slow thinking.
+        "reasoning": {"effort": "low"},
     }
 
     for attempt in range(1, MAX_RETRIES + 1):
