@@ -17,6 +17,15 @@ load_dotenv(ROOT / ".env")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = "nvidia/nemotron-3.5-lightning:free"
+FALLBACK_MODEL = "minimax/minimax-m2.7:free"  # tried only if MODEL fails outright after
+                                                # all retries. Nemotron had a bad day on
+                                                # 2026-08-28 -- fast 404s across every job,
+                                                # then near-total unresponsiveness later the
+                                                # same day. Every free OpenRouter model shares
+                                                # this same fragility (shared pool congestion,
+                                                # provider outages), so this doesn't eliminate
+                                                # the risk, just reduces the odds both models
+                                                # have a bad day at the same time.
 QUALIFY_CUTOFF = 8
 
 RUBRIC_PROMPT = """You are screening a job posting against a candidate's resume for fit.
@@ -74,16 +83,10 @@ def _post(payload, api_key):
     )
 
 
-def score_job(job, resume_text, api_key):
-    prompt = (
-        RUBRIC_PROMPT
-        .replace("__RESUME__", resume_text)
-        .replace("__TITLE__", str(job.get("title")))
-        .replace("__COMPANY__", str(job.get("company")))
-        .replace("__DESCRIPTION__", str(job.get("description")))
-    )
+def _call_model(model, prompt, api_key, label):
+    """Try one model up to MAX_RETRIES times. Raises the last exception on total failure."""
     payload = {
-        "model": MODEL,
+        "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"},
         # Caps this reasoning model's hidden "thinking" tokens -- measured cutting a
@@ -106,7 +109,7 @@ def score_job(job, resume_text, api_key):
             if attempt == MAX_RETRIES:
                 raise
             wait = 2 ** attempt
-            print(f"  retry {attempt}/{MAX_RETRIES} for {job.get('title')!r} after hard timeout ({REQUEST_DEADLINE}s, waiting {wait}s)")
+            print(f"  retry {attempt}/{MAX_RETRIES} for {label!r} ({model}) after hard timeout ({REQUEST_DEADLINE}s, waiting {wait}s)")
             time.sleep(wait)
             continue
         ex.shutdown(wait=False)
@@ -114,8 +117,7 @@ def score_job(job, resume_text, api_key):
         try:
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
-            result = json.loads(content)
-            break
+            return json.loads(content)
         except Exception as e:
             # Deliberately broad: this has already crashed the whole batch on three
             # different exception types (RequestException on a dropped connection,
@@ -126,8 +128,25 @@ def score_job(job, resume_text, api_key):
             if attempt == MAX_RETRIES:
                 raise
             wait = 2 ** attempt
-            print(f"  retry {attempt}/{MAX_RETRIES} for {job.get('title')!r} after {type(e).__name__}: {e} (waiting {wait}s)")
+            print(f"  retry {attempt}/{MAX_RETRIES} for {label!r} ({model}) after {type(e).__name__}: {e} (waiting {wait}s)")
             time.sleep(wait)
+
+
+def score_job(job, resume_text, api_key):
+    prompt = (
+        RUBRIC_PROMPT
+        .replace("__RESUME__", resume_text)
+        .replace("__TITLE__", str(job.get("title")))
+        .replace("__COMPANY__", str(job.get("company")))
+        .replace("__DESCRIPTION__", str(job.get("description")))
+    )
+    label = job.get("title")
+
+    try:
+        result = _call_model(MODEL, prompt, api_key, label)
+    except Exception as e:
+        print(f"  {MODEL} exhausted for {label!r} ({type(e).__name__}: {e}) -- falling back to {FALLBACK_MODEL}")
+        result = _call_model(FALLBACK_MODEL, prompt, api_key, label)
 
     return {
         **job,
@@ -145,7 +164,7 @@ def score_jobs(jobs, resume_text, api_key, out_path=None, scored=None):
         try:
             scored.append(score_job(job, resume_text, api_key))
         except Exception as e:
-            print(f"FAILED after {MAX_RETRIES} retries, skipping {job.get('title')!r}: {type(e).__name__}: {e}")
+            print(f"FAILED, skipping {job.get('title')!r} (exhausted {MODEL} and {FALLBACK_MODEL}): {type(e).__name__}: {e}")
             continue
         if out_path is not None:
             out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")

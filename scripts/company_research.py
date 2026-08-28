@@ -16,6 +16,7 @@ load_dotenv(ROOT / ".env")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = "nvidia/nemotron-3.5-lightning:free"
+FALLBACK_MODEL = "minimax/minimax-m2.7:free"  # see scripts/score_jobs.py for why
 
 RESEARCH_PROMPT = """Give 3-5 short talking points about __COMPANY__ useful for someone
 interviewing for a __TITLE__ role there -- what they do/their product, engineering culture
@@ -38,10 +39,10 @@ def _post(payload, api_key):
     )
 
 
-def research_company(company, title, api_key):
-    prompt = RESEARCH_PROMPT.replace("__COMPANY__", company).replace("__TITLE__", title)
+def _call_model(model, prompt, api_key, label):
+    """Try one model up to MAX_RETRIES times. Raises the last exception on total failure."""
     # see scripts/score_jobs.py for why -- caps hidden reasoning tokens to cut timeout rate.
-    payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "reasoning": {"effort": "low"}}
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "reasoning": {"effort": "low"}}
 
     for attempt in range(1, MAX_RETRIES + 1):
         ex = ThreadPoolExecutor(max_workers=1)
@@ -52,7 +53,7 @@ def research_company(company, title, api_key):
             if attempt == MAX_RETRIES:
                 raise
             wait = 2 ** attempt
-            print(f"  retry {attempt}/{MAX_RETRIES} for {company!r} after hard timeout ({REQUEST_DEADLINE}s, waiting {wait}s)")
+            print(f"  retry {attempt}/{MAX_RETRIES} for {label!r} ({model}) after hard timeout ({REQUEST_DEADLINE}s, waiting {wait}s)")
             time.sleep(wait)
             continue
         ex.shutdown(wait=False)
@@ -64,8 +65,18 @@ def research_company(company, title, api_key):
             if attempt == MAX_RETRIES:
                 raise
             wait = 2 ** attempt
-            print(f"  retry {attempt}/{MAX_RETRIES} for {company!r} after {type(e).__name__}: {e} (waiting {wait}s)")
+            print(f"  retry {attempt}/{MAX_RETRIES} for {label!r} ({model}) after {type(e).__name__}: {e} (waiting {wait}s)")
             time.sleep(wait)
+
+
+def research_company(company, title, api_key):
+    prompt = RESEARCH_PROMPT.replace("__COMPANY__", company).replace("__TITLE__", title)
+
+    try:
+        return _call_model(MODEL, prompt, api_key, company)
+    except Exception as e:
+        print(f"  {MODEL} exhausted for {company!r} ({type(e).__name__}: {e}) -- falling back to {FALLBACK_MODEL}")
+        return _call_model(FALLBACK_MODEL, prompt, api_key, company)
 
 
 if __name__ == "__main__":

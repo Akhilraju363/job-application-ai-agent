@@ -30,6 +30,7 @@ from validate_resume import validate
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = "nvidia/nemotron-3.5-lightning:free"
+FALLBACK_MODEL = "minimax/minimax-m2.7:free"  # see scripts/score_jobs.py for why
 QUALIFY_CUTOFF = 8
 
 TAILOR_PROMPT = """You are tailoring a candidate's resume to a specific job posting.
@@ -103,18 +104,10 @@ def _post(payload, api_key):
     )
 
 
-def tailor_text(job, resume_text, api_key):
-    prompt = (
-        TAILOR_PROMPT
-        .replace("__RESUME__", resume_text)
-        .replace("__TITLE__", str(job.get("title")))
-        .replace("__COMPANY__", str(job.get("company")))
-        .replace("__MATCHED__", ", ".join(job.get("matched_must_haves", [])))
-        .replace("__MISSING__", ", ".join(job.get("missing_must_haves", [])))
-        .replace("__DESCRIPTION__", str(job.get("description")))
-    )
+def _call_model(model, prompt, api_key, label):
+    """Try one model up to MAX_RETRIES times. Raises the last exception on total failure."""
     # see scripts/score_jobs.py for why -- caps hidden reasoning tokens to cut timeout rate.
-    payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "reasoning": {"effort": "low"}}
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "reasoning": {"effort": "low"}}
 
     for attempt in range(1, MAX_RETRIES + 1):
         ex = ThreadPoolExecutor(max_workers=1)
@@ -125,7 +118,7 @@ def tailor_text(job, resume_text, api_key):
             if attempt == MAX_RETRIES:
                 raise
             wait = 2 ** attempt
-            print(f"  retry {attempt}/{MAX_RETRIES} for {job.get('title')!r} after hard timeout ({REQUEST_DEADLINE}s, waiting {wait}s)")
+            print(f"  retry {attempt}/{MAX_RETRIES} for {label!r} ({model}) after hard timeout ({REQUEST_DEADLINE}s, waiting {wait}s)")
             time.sleep(wait)
             continue
         ex.shutdown(wait=False)
@@ -137,8 +130,27 @@ def tailor_text(job, resume_text, api_key):
             if attempt == MAX_RETRIES:
                 raise
             wait = 2 ** attempt
-            print(f"  retry {attempt}/{MAX_RETRIES} for {job.get('title')!r} after {type(e).__name__}: {e} (waiting {wait}s)")
+            print(f"  retry {attempt}/{MAX_RETRIES} for {label!r} ({model}) after {type(e).__name__}: {e} (waiting {wait}s)")
             time.sleep(wait)
+
+
+def tailor_text(job, resume_text, api_key):
+    prompt = (
+        TAILOR_PROMPT
+        .replace("__RESUME__", resume_text)
+        .replace("__TITLE__", str(job.get("title")))
+        .replace("__COMPANY__", str(job.get("company")))
+        .replace("__MATCHED__", ", ".join(job.get("matched_must_haves", [])))
+        .replace("__MISSING__", ", ".join(job.get("missing_must_haves", [])))
+        .replace("__DESCRIPTION__", str(job.get("description")))
+    )
+    label = job.get("title")
+
+    try:
+        return _call_model(MODEL, prompt, api_key, label)
+    except Exception as e:
+        print(f"  {MODEL} exhausted for {label!r} ({type(e).__name__}: {e}) -- falling back to {FALLBACK_MODEL}")
+        return _call_model(FALLBACK_MODEL, prompt, api_key, label)
 
 
 def create_job_folder(company, slug, parent_folder_id):
