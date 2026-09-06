@@ -16,11 +16,17 @@ Built as the capstone project for the final session of the Claude Code Mastercla
 
 ```
 Scrape (Apify)
-    -> Score + Filter (OpenRouter, 8+/10 cutoff)
+    -> Score + Filter (LLM, 8+/10 cutoff)
         -> Tailor Resume (Skill + validation Hook)
-            -> Company Research (OpenRouter)
+            -> Company Research (LLM)
                 -> Log to Google Sheet (gws CLI)
 ```
+
+The three LLM steps (score, tailor, research) all go through one shared client,
+[`scripts/llm.py`](scripts/llm.py), which talks to any OpenAI-compatible
+`/chat/completions` endpoint. It defaults to OpenRouter's free tier (what the Modal cron
+uses); point it at a local Ollama server with a few `.env` vars to test without spending
+quota — see [LLM endpoint](#llm-endpoint-local-testing-with-ollama) below.
 
 Every job gets scored against the base resume. Only jobs scoring 8 or higher continue past that
 step — the rest are logged as rejected but never tailored, never touch the Sheet.
@@ -51,8 +57,32 @@ cp .env.example .env
 # fill in apify_api_key, open_router_apikey (see .env.example for where to get each)
 ```
 
-`google_sheet_id` and `google_drive_folder_id` fill themselves in automatically on first run —
-leave them blank.
+`google_drive_folder_id` — create a folder in Drive and paste its id (from the URL). It holds
+the per-job resume folders and the `pipeline-artifacts/` sync folder.
+
+`google_sheet_id` — leave blank locally and `write_sheet.py` finds the "Job Application Tracker"
+by name in Drive (or creates it once) and writes the id back into `.env`. Set it explicitly to
+pin one master sheet; **for Modal it must go in the secret** (the container has no persistent
+`.env`). Lookup priority is: configured `google_sheet_id` → existing tracker found in Drive →
+create.
+
+### LLM endpoint (local testing with Ollama)
+
+By default score/tailor/research hit OpenRouter using `open_router_apikey`. To run them
+against a local [Ollama](https://ollama.com) server instead — no key, no daily quota, no rate
+limits — add these to `.env`:
+
+```bash
+llm_base_url=http://localhost:11434/v1
+llm_model=qwen2.5:7b        # or any model you've `ollama pull`ed
+llm_api_key=ollama
+llm_reasoning_effort=       # blank — non-reasoning models don't understand it
+```
+
+All `llm_*` vars are optional; blank means "use the OpenRouter defaults". Ollama can't be
+reached from the Modal cron container, so the deployed path always uses OpenRouter — this
+switch is for local runs only. Small local models score noticeably tougher and are weaker at
+company research; use them to exercise the pipeline, not for real output.
 
 ## Running It
 
@@ -72,12 +102,17 @@ Or as a single test run through Modal (without deploying it):
 modal run modal_app.py
 ```
 
+Each stage writes a JSON artifact to `output/` (`raw_jobs.json` → `scored_jobs.json` →
+`tailored_jobs.json`) and the pipeline is **resume-safe**: re-running a stage reuses the work
+already in those artifacts instead of redoing it. See
+[Recovering a failed daily run](#recovering-a-failed-daily-run).
+
 ## Deploying (daily automatic run)
 
 ```bash
 modal secret create job-apply-agent-secrets \
   apify_api_key=... open_router_apikey=... \
-  google_drive_folder_id=... \
+  google_drive_folder_id=... google_sheet_id=... \
   TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=...
 
 modal secret create gws-credentials \
@@ -89,10 +124,53 @@ modal deploy modal_app.py
 Runs daily at 7am Asia/Kolkata (IST). See [`GWS_SETUP.md`](GWS_SETUP.md) for how to get the
 `gws-credentials` values, and the Telegram section below for the bot token.
 
+**`google_sheet_id` must be in the secret** (not just `.env`). The Modal container has no
+persistent `.env`, so without it in the secret `write_sheet.py` falls back to a Drive lookup by
+name on every run. Get the id once from your master "Job Application Tracker" sheet's URL
+(`docs.google.com/spreadsheets/d/<ID>/edit`) and set it. `open_router_apikey` stays the
+production LLM provider — Modal always uses OpenRouter and never touches Ollama.
+
+## Recovering a failed daily run
+
+Normal day: the Modal cron runs on OpenRouter, finishes, and updates the master Sheet. Nothing
+to do.
+
+If OpenRouter (or a model) is down when the cron fires, Modal sends a Telegram alert naming the
+stage that failed and stops. You then finish that day's work **locally with Ollama** — it picks
+up where Modal left off:
+
+```bash
+ollama serve                        # in another terminal, if not already running
+ollama pull qwen2.5:7b              # once
+
+# .env — switch the LLM endpoint to local Ollama (see "LLM endpoint" above)
+llm_base_url=http://localhost:11434/v1
+llm_model=qwen2.5:7b
+llm_api_key=ollama
+llm_reasoning_effort=
+
+# recover TODAY's run: just re-run the pipeline in order
+python3 scripts/scrape_jobs.py       # reuses Modal's scrape, no new Apify call
+python3 scripts/score_jobs.py        # scores only the jobs Modal didn't get to
+python3 scripts/tailor_job.py        # tailors only the qualifying jobs still missing a resume
+python3 scripts/company_research.py  # researches only companies still missing notes
+python3 scripts/write_sheet.py       # appends only jobs not already in the Sheet
+```
+
+To recover an **earlier** day's failed run, set `PIPELINE_DATE=YYYY-MM-DD` in `.env` first.
+
+How it works: every stage mirrors its artifact to a `pipeline-artifacts` subfolder of your
+`google_drive_folder_id` Drive folder, date-stamped (`scored_jobs-2026-09-06.json`). A local run
+pulls the newest copy before starting and pushes its progress back, so Modal and your laptop
+share the same state. Jobs are identified by their URL throughout, so nothing is scored, tailored,
+researched, or logged twice — every recovery run converges on the same Sheet. Set `artifact_sync=0`
+to turn the Drive mirror off (pure-local development without Google auth still works).
+
 ## Telegram Failure Alerts
 
-Every scheduled run is wrapped in try/except. On failure it sends a Telegram message so a broken
-cron never fails silently. To turn this on:
+Every scheduled run is wrapped in try/except. On failure it sends a Telegram message naming the
+pipeline stage that broke (e.g. `Stage: company_research.py`) and the exception — no secrets — so
+a broken cron never fails silently and you know which step to recover. To turn this on:
 
 1. Message [@BotFather](https://t.me/BotFather) on Telegram, run `/newbot`, copy the token it
    gives you into `TELEGRAM_BOT_TOKEN`.
@@ -110,6 +188,14 @@ won't message you.
   against the `gws` CLI's sandbox check) — fixed in `scripts/tailor_job.py`.
 - Telegram alerting is wired into `modal_app.py` but needs your own bot token (above) to actually
   fire.
+- Early Modal runs created a new "Job Application Tracker" sheet every day because the container's
+  `.env` write doesn't persist — fixed in `scripts/write_sheet.py` (configured `google_sheet_id`
+  first, then a Drive lookup by name, then create) and by putting `google_sheet_id` in the Modal
+  secret.
+- `tailor_job.py` used to re-tailor every qualifying job (and create duplicate Drive folders) on
+  every run — now it reuses resumes already marked `saved` and only tailors what's missing, keyed
+  by job URL. Combined with `scripts/artifacts.py` (the Drive artifact mirror), a failed OpenRouter
+  day can be finished locally with Ollama without redoing work or duplicating Sheet rows.
 
 ## After the Sheet Is Ready — Applying
 

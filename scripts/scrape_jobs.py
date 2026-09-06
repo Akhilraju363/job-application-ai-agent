@@ -57,7 +57,13 @@ def scrape_jobs(keywords="Full Stack Java Spring Boot Angular AWS Developer", lo
 
 
 if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import artifacts
+
     force = "--force" in sys.argv
+    # A failed Modal run may have already scraped today -- reuse that instead of
+    # spending another paid Apify call on the local recovery run.
+    artifacts.pull("raw_jobs.json")
     cache_age = time.time() - CACHE_PATH.stat().st_mtime if CACHE_PATH.exists() else None
 
     if not force and cache_age is not None and cache_age < CACHE_MAX_AGE_SECONDS:
@@ -66,9 +72,11 @@ if __name__ == "__main__":
             f"Using cached {CACHE_PATH} ({len(cached)} jobs, "
             f"{cache_age / 60:.0f}m old) -- pass --force to re-scrape from Apify"
         )
+        artifacts.push("raw_jobs.json")
         sys.exit(0)
 
     jobs = scrape_jobs()
     CACHE_PATH.parent.mkdir(exist_ok=True)
     CACHE_PATH.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+    artifacts.push("raw_jobs.json")
     print(f"Scraped {len(jobs)} jobs -> {CACHE_PATH}")

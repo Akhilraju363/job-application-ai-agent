@@ -2,30 +2,22 @@
 
 Reads output/raw_jobs.json, writes output/scored_jobs.json (qualified + rejected,
 so reject counts stay auditable).
+
+LLM endpoint/model/retry config lives in scripts/llm.py (.env-driven -- point it at a
+local Ollama server to test without spending OpenRouter free-tier quota).
 """
-import os
+import sys
 import json
-import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 
-import requests
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "nvidia/nemotron-3.5-lightning:free"
-FALLBACK_MODEL = "minimax/minimax-m2.7:free"  # tried only if MODEL fails outright after
-                                                # all retries. Nemotron had a bad day on
-                                                # 2026-08-28 -- fast 404s across every job,
-                                                # then near-total unresponsiveness later the
-                                                # same day. Every free OpenRouter model shares
-                                                # this same fragility (shared pool congestion,
-                                                # provider outages), so this doesn't eliminate
-                                                # the risk, just reduces the odds both models
-                                                # have a bad day at the same time.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from llm import call_llm, MODEL, FALLBACK_MODEL  # noqa: E402
+
 QUALIFY_CUTOFF = 8
 
 RUBRIC_PROMPT = """You are screening a job posting against a candidate's resume for fit.
@@ -58,81 +50,7 @@ __DESCRIPTION__
 """
 
 
-MAX_RETRIES = 2
-REQUEST_DEADLINE = 240  # hard wall-clock cap per attempt -- requests' own `timeout` can be
-                       # bypassed by a server that trickles bytes slowly enough to keep
-                       # resetting the per-read timeout window without ever finishing.
-                       # NOTE: measured single-flight calls to the free-tier model complete
-                       # in ~10-40s typically, but this is a reasoning model whose hidden
-                       # "thinking" tokens scale with prompt/JD complexity -- a real Modal
-                       # run saw 7/10 jobs blow past a 90s deadline on all 3 attempts
-                       # identically, meaning the deadline (not transient flakiness) was
-                       # the bottleneck. Retrying against too short a deadline just repeats
-                       # the same failure, so this trades retry count for headroom per
-                       # attempt. Also: firing requests concurrently makes the free tier
-                       # throttle/serialize them -- 2 concurrent calls measured at 171s and
-                       # 181s each. Score sequentially; do not parallelize this.
-
-
-def _post(payload, api_key):
-    return requests.post(
-        OPENROUTER_URL,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json=payload,
-        timeout=REQUEST_DEADLINE,
-    )
-
-
-def _call_model(model, prompt, api_key, label):
-    """Try one model up to MAX_RETRIES times. Raises the last exception on total failure."""
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        # Caps this reasoning model's hidden "thinking" tokens -- measured cutting a
-        # trivial prompt's reasoning trace from 22k+ chars to 377 chars. Doesn't fix
-        # OpenRouter's separate mid-stream connection drops (see the retry loop above),
-        # but should reduce how often a job blows the REQUEST_DEADLINE from slow thinking.
-        "reasoning": {"effort": "low"},
-    }
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        # Not using ThreadPoolExecutor as a context manager: its __exit__ calls
-        # shutdown(wait=True), which would block on the very hung thread we're
-        # trying to time out on. shutdown(wait=False) abandons it instead --
-        # the orphaned request just gets discarded when it eventually returns.
-        ex = ThreadPoolExecutor(max_workers=1)
-        try:
-            resp = ex.submit(_post, payload, api_key).result(timeout=REQUEST_DEADLINE)
-        except FutureTimeoutError as e:
-            ex.shutdown(wait=False)
-            if attempt == MAX_RETRIES:
-                raise
-            wait = 2 ** attempt
-            print(f"  retry {attempt}/{MAX_RETRIES} for {label!r} ({model}) after hard timeout ({REQUEST_DEADLINE}s, waiting {wait}s)")
-            time.sleep(wait)
-            continue
-        ex.shutdown(wait=False)
-
-        try:
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
-            return json.loads(content)
-        except Exception as e:
-            # Deliberately broad: this has already crashed the whole batch on three
-            # different exception types (RequestException on a dropped connection,
-            # FutureTimeoutError on a hung request, TypeError on a null `content`
-            # field from a model refusal/empty completion). The intent is "retry
-            # transient failures, skip permanent ones" regardless of the specific
-            # exception shape a bad response happens to raise.
-            if attempt == MAX_RETRIES:
-                raise
-            wait = 2 ** attempt
-            print(f"  retry {attempt}/{MAX_RETRIES} for {label!r} ({model}) after {type(e).__name__}: {e} (waiting {wait}s)")
-            time.sleep(wait)
-
-
-def score_job(job, resume_text, api_key):
+def score_job(job, resume_text):
     prompt = (
         RUBRIC_PROMPT
         .replace("__RESUME__", resume_text)
@@ -140,13 +58,7 @@ def score_job(job, resume_text, api_key):
         .replace("__COMPANY__", str(job.get("company")))
         .replace("__DESCRIPTION__", str(job.get("description")))
     )
-    label = job.get("title")
-
-    try:
-        result = _call_model(MODEL, prompt, api_key, label)
-    except Exception as e:
-        print(f"  {MODEL} exhausted for {label!r} ({type(e).__name__}: {e}) -- falling back to {FALLBACK_MODEL}")
-        result = _call_model(FALLBACK_MODEL, prompt, api_key, label)
+    result = json.loads(call_llm(prompt, job.get("title"), json_mode=True))
 
     return {
         **job,
@@ -158,24 +70,33 @@ def score_job(job, resume_text, api_key):
     }
 
 
-def score_jobs(jobs, resume_text, api_key, out_path=None, scored=None):
+def score_jobs(jobs, resume_text, out_path=None, scored=None, on_progress=None):
     scored = list(scored) if scored else []
     for job in jobs:
         try:
-            scored.append(score_job(job, resume_text, api_key))
+            scored.append(score_job(job, resume_text))
         except Exception as e:
-            print(f"FAILED, skipping {job.get('title')!r} (exhausted {MODEL} and {FALLBACK_MODEL}): {type(e).__name__}: {e}")
+            print(f"FAILED, skipping {job.get('title')!r} (exhausted {MODEL}"
+                  f"{f' and {FALLBACK_MODEL}' if FALLBACK_MODEL else ''}): {type(e).__name__}: {e}")
             continue
         if out_path is not None:
             out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
+            if on_progress is not None:
+                on_progress()
     return scored
 
 
 if __name__ == "__main__":
-    api_key = os.environ["open_router_apikey"]
-    resume_text = (ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8")
-    jobs = json.loads((ROOT / "output" / "raw_jobs.json").read_text(encoding="utf-8"))
+    import artifacts
 
+    resume_text = (ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8")
+
+    # Recovery: reuse whatever a failed earlier run already scraped/scored so a
+    # local Ollama run only fills the gap instead of re-scoring from scratch.
+    artifacts.pull("raw_jobs.json")
+    artifacts.pull("scored_jobs.json")
+
+    jobs = json.loads((ROOT / "output" / "raw_jobs.json").read_text(encoding="utf-8"))
     out_path = ROOT / "output" / "scored_jobs.json"
 
     already_scored = json.loads(out_path.read_text(encoding="utf-8")) if out_path.exists() else []
@@ -184,8 +105,12 @@ if __name__ == "__main__":
     if already_scored:
         print(f"Resuming: {len(already_scored)}/{len(jobs)} already scored, {len(remaining)} left")
 
-    scored = score_jobs(remaining, resume_text, api_key, out_path=out_path, scored=already_scored) if remaining else already_scored
+    push_scored = lambda: artifacts.push("scored_jobs.json")  # noqa: E731
+    scored = (score_jobs(remaining, resume_text, out_path=out_path, scored=already_scored,
+                         on_progress=push_scored)
+              if remaining else already_scored)
     out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
+    artifacts.push("scored_jobs.json")
 
     if remaining and len(scored) == len(already_scored):
         # Every job in this run failed (e.g. OpenRouter free-tier daily quota exhausted).
