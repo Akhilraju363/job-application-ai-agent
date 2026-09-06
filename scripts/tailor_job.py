@@ -6,19 +6,17 @@ single OpenRouter call per job instead of live Claude Code reasoning, so it can 
 unattended (Modal cron) without an Anthropic API key.
 
 Reads output/scored_jobs.json (qualified == true), writes output/tailored_jobs.json.
-Requires: open_router_apikey, google_drive_folder_id (the "Job Applications" parent
-Drive folder, created once during provisioning) in .env.
+Requires: google_drive_folder_id (the "Job Applications" parent Drive folder, created
+once during provisioning) plus an LLM endpoint -- open_router_apikey, or the llm_*
+overrides in scripts/llm.py -- in .env.
 """
 import json
 import os
 import re
 import shutil
 import subprocess
-import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 
-import requests
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -27,11 +25,7 @@ load_dotenv(ROOT / ".env")
 import sys
 sys.path.insert(0, str(ROOT / "scripts"))
 from validate_resume import validate
-
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "nvidia/nemotron-3.5-lightning:free"
-FALLBACK_MODEL = "minimax/minimax-m2.7:free"  # see scripts/score_jobs.py for why
-QUALIFY_CUTOFF = 8
+from llm import call_llm  # noqa: E402 -- LLM endpoint/model/retry config, .env-driven
 
 TAILOR_PROMPT = """You are tailoring a candidate's resume to a specific job posting.
 
@@ -89,52 +83,7 @@ def slugify(title):
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", title.lower())).strip("-")
 
 
-MAX_RETRIES = 2
-REQUEST_DEADLINE = 240  # see scripts/score_jobs.py for why -- same reasoning model, same
-                        # hidden-"thinking"-tokens-scale-with-prompt-complexity behavior,
-                        # and tailoring prompts are at least as long as scoring prompts.
-
-
-def _post(payload, api_key):
-    return requests.post(
-        OPENROUTER_URL,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json=payload,
-        timeout=REQUEST_DEADLINE,
-    )
-
-
-def _call_model(model, prompt, api_key, label):
-    """Try one model up to MAX_RETRIES times. Raises the last exception on total failure."""
-    # see scripts/score_jobs.py for why -- caps hidden reasoning tokens to cut timeout rate.
-    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "reasoning": {"effort": "low"}}
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        ex = ThreadPoolExecutor(max_workers=1)
-        try:
-            resp = ex.submit(_post, payload, api_key).result(timeout=REQUEST_DEADLINE)
-        except FutureTimeoutError:
-            ex.shutdown(wait=False)
-            if attempt == MAX_RETRIES:
-                raise
-            wait = 2 ** attempt
-            print(f"  retry {attempt}/{MAX_RETRIES} for {label!r} ({model}) after hard timeout ({REQUEST_DEADLINE}s, waiting {wait}s)")
-            time.sleep(wait)
-            continue
-        ex.shutdown(wait=False)
-
-        try:
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            if attempt == MAX_RETRIES:
-                raise
-            wait = 2 ** attempt
-            print(f"  retry {attempt}/{MAX_RETRIES} for {label!r} ({model}) after {type(e).__name__}: {e} (waiting {wait}s)")
-            time.sleep(wait)
-
-
-def tailor_text(job, resume_text, api_key):
+def tailor_text(job, resume_text):
     prompt = (
         TAILOR_PROMPT
         .replace("__RESUME__", resume_text)
@@ -144,13 +93,7 @@ def tailor_text(job, resume_text, api_key):
         .replace("__MISSING__", ", ".join(job.get("missing_must_haves", [])))
         .replace("__DESCRIPTION__", str(job.get("description")))
     )
-    label = job.get("title")
-
-    try:
-        return _call_model(MODEL, prompt, api_key, label)
-    except Exception as e:
-        print(f"  {MODEL} exhausted for {label!r} ({type(e).__name__}: {e}) -- falling back to {FALLBACK_MODEL}")
-        return _call_model(FALLBACK_MODEL, prompt, api_key, label)
+    return call_llm(prompt, job.get("title"))
 
 
 def create_job_folder(company, slug, parent_folder_id):
@@ -202,47 +145,72 @@ def build_and_upload_resume(markdown_path, folder_id, tmp_pdf_path):
 
 
 if __name__ == "__main__":
-    api_key = os.environ["open_router_apikey"]
+    import artifacts
+
     parent_folder_id = os.environ["google_drive_folder_id"]
     resume_text = (ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8")
+
+    # Recovery: reuse the scores and any resumes an earlier run already finished.
+    artifacts.pull("scored_jobs.json")
+    artifacts.pull("tailored_jobs.json")
+
     jobs = json.loads((ROOT / "output" / "scored_jobs.json").read_text(encoding="utf-8"))
     qualified = [j for j in jobs if j.get("qualified")]
 
     tailored_dir = ROOT / "output" / "tailored"
     tailored_dir.mkdir(parents=True, exist_ok=True)
     tmp_dir = Path("/tmp/tailor_job")
+    out_path = ROOT / "output" / "tailored_jobs.json"
 
-    results = []
+    # A prior run (e.g. the Modal cron before OpenRouter failed) may have already
+    # tailored + uploaded some of these jobs. Reuse those records verbatim --
+    # re-tailoring would burn LLM calls and create duplicate Drive folders. Only
+    # status == "saved" counts as done; flagged/errored jobs are retried. Keyed by
+    # job link, which is the pipeline's identity for a posting.
+    previous = json.loads(out_path.read_text(encoding="utf-8")) if out_path.exists() else []
+    done = {r["link"]: r for r in previous if r.get("status") == "saved"}
+    by_link = dict(done)  # seed so a crash mid-run never drops an earlier run's work
+
     for job in qualified:
+        link = job["link"]
         slug = slugify(job["title"])
         folder_name = f"{job['company']}-{slug}"
+
+        if link in done:
+            print(f"SKIP (already tailored) {folder_name}")
+            continue
+
         try:
-            text = tailor_text(job, resume_text, api_key)
+            text = tailor_text(job, resume_text)
             ok, reason = validate(text)
             if not ok:
-                results.append({**job, "status": "flagged_validation_failed", "reason": reason})
+                by_link[link] = {**job, "status": "flagged_validation_failed", "reason": reason}
                 print(f"FLAGGED {folder_name}: {reason}")
-                continue
+            else:
+                md_path = tailored_dir / f"{folder_name}.md"
+                md_path.write_text(text, encoding="utf-8")
 
-            md_path = tailored_dir / f"{folder_name}.md"
-            md_path.write_text(text, encoding="utf-8")
+                folder_id, folder_link = create_job_folder(job["company"], slug, parent_folder_id)
+                tmp_pdf_path = tmp_dir / folder_name / "Akhil Dalali Resume.pdf"
+                resume_link = build_and_upload_resume(md_path, folder_id, tmp_pdf_path)
 
-            folder_id, folder_link = create_job_folder(job["company"], slug, parent_folder_id)
-            tmp_pdf_path = tmp_dir / folder_name / "Akhil Dalali Resume.pdf"
-            resume_link = build_and_upload_resume(md_path, folder_id, tmp_pdf_path)
-
-            results.append({
-                "title": job["title"], "company": job["company"], "link": job["link"],
-                "score": job["score"], "drive_folder_link": folder_link,
-                "resume_link": resume_link, "status": "saved",
-            })
-            print(f"SAVED {folder_name}")
+                by_link[link] = {
+                    "title": job["title"], "company": job["company"], "link": link,
+                    "score": job["score"], "drive_folder_link": folder_link,
+                    "resume_link": resume_link, "status": "saved",
+                }
+                print(f"SAVED {folder_name}")
         except Exception as e:
-            results.append({**job, "status": "flagged_error", "reason": str(e)})
+            by_link[link] = {**job, "status": "flagged_error", "reason": str(e)}
             print(f"ERROR {folder_name}: {e}")
 
-    (ROOT / "output" / "tailored_jobs.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps(list(by_link.values()), indent=2), encoding="utf-8")
+        artifacts.push("tailored_jobs.json")
 
+    out_path.write_text(json.dumps(list(by_link.values()), indent=2), encoding="utf-8")
+    artifacts.push("tailored_jobs.json")
+
+    results = list(by_link.values())
     saved = sum(1 for r in results if r["status"] == "saved")
     flagged = len(results) - saved
     print(f"{len(qualified)} qualified, {saved} saved, {flagged} flagged")

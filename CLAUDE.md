@@ -74,12 +74,14 @@ job-apply-agent/
   scripts/
     scrape_jobs.py         # Apify
     score_jobs.py           # scores + extracts matched/missing requirements
-    tailor_job.py            # automated tailoring path (OpenRouter, for Modal)
+    tailor_job.py            # automated tailoring path (OpenRouter default, for Modal)
     company_research.py
     write_sheet.py          # Google Sheets
     format_resume_doc.py     # markdown -> real Google Docs formatting
     validate_resume.py       # shared validation logic
-  output/                    # gitignored — raw/scored/tailored job data
+    llm.py                    # shared OpenAI-compatible chat client (.env-driven; OpenRouter default, Ollama override)
+    artifacts.py              # best-effort Drive mirror of stage JSON, for cross-machine resume
+  output/                    # gitignored — raw/scored/tailored job data + .artifact_sync.json sidecar
   modal_app.py                # scheduled entrypoint
   .env                        # gitignored — Apify key, OpenRouter key, Google creds, Telegram bot token
 ```
@@ -112,6 +114,26 @@ Two `gws` gotchas worth knowing: `files` is a sub-resource of `drive`, not top-l
 (`gws drive files export/delete`, not `gws files ...`), and `--output` for `gws drive files export`
 is sandboxed to the current directory — `cd` into the target folder and export with a relative
 filename, an absolute path is rejected.
+
+## LLM provider + failure recovery (built)
+
+OpenRouter is the **production** LLM provider and the only one Modal uses — `scripts/llm.py`
+defaults to it. Ollama is a **local manual recovery** option, never wired into Modal (localhost
+inside the container isn't the user's machine). Switch locally via `llm_*` in `.env`.
+
+The pipeline is **resume-safe**, keyed by job link at every stage:
+- `score_jobs.py` skips links already in `output/scored_jobs.json` (incremental write).
+- `tailor_job.py` skips jobs already `status:"saved"` in `output/tailored_jobs.json` — it does
+  **not** re-tailor or re-create Drive folders for finished jobs.
+- `company_research.py` skips jobs that already have `company_notes`.
+- `write_sheet.py` dedupes by job link against the live Sheet, so it's safe to re-run.
+
+`scripts/artifacts.py` mirrors the three stage JSON artifacts to a `pipeline-artifacts` Drive
+subfolder (date-stamped, under `google_drive_folder_id`), best-effort. This is what lets a local
+Ollama run pick up a failed Modal run's state. `PIPELINE_DATE=YYYY-MM-DD` targets an earlier day;
+`artifact_sync=0` disables the mirror. `write_sheet.py` sheet-id priority: configured
+`google_sheet_id` → Drive lookup by name → create. For Modal, `google_sheet_id` goes in the
+`job-apply-agent-secrets` secret (no persistent `.env` in the container).
 
 ## Verification Per Step
 

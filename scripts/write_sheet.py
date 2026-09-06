@@ -45,10 +45,46 @@ def gws(*args):
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
+def find_sheet_by_title():
+    """Look for an existing, non-trashed spreadsheet named SHEET_TITLE in Drive.
+
+    Returns the oldest match's id (deterministic across runs) or None. This is the
+    fallback when google_sheet_id isn't configured: without it, the Modal cron --
+    whose container .env write from set_key() doesn't persist -- would create a
+    brand-new "Job Application Tracker" every run. Configuring google_sheet_id
+    (in the Modal secret for production) skips this lookup entirely.
+    """
+    escaped = SHEET_TITLE.replace("\\", "\\\\").replace("'", "\\'")
+    result = gws("drive", "files", "list", "--params", json.dumps({
+        "q": (f"name = '{escaped}' and "
+              "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false"),
+        "orderBy": "createdTime",
+        "fields": "files(id,name)",
+        "pageSize": 10,
+    }))
+    files = result.get("files", [])
+    return files[0]["id"] if files else None
+
+
+def _remember_sheet_id(sheet_id):
+    # Only when a local .env actually exists -- on Modal there's no .env to write
+    # (and the container is ephemeral anyway); google_sheet_id belongs in the secret.
+    if ENV_PATH.exists():
+        set_key(str(ENV_PATH), "google_sheet_id", sheet_id)
+
+
 def get_or_create_sheet_id():
+    """Lookup priority: configured google_sheet_id -> existing sheet by name in
+    Drive -> create a new one (only when no tracker exists at all)."""
     import os
     sheet_id = os.environ.get("google_sheet_id", "").strip()
     if sheet_id:
+        return sheet_id
+
+    sheet_id = find_sheet_by_title()
+    if sheet_id:
+        _remember_sheet_id(sheet_id)
+        print(f"Reusing existing sheet: {SHEET_TITLE} ({sheet_id})")
         return sheet_id
 
     created = gws("sheets", "spreadsheets", "create", "--json",
@@ -78,7 +114,7 @@ def get_or_create_sheet_id():
             }
         }]}))
 
-    set_key(str(ENV_PATH), "google_sheet_id", sheet_id)
+    _remember_sheet_id(sheet_id)
     print(f"Created new sheet: {SHEET_TITLE} ({sheet_id})")
     return sheet_id
 
@@ -90,6 +126,14 @@ def get_existing_links(sheet_id):
 
 
 if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import artifacts
+
+    # Recovery: log whatever a failed earlier run tailored. Dedup below (by job link
+    # against the live sheet) makes this safe to run repeatedly.
+    artifacts.pull("tailored_jobs.json")
+
     tailored_jobs = json.loads((ROOT / "output" / "tailored_jobs.json").read_text(encoding="utf-8"))
     saved_jobs = [j for j in tailored_jobs if j.get("status") == "saved"]
 

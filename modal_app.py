@@ -75,9 +75,13 @@ def run_pipeline():
         except Exception as alert_error:
             print(f"Telegram alert failed to send: {alert_error}")
 
+    stage = {"name": "startup"}
+
     try:
         # gws credentials are Keychain-encrypted locally; this container has no
-        # Keychain, so materialize the plain credentials file gws also supports.
+        # Keychain, so materialize the plain credentials file gws also supports and
+        # tell gws to keep its token cache on disk instead of a (missing) keyring.
+        os.environ["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
         config_dir = Path.home() / ".config" / "gws"
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "credentials.json").write_text(json.dumps({
@@ -91,6 +95,7 @@ def run_pipeline():
         (workdir / "output").mkdir(exist_ok=True)
 
         def run(script, timeout):
+            stage["name"] = script
             print(f"--- {script} ---")
             subprocess.run(["python3", f"scripts/{script}"], check=True, cwd=workdir, timeout=timeout)
 
@@ -106,9 +111,16 @@ def run_pipeline():
 
         print("JOB-APPLY-AGENT — daily run complete")
     except Exception as e:
-        print("JOB-APPLY-AGENT — PIPELINE FAILED")
+        failed_stage = stage["name"]
+        print(f"JOB-APPLY-AGENT — PIPELINE FAILED at {failed_stage}")
         traceback.print_exc()
-        send_telegram_alert(f"JOB-APPLY-AGENT — WHAT BROKE\n\n{e}")
+        # Stage name + exception type/message only -- never secrets. If the failure
+        # was an LLM/OpenRouter outage, recover locally with Ollama (see README).
+        send_telegram_alert(
+            "JOB-APPLY-AGENT — WHAT BROKE\n\n"
+            f"Stage: {failed_stage}\n"
+            f"Reason: {type(e).__name__}: {e}"
+        )
         raise
 
 
