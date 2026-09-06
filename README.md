@@ -60,11 +60,23 @@ cp .env.example .env
 `google_drive_folder_id` — create a folder in Drive and paste its id (from the URL). It holds
 the per-job resume folders and the `pipeline-artifacts/` sync folder.
 
-`google_sheet_id` — leave blank locally and `write_sheet.py` finds the "Job Application Tracker"
-by name in Drive (or creates it once) and writes the id back into `.env`. Set it explicitly to
-pin one master sheet; **for Modal it must go in the secret** (the container has no persistent
-`.env`). Lookup priority is: configured `google_sheet_id` → existing tracker found in Drive →
-create.
+`google_sheet_id` — set this to the ID of the single master "Job Application Tracker"
+spreadsheet. This is recommended for both local and Modal runs so every execution
+uses the same spreadsheet deterministically.
+
+For Modal, `google_sheet_id` must be provided through the
+`job-apply-agent-secrets` secret because the Modal container does not have a
+persistent `.env`.
+
+If `google_sheet_id` is not configured, `write_sheet.py` falls back to searching
+Drive for an existing "Job Application Tracker" and creates one only if none
+exists.
+
+Lookup priority is:
+
+configured `google_sheet_id`
+→ existing tracker found in Drive
+→ create tracker only if none exists.
 
 ### LLM endpoint (local testing with Ollama)
 
