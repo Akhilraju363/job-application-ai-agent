@@ -109,6 +109,29 @@ def run_pipeline():
         run("company_research.py", timeout=5400)
         run("write_sheet.py", timeout=300)
 
+        # Post-run reconciliation. No single step raising doesn't mean the run
+        # succeeded: on 2026-09-07 every step exited 0 but the one qualifying job
+        # timed out during tailoring, got flagged (not raised), and the run reported
+        # "complete" while delivering nothing -- a silent failure the "no silent
+        # failures" rule is meant to catch. So: if a job cleared the 8+ cutoff but
+        # never produced a saved resume, alert (and raise) instead of reporting success.
+        stage["name"] = "post-run reconciliation"
+        scored = json.loads((workdir / "output" / "scored_jobs.json").read_text())
+        tailored_path = workdir / "output" / "tailored_jobs.json"
+        tailored = json.loads(tailored_path.read_text()) if tailored_path.exists() else []
+        qualified_links = {j["link"] for j in scored if j.get("qualified")}
+        saved_links = {j["link"] for j in tailored if j.get("status") == "saved"}
+        unmet = qualified_links - saved_links
+        if unmet:
+            reasons = {
+                j["link"]: j.get("reason", j.get("status", "no tailored_jobs entry"))
+                for j in tailored if j["link"] in unmet
+            }
+            detail = "\n".join(f"  - {link}: {reasons.get(link, 'never reached tailoring')}" for link in unmet)
+            raise RuntimeError(
+                f"{len(unmet)}/{len(qualified_links)} qualified job(s) produced no saved resume:\n{detail}"
+            )
+
         print("JOB-APPLY-AGENT — daily run complete")
     except Exception as e:
         failed_stage = stage["name"]

@@ -89,7 +89,9 @@ job-apply-agent/
 ## Scoring (built)
 
 `scripts/score_jobs.py` scores each job in `output/raw_jobs.json` 1-10 against
-`resume/base_resume.md` via one OpenRouter call per job (`nvidia/nemotron-3.5-lightning:free`), using an explicit
+`resume/base_resume.md` via one LLM call per job (model configured in `scripts/llm.py` —
+`google/gemma-4-26b-a4b-it:free` on OpenRouter by default, with `minimax/minimax-m2.7:free`
+as fallback), using an explicit
 rubric (must-have skills weighted heaviest, then years-of-experience/seniority fit, then
 nice-to-haves as a tiebreaker — see the `RUBRIC_PROMPT` constant in the script for exact wording).
 The script applies the `score >= 8` cutoff in code, not via a model-declared verdict. Output is

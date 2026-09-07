@@ -5,11 +5,17 @@ identical retry + hard-timeout behavior. Centralizing it here means switching mo
 endpoint (e.g. OpenRouter -> a local Ollama server) is a one-line .env change instead of
 the same edit in three files.
 
-Config -- all via .env, all optional. Defaults reproduce the original OpenRouter setup:
+Config -- all via .env, all optional. Defaults target OpenRouter's free tier:
 
   llm_base_url          default https://openrouter.ai/api/v1
-  llm_model             default nvidia/nemotron-3.5-lightning:free
-  llm_fallback_model    default "" (disabled). Tried only if llm_model fails every retry.
+  llm_model             default google/gemma-4-26b-a4b-it:free -- MoE (~3.8B active, fast),
+                        supports response_format for real JSON mode, and its thinking mode
+                        is off by default. The old default nvidia/nemotron-3.5-lightning:free
+                        did NOT support response_format (-> JSONDecodeError in scoring) and
+                        its reasoning traces routinely blew REQUEST_DEADLINE.
+  llm_fallback_model    tried only if llm_model fails every retry. Defaults to
+                        minimax/minimax-m2.7:free on OpenRouter (different provider, so an
+                        outage is unlikely to hit both), empty for any other base_url.
   llm_api_key           default: falls back to open_router_apikey. Set "ollama" (or leave
                         blank) for a local Ollama server.
   llm_reasoning_effort  default "low". Set "" to omit the field entirely -- non-reasoning
@@ -37,9 +43,13 @@ import requests
 
 _BASE_URL = os.environ.get("llm_base_url", "https://openrouter.ai/api/v1").rstrip("/")
 CHAT_URL = f"{_BASE_URL}/chat/completions"
+_IS_OPENROUTER = "openrouter.ai" in _BASE_URL
 
-MODEL = os.environ.get("llm_model", "nvidia/nemotron-3.5-lightning:free")
-FALLBACK_MODEL = os.environ.get("llm_fallback_model", "").strip()
+MODEL = os.environ.get("llm_model", "google/gemma-4-26b-a4b-it:free")
+# A fallback slug only makes sense against OpenRouter's multi-provider pool; on a single
+# local Ollama server it would just 404. Explicit llm_fallback_model always wins.
+_DEFAULT_FALLBACK = "minimax/minimax-m2.7:free" if _IS_OPENROUTER else ""
+FALLBACK_MODEL = os.environ.get("llm_fallback_model", _DEFAULT_FALLBACK).strip()
 _API_KEY = os.environ.get("llm_api_key") or os.environ.get("open_router_apikey", "")
 _REASONING_EFFORT = os.environ.get("llm_reasoning_effort", "low").strip()
 
