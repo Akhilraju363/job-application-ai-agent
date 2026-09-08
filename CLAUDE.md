@@ -124,7 +124,7 @@ filename, an absolute path is rejected.
 - **Cloud (Modal cron)** — a failover chain over independent free tiers, tried in
   `llm_provider_order` (default `groq,openrouter,gemini`), built from whichever API keys are
   present:
-  1. **Groq** `llama-3.3-70b-versatile` — primary. No credit card, no training on inputs,
+  1. **Groq** `openai/gpt-oss-120b` — primary. No credit card, no training on inputs,
      commercial use permitted, ~30 RPM / ~1K RPD.
   2. **OpenRouter** `google/gemma-4-26b-a4b-it:free` — `:free` only. Burst-throttled.
   3. **Gemini** `gemini-2.5-flash` — no card. *Google may train on free-tier data* → last

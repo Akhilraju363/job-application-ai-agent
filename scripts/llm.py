@@ -13,7 +13,7 @@ Two modes, selected automatically:
                         of these API keys are present, in `llm_provider_order`:
 
     groq        api.groq.com/openai/v1            GROQ_API_KEY
-                default model: llama-3.3-70b-versatile
+                default model: openai/gpt-oss-120b
                 free tier: no card, ~30 RPM / ~1K RPD, no training on inputs/outputs,
                 commercial use permitted.
     openrouter  openrouter.ai/api/v1             OPENROUTER_API_KEY (or open_router_apikey)
@@ -58,7 +58,7 @@ IS_LOCAL = bool(_LOCAL_BASE_URL)
 # name -> (base_url, (api-key env names, first hit wins), default model, model-override env)
 _PROVIDER_SPECS = {
     "groq": ("https://api.groq.com/openai/v1", ("GROQ_API_KEY",),
-             "llama-3.3-70b-versatile", "llm_groq_model"),
+             "openai/gpt-oss-120b", "llm_groq_model"),
     "openrouter": ("https://openrouter.ai/api/v1", ("OPENROUTER_API_KEY", "open_router_apikey"),
                    "google/gemma-4-26b-a4b-it:free", "llm_openrouter_model"),
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", ("GEMINI_API_KEY", "GOOGLE_API_KEY"),

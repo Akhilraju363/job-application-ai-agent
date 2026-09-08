@@ -129,7 +129,7 @@ class Failover(unittest.TestCase):
         out = llm.call_llm("p", "job", json_mode=True)
         self.assertEqual(json.loads(out)["score"], 6)
         self.assertEqual([c[0] for c in calls], ["groq", "openrouter"])
-        self.assertIn(("groq", "llama-3.3-70b-versatile"), llm._dead_models)
+        self.assertIn(("groq", llm.PROVIDERS[0]["model"]), llm._dead_models)
 
     def test_5xx_retries_then_next_provider(self):
         calls, llm = self._run([
