@@ -23,10 +23,11 @@ Scrape (Apify)
 ```
 
 The three LLM steps (score, tailor, research) all go through one shared client,
-[`scripts/llm.py`](scripts/llm.py), which talks to any OpenAI-compatible
-`/chat/completions` endpoint. It defaults to OpenRouter's free tier (what the Modal cron
-uses); point it at a local Ollama server with a few `.env` vars to test without spending
-quota — see [LLM endpoint](#llm-endpoint-local-testing-with-ollama) below.
+[`scripts/llm.py`](scripts/llm.py). In the cloud it runs a **failover chain over independent
+free LLM tiers** — Groq → OpenRouter `:free` → Gemini — so one provider rate-limiting or
+delisting a model doesn't stop the run. **It is free-only by design: no paid models, no
+OpenRouter credit, no paid fallback.** Locally you can point it at Ollama instead with a few
+`.env` vars — see [LLM providers](#llm-providers-free-only) below.
 
 Every job gets scored against the base resume. Only jobs scoring 8 or higher continue past that
 step — the rest are logged as rejected but never tailored, never touch the Sheet.
@@ -38,7 +39,9 @@ step — the rest are logged as rejected but never tailored, never touch the She
 - The [`gws` CLI](https://github.com/googleworkspace/cli) — see [`GWS_SETUP.md`](GWS_SETUP.md) for
   the full walkthrough (Google Cloud project, OAuth, first login)
 - An [Apify](https://apify.com) account (free tier)
-- An [OpenRouter](https://openrouter.ai) account (free-tier models used by default)
+- A [Groq](https://console.groq.com) API key (free, no credit card) — the primary LLM provider.
+  Optionally also [OpenRouter](https://openrouter.ai) and/or [Google AI Studio](https://aistudio.google.com/apikey)
+  keys for the failover chain (all free tiers)
 - A [Modal](https://modal.com) account, only if you want to deploy the daily cron
 
 **Install:**
@@ -54,7 +57,8 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# fill in apify_api_key, open_router_apikey (see .env.example for where to get each)
+# fill in apify_api_key and GROQ_API_KEY (add OPENROUTER_API_KEY / GEMINI_API_KEY too for
+# a deeper failover chain — see .env.example for where to get each)
 ```
 
 `google_drive_folder_id` — create a folder in Drive and paste its id (from the URL). It holds
@@ -78,23 +82,35 @@ configured `google_sheet_id`
 → existing tracker found in Drive
 → create tracker only if none exists.
 
-### LLM endpoint (local testing with Ollama)
+### LLM providers (free only)
 
-By default score/tailor/research hit OpenRouter using `open_router_apikey`. To run them
-against a local [Ollama](https://ollama.com) server instead — no key, no daily quota, no rate
-limits — add these to `.env`:
+**No paid models, no OpenRouter credit, no paid fallback — anywhere.** In the cloud,
+[`scripts/llm.py`](scripts/llm.py) tries independent free tiers in order (`llm_provider_order`,
+default `groq,openrouter,gemini`), building the chain from whichever keys are set:
+
+| Provider | Default model | Free tier | Notes |
+|---|---|---|---|
+| **Groq** (primary) | `llama-3.3-70b-versatile` | no card · ~30 RPM · ~1K RPD | not used for training; commercial use OK |
+| **OpenRouter** | `google/gemma-4-26b-a4b-it:free` | no card · ~50 req/day | `:free` only; burst-throttled |
+| **Gemini** | `gemini-2.5-flash` | no card · ~10-15 RPM | ⚠️ Google may train on free-tier data — optional, omit `GEMINI_API_KEY` to skip |
+
+On a `429` it backs off (honoring `Retry-After`) then moves to the next provider; on a `404`
+(model delisted) it skips that provider immediately. When every provider fails, the run fails
+loudly and Telegram fires. Tune with `llm_request_delay_seconds`, `llm_max_retries`,
+`llm_<provider>_model` (see [`.env.example`](.env.example)).
+
+**Local recovery with [Ollama](https://ollama.com)** — set `llm_base_url` and the whole
+pipeline switches to your local server, disabling the cloud chain entirely:
 
 ```bash
 llm_base_url=http://localhost:11434/v1
 llm_model=qwen2.5:7b        # or any model you've `ollama pull`ed
 llm_api_key=ollama
-llm_reasoning_effort=       # blank — non-reasoning models don't understand it
 ```
 
-All `llm_*` vars are optional; blank means "use the OpenRouter defaults". Ollama can't be
-reached from the Modal cron container, so the deployed path always uses OpenRouter — this
-switch is for local runs only. Small local models score noticeably tougher and are weaker at
-company research; use them to exercise the pipeline, not for real output.
+Modal never uses this — `modal_app.py` refuses to run if `llm_base_url` is set. Small local
+models score tougher and are weaker at company research; use them to exercise the pipeline,
+not for real output.
 
 ## Running It
 
@@ -123,7 +139,8 @@ already in those artifacts instead of redoing it. See
 
 ```bash
 modal secret create job-apply-agent-secrets \
-  apify_api_key=... open_router_apikey=... \
+  apify_api_key=... GROQ_API_KEY=... \
+  OPENROUTER_API_KEY=... GEMINI_API_KEY=... \
   google_drive_folder_id=... google_sheet_id=... \
   TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=...
 
@@ -133,33 +150,35 @@ modal secret create gws-credentials \
 modal deploy modal_app.py
 ```
 
-Runs daily at 7am Asia/Kolkata (IST). See [`GWS_SETUP.md`](GWS_SETUP.md) for how to get the
-`gws-credentials` values, and the Telegram section below for the bot token.
+`GROQ_API_KEY` is the minimum LLM requirement; `OPENROUTER_API_KEY` and `GEMINI_API_KEY` are
+optional extra links in the failover chain. Runs daily at 7am Asia/Kolkata (IST). See
+[`GWS_SETUP.md`](GWS_SETUP.md) for the `gws-credentials` values and the Telegram section for the
+bot token.
 
 **`google_sheet_id` must be in the secret** (not just `.env`). The Modal container has no
 persistent `.env`, so without it in the secret `write_sheet.py` falls back to a Drive lookup by
 name on every run. Get the id once from your master "Job Application Tracker" sheet's URL
-(`docs.google.com/spreadsheets/d/<ID>/edit`) and set it. `open_router_apikey` stays the
-production LLM provider — Modal always uses OpenRouter and never touches Ollama.
+(`docs.google.com/spreadsheets/d/<ID>/edit`) and set it. **Never put `llm_base_url` in the
+secret** — Modal must use the cloud provider chain, and `modal_app.py` refuses to start if it
+finds `llm_base_url` set.
 
 ## Recovering a failed daily run
 
-Normal day: the Modal cron runs on OpenRouter, finishes, and updates the master Sheet. Nothing
-to do.
+Normal day: the Modal cron runs the free provider chain (Groq → OpenRouter → Gemini), finishes,
+and updates the master Sheet. Nothing to do.
 
-If OpenRouter (or a model) is down when the cron fires, Modal sends a Telegram alert naming the
-stage that failed and stops. You then finish that day's work **locally with Ollama** — it picks
-up where Modal left off:
+If every free provider is rate-limited or down when the cron fires, Modal sends a Telegram alert
+naming the stage that failed and stops. You then finish that day's work **locally with Ollama** —
+it picks up where Modal left off:
 
 ```bash
 ollama serve                        # in another terminal, if not already running
 ollama pull qwen2.5:7b              # once
 
-# .env — switch the LLM endpoint to local Ollama (see "LLM endpoint" above)
+# .env — switch to local Ollama (see "LLM providers" above)
 llm_base_url=http://localhost:11434/v1
 llm_model=qwen2.5:7b
 llm_api_key=ollama
-llm_reasoning_effort=
 
 # recover TODAY's run: just re-run the pipeline in order
 python3 scripts/scrape_jobs.py       # reuses Modal's scrape, no new Apify call
@@ -206,8 +225,9 @@ won't message you.
   secret.
 - `tailor_job.py` used to re-tailor every qualifying job (and create duplicate Drive folders) on
   every run — now it reuses resumes already marked `saved` and only tailors what's missing, keyed
-  by job URL. Combined with `scripts/artifacts.py` (the Drive artifact mirror), a failed OpenRouter
-  day can be finished locally with Ollama without redoing work or duplicating Sheet rows.
+  by job URL. Combined with `scripts/artifacts.py` (the Drive artifact mirror), a day where every
+  free provider is throttled can be finished locally with Ollama without redoing work or
+  duplicating Sheet rows.
 
 ## After the Sheet Is Ready — Applying
 

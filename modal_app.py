@@ -12,6 +12,23 @@ import modal
 
 app = modal.App("job-apply-agent")
 
+
+def reconcile_qualified(scored, tailored):
+    """Return (unmet_links, reason_by_link): qualified jobs with no saved resume.
+
+    Pure function so the no-silent-failure guard is unit-testable. Empty unmet == the
+    run genuinely delivered every qualifying job. Keyed by job link (the pipeline's
+    identity for a posting) so a job saved on an earlier run still counts as met.
+    """
+    qualified_links = {j["link"] for j in scored if j.get("qualified")}
+    saved_links = {j["link"] for j in tailored if j.get("status") == "saved"}
+    unmet = qualified_links - saved_links
+    reason_by_link = {
+        j["link"]: j.get("reason", j.get("status", "no tailored_jobs entry"))
+        for j in tailored if j.get("link") in unmet
+    }
+    return unmet, reason_by_link
+
 GWS_VERSION = "v0.22.5"
 GWS_URL = (
     f"https://github.com/googleworkspace/cli/releases/download/{GWS_VERSION}/"
@@ -94,18 +111,32 @@ def run_pipeline():
         workdir = Path("/app")
         (workdir / "output").mkdir(exist_ok=True)
 
+        # Config sanity check (fail fast, before spending an Apify scrape). Modal must run
+        # the cloud provider chain, never local Ollama -- localhost inside this container
+        # is not the user's machine. And at least one free provider key must be present.
+        stage["name"] = "config check"
+        if os.environ.get("llm_base_url", "").strip():
+            raise RuntimeError("llm_base_url is set in the Modal secret -- Modal must use the "
+                               "cloud provider chain, not a local endpoint. Remove it from the secret.")
+        provider_keys = [k for k in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "open_router_apikey", "GEMINI_API_KEY")
+                         if os.environ.get(k, "").strip()]
+        if not provider_keys:
+            raise RuntimeError("no free LLM provider key in the Modal secret -- set at least "
+                               "GROQ_API_KEY (see scripts/llm.py).")
+        print(f"LLM providers available: {provider_keys}")
+
         def run(script, timeout):
             stage["name"] = script
             print(f"--- {script} ---")
             subprocess.run(["python3", f"scripts/{script}"], check=True, cwd=workdir, timeout=timeout)
 
-        # score/tailor/research timeouts sized for worst case at limit=10 jobs: each now
-        # retries at REQUEST_DEADLINE=240s x MAX_RETRIES=2 (see scripts/score_jobs.py),
-        # so worst case per job is ~482s -> ~4820s for all 10, plus margin for
-        # tailor's extra Drive/Docs API calls per job.
+        # Per-step timeouts sized generously for the free-provider chain: each job may walk
+        # groq -> openrouter -> gemini, each with retries/backoff (see scripts/llm.py), plus
+        # llm_request_delay_seconds spacing between calls. Worst case is minutes/job; these
+        # caps are the outer bound before the step is killed and alerted.
         run("scrape_jobs.py", timeout=600)
-        run("score_jobs.py", timeout=5400)
-        run("tailor_job.py", timeout=6000)
+        run("score_jobs.py", timeout=6000)
+        run("tailor_job.py", timeout=7200)
         run("company_research.py", timeout=5400)
         run("write_sheet.py", timeout=300)
 
@@ -119,17 +150,12 @@ def run_pipeline():
         scored = json.loads((workdir / "output" / "scored_jobs.json").read_text())
         tailored_path = workdir / "output" / "tailored_jobs.json"
         tailored = json.loads(tailored_path.read_text()) if tailored_path.exists() else []
-        qualified_links = {j["link"] for j in scored if j.get("qualified")}
-        saved_links = {j["link"] for j in tailored if j.get("status") == "saved"}
-        unmet = qualified_links - saved_links
+        qualified_total = sum(1 for j in scored if j.get("qualified"))
+        unmet, reasons = reconcile_qualified(scored, tailored)
         if unmet:
-            reasons = {
-                j["link"]: j.get("reason", j.get("status", "no tailored_jobs entry"))
-                for j in tailored if j["link"] in unmet
-            }
             detail = "\n".join(f"  - {link}: {reasons.get(link, 'never reached tailoring')}" for link in unmet)
             raise RuntimeError(
-                f"{len(unmet)}/{len(qualified_links)} qualified job(s) produced no saved resume:\n{detail}"
+                f"{len(unmet)}/{qualified_total} qualified job(s) produced no saved resume:\n{detail}"
             )
 
         print("JOB-APPLY-AGENT — daily run complete")
@@ -137,8 +163,8 @@ def run_pipeline():
         failed_stage = stage["name"]
         print(f"JOB-APPLY-AGENT — PIPELINE FAILED at {failed_stage}")
         traceback.print_exc()
-        # Stage name + exception type/message only -- never secrets. If the failure
-        # was an LLM/OpenRouter outage, recover locally with Ollama (see README).
+        # Stage name + exception type/message only -- never secrets. If every free LLM
+        # provider was throttled/down, recover locally with Ollama (see README).
         send_telegram_alert(
             "JOB-APPLY-AGENT — WHAT BROKE\n\n"
             f"Stage: {failed_stage}\n"

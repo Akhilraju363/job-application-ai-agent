@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from llm import call_llm, MODEL, FALLBACK_MODEL  # noqa: E402
+from llm import call_llm, PROVIDER_SUMMARY  # noqa: E402
 
 QUALIFY_CUTOFF = 8
 
@@ -76,8 +76,8 @@ def score_jobs(jobs, resume_text, out_path=None, scored=None, on_progress=None):
         try:
             scored.append(score_job(job, resume_text))
         except Exception as e:
-            print(f"FAILED, skipping {job.get('title')!r} (exhausted {MODEL}"
-                  f"{f' and {FALLBACK_MODEL}' if FALLBACK_MODEL else ''}): {type(e).__name__}: {e}")
+            print(f"FAILED, skipping {job.get('title')!r} (providers: {PROVIDER_SUMMARY}): "
+                  f"{type(e).__name__}: {e}")
             continue
         if out_path is not None:
             out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")

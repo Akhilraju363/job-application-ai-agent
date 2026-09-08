@@ -74,30 +74,29 @@ job-apply-agent/
   scripts/
     scrape_jobs.py         # Apify
     score_jobs.py           # scores + extracts matched/missing requirements
-    tailor_job.py            # automated tailoring path (OpenRouter default, for Modal)
+    tailor_job.py            # automated tailoring path (free provider chain, for Modal)
     company_research.py
     write_sheet.py          # Google Sheets
     format_resume_doc.py     # markdown -> real Google Docs formatting
     validate_resume.py       # shared validation logic
-    llm.py                    # shared OpenAI-compatible chat client (.env-driven; OpenRouter default, Ollama override)
+    llm.py                    # provider-aware chat client: free cloud chain (Groq->OpenRouter->Gemini) or local Ollama
     artifacts.py              # best-effort Drive mirror of stage JSON, for cross-machine resume
+  tests/test_llm.py           # stdlib unittest: provider failover, 429/404/timeout/JSON handling, reconciliation
   output/                    # gitignored — raw/scored/tailored job data + .artifact_sync.json sidecar
   modal_app.py                # scheduled entrypoint
-  .env                        # gitignored — Apify key, OpenRouter key, Google creds, Telegram bot token
+  .env                        # gitignored — Apify key, provider API keys, Google creds, Telegram bot token
 ```
 
 ## Scoring (built)
 
 `scripts/score_jobs.py` scores each job in `output/raw_jobs.json` 1-10 against
-`resume/base_resume.md` via one LLM call per job (model configured in `scripts/llm.py` —
-`google/gemma-4-26b-a4b-it:free` on OpenRouter by default, with `minimax/minimax-m2.7:free`
-as fallback), using an explicit
+`resume/base_resume.md` via one LLM call per job (through `scripts/llm.py`'s free-provider
+chain — see "LLM provider + failure recovery" below), using an explicit
 rubric (must-have skills weighted heaviest, then years-of-experience/seniority fit, then
 nice-to-haves as a tiebreaker — see the `RUBRIC_PROMPT` constant in the script for exact wording).
 The script applies the `score >= 8` cutoff in code, not via a model-declared verdict. Output is
 `output/scored_jobs.json` — **both qualified and rejected jobs are kept**, with a `qualified` bool,
-so reject counts stay auditable per the PRD's "log the reject count too" requirement. Requires
-`open_router_apikey` in `.env`.
+so reject counts stay auditable per the PRD's "log the reject count too" requirement.
 
 ## Tailoring + Sheet tracking (built)
 
@@ -119,9 +118,32 @@ filename, an absolute path is rejected.
 
 ## LLM provider + failure recovery (built)
 
-OpenRouter is the **production** LLM provider and the only one Modal uses — `scripts/llm.py`
-defaults to it. Ollama is a **local manual recovery** option, never wired into Modal (localhost
-inside the container isn't the user's machine). Switch locally via `llm_*` in `.env`.
+**Free only — no paid models, no OpenRouter credit, no billing-enabled fallback, ever.**
+`scripts/llm.py` is a provider-aware client with two modes:
+
+- **Cloud (Modal cron)** — a failover chain over independent free tiers, tried in
+  `llm_provider_order` (default `groq,openrouter,gemini`), built from whichever API keys are
+  present:
+  1. **Groq** `llama-3.3-70b-versatile` — primary. No credit card, no training on inputs,
+     commercial use permitted, ~30 RPM / ~1K RPD.
+  2. **OpenRouter** `google/gemma-4-26b-a4b-it:free` — `:free` only. Burst-throttled.
+  3. **Gemini** `gemini-2.5-flash` — no card. *Google may train on free-tier data* → last
+     resort, optional (omit `GEMINI_API_KEY` to skip).
+
+  Per provider: 429 → backoff honoring `Retry-After` → retry → next provider; 404 (model
+  delisted, e.g. the old `minimax/minimax-m2.7:free`) → skip immediately, no retries; 5xx /
+  timeout / malformed-JSON → retry then next. All providers exhausted → `call_llm` raises →
+  the step fails → Telegram alert. JSON mode is validated inside the client (tolerates
+  fenced/prose-wrapped JSON) so a bad response fails over instead of corrupting an artifact.
+  `llm_request_delay_seconds` (default 5s) spaces calls to avoid burst 429s.
+
+- **Local (recovery)** — set `llm_base_url` in `.env` (e.g. `http://localhost:11434/v1`).
+  Single provider, no chain, no cloud calls. This is the Ollama path. **Modal must never set
+  `llm_base_url`** — `modal_app.py` refuses to run if it's present, and also refuses if no
+  provider key is configured (fail fast, before spending an Apify scrape).
+
+Modal secret needs at least `GROQ_API_KEY` (plus optionally `GEMINI_API_KEY`);
+`open_router_apikey` is still read for back-compat.
 
 The pipeline is **resume-safe**, keyed by job link at every stage:
 - `score_jobs.py` skips links already in `output/scored_jobs.json` (incremental write).
