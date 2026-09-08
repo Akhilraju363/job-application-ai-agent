@@ -1,7 +1,21 @@
+# --- secrets: never commit real credentials ---
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+secret*.json
+credentials*.json
+service-account*.json
+
+# --- python / build ---
 .venv/
 __pycache__/
 *.pyc
+
+# --- pipeline output (job data + local artifact sidecar) ---
 output/
+
+# --- misc local ---
 .claude/scheduled_tasks.lock
 download.html
