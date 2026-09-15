@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from llm import call_llm  # noqa: E402
+from llm import call_llm, validate_local_setup  # noqa: E402
 
 RESEARCH_PROMPT = """Give 3-5 short talking points about __COMPANY__ useful for someone
 interviewing for a __TITLE__ role there -- what they do/their product, engineering culture
@@ -30,6 +30,8 @@ def research_company(company, title):
 
 if __name__ == "__main__":
     import artifacts
+
+    validate_local_setup()  # no-op unless LOCAL_MODE=true; fails loudly, never falls back to cloud
 
     # Recovery: reuse the tailored resumes + any company notes an earlier run wrote.
     artifacts.pull("tailored_jobs.json")

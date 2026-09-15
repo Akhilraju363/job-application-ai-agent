@@ -16,6 +16,10 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = ROOT / ".env"
 load_dotenv(ENV_PATH)
 
+import sys  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from job_links import canonical_link  # noqa: E402
+
 HEADERS = ["Job Title", "Company", "Job Link", "Fit Score", "Resume Path", "Status", "Timestamp",
            "Company Notes"]
 SHEET_TITLE = "Job Application Tracker"
@@ -126,8 +130,6 @@ def get_existing_links(sheet_id):
 
 
 if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     import artifacts
 
     # Recovery: log whatever a failed earlier run tailored. Dedup below (by job link
@@ -142,13 +144,19 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     sheet_id = get_or_create_sheet_id()
-    existing_links = get_existing_links(sheet_id)
+    # Canonical (tracking-param-stripped) link -- a job re-scraped on a different day
+    # with a new trackingId/position is still the same posting and must not get a
+    # second row. See scripts/job_links.py.
+    existing_canonical = {canonical_link(link) for link in get_existing_links(sheet_id)}
 
     today = date.today().isoformat()
     new_rows = []
+    seen_this_run = set()
     for job in saved_jobs:
-        if job["link"] in existing_links:
+        key = canonical_link(job["link"])
+        if key in existing_canonical or key in seen_this_run:
             continue
+        seen_this_run.add(key)
         resume_path = job.get("resume_link") or job.get("desktop_file", "")
         new_rows.append([
             job["title"], job["company"], job["link"],

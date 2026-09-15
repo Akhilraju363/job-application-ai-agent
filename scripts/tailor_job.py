@@ -25,7 +25,8 @@ load_dotenv(ROOT / ".env")
 import sys
 sys.path.insert(0, str(ROOT / "scripts"))
 from validate_resume import validate
-from llm import call_llm  # noqa: E402 -- LLM endpoint/model/retry config, .env-driven
+from llm import call_llm, validate_local_setup  # noqa: E402 -- LLM endpoint/model/retry config, .env-driven
+from job_links import canonical_link  # noqa: E402
 
 TAILOR_PROMPT = """You are tailoring a candidate's resume to a specific job posting.
 
@@ -147,6 +148,7 @@ def build_and_upload_resume(markdown_path, folder_id, tmp_pdf_path):
 if __name__ == "__main__":
     import artifacts
 
+    validate_local_setup()  # no-op unless LOCAL_MODE=true; fails loudly, never falls back to cloud
     parent_folder_id = os.environ["google_drive_folder_id"]
     resume_text = (ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8")
 
@@ -166,17 +168,23 @@ if __name__ == "__main__":
     # tailored + uploaded some of these jobs. Reuse those records verbatim --
     # re-tailoring would burn LLM calls and create duplicate Drive folders. Only
     # status == "saved" counts as done; flagged/errored jobs are retried. Keyed by
-    # job link, which is the pipeline's identity for a posting.
+    # *canonical* job link (tracking-param-stripped, see scripts/job_links.py) so a
+    # posting re-scraped on a different day with a new trackingId/position is still
+    # recognized as the same job and doesn't get a second Drive folder.
     previous = json.loads(out_path.read_text(encoding="utf-8")) if out_path.exists() else []
-    done = {r["link"]: r for r in previous if r.get("status") == "saved"}
-    by_link = dict(done)  # seed so a crash mid-run never drops an earlier run's work
+    by_link = {canonical_link(r["link"]): r for r in previous if r.get("status") == "saved"}
 
     for job in qualified:
         link = job["link"]
+        key = canonical_link(link)
         slug = slugify(job["title"])
         folder_name = f"{job['company']}-{slug}"
 
-        if link in done:
+        # Checked against the live dict, not a static pre-loop snapshot -- two
+        # qualified entries that canonicalize to the same job (e.g. both freshly
+        # scraped this run under different tracking params) must not both create a
+        # Drive folder; the second sees the first's "saved" write and skips.
+        if by_link.get(key, {}).get("status") == "saved":
             print(f"SKIP (already tailored) {folder_name}")
             continue
 
@@ -184,7 +192,7 @@ if __name__ == "__main__":
             text = tailor_text(job, resume_text)
             ok, reason = validate(text)
             if not ok:
-                by_link[link] = {**job, "status": "flagged_validation_failed", "reason": reason}
+                by_link[key] = {**job, "status": "flagged_validation_failed", "reason": reason}
                 print(f"FLAGGED {folder_name}: {reason}")
             else:
                 md_path = tailored_dir / f"{folder_name}.md"
@@ -194,14 +202,14 @@ if __name__ == "__main__":
                 tmp_pdf_path = tmp_dir / folder_name / "Akhil Dalali Resume.pdf"
                 resume_link = build_and_upload_resume(md_path, folder_id, tmp_pdf_path)
 
-                by_link[link] = {
+                by_link[key] = {
                     "title": job["title"], "company": job["company"], "link": link,
                     "score": job["score"], "drive_folder_link": folder_link,
                     "resume_link": resume_link, "status": "saved",
                 }
                 print(f"SAVED {folder_name}")
         except Exception as e:
-            by_link[link] = {**job, "status": "flagged_error", "reason": str(e)}
+            by_link[key] = {**job, "status": "flagged_error", "reason": str(e)}
             print(f"ERROR {folder_name}: {e}")
 
         out_path.write_text(json.dumps(list(by_link.values()), indent=2), encoding="utf-8")

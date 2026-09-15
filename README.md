@@ -112,6 +112,10 @@ Modal never uses this — `modal_app.py` refuses to run if `llm_base_url` is set
 models score tougher and are weaker at company research; use them to exercise the pipeline,
 not for real output.
 
+For scraping and processing more jobs per day than the cloud path's free-tier LLM quota allows
+(not just Modal-run recovery), see [Local High-Volume Mode](#local-high-volume-mode) below —
+`LOCAL_MODE=true` + `scripts/run_pipeline.py`.
+
 ## Running It
 
 Manually, step by step, in order:
@@ -196,6 +200,81 @@ pulls the newest copy before starting and pushes its progress back, so Modal and
 share the same state. Jobs are identified by their URL throughout, so nothing is scored, tailored,
 researched, or logged twice — every recovery run converges on the same Sheet. Set `artifact_sync=0`
 to turn the Drive mirror off (pure-local development without Google auth still works).
+
+## Local High-Volume Mode
+
+Two ways to run this pipeline:
+
+| | Cloud (Modal cron) | Local high-volume (`LOCAL_MODE=true`) |
+|---|---|---|
+| Trigger | Modal scheduled cron, unattended | You, manually, on your own machine |
+| Jobs/run | 10 (`JOB_LIMIT`) | 50 (`LOCAL_JOB_LIMIT`) by default |
+| LLM provider | Groq → OpenRouter `:free` → Gemini | Ollama only, no cloud calls, no fallback |
+| Why the different job count | OpenRouter's free-tier ~50-req/day cap (score+tailor+research share it — see [`scripts/llm.py`](scripts/llm.py) COST NOTES) | No such cap — Ollama has no daily quota; the real ceiling is your machine's compute time |
+| Drive / Sheet | Same `pipeline-artifacts` mirror, same master "Job Application Tracker" | Same — identical dedup by job URL, no separate sheet or folder tree |
+
+Local mode is for scraping and processing more jobs per day than the cloud path's free-tier
+LLM quota allows, entirely on your own hardware — not just Modal-run recovery (though it works
+for that too; see [Recovering a failed daily run](#recovering-a-failed-daily-run) below).
+
+**Setup:**
+
+```bash
+ollama serve                    # in another terminal, if not already running
+ollama pull qwen2.5:7b          # once
+```
+
+**Linux/macOS:**
+
+```bash
+LOCAL_MODE=true LOCAL_JOB_LIMIT=50 python3 scripts/run_pipeline.py
+```
+
+**Windows PowerShell:**
+
+```powershell
+$env:LOCAL_MODE = "true"
+$env:LOCAL_JOB_LIMIT = "50"
+python scripts/run_pipeline.py
+```
+
+Or set `LOCAL_MODE=true` (and optionally `LOCAL_JOB_LIMIT`, `LLM_MODEL`) in `.env` instead of the
+shell, then just run `python3 scripts/run_pipeline.py` / `python scripts/run_pipeline.py`.
+
+`scripts/run_pipeline.py` is a thin wrapper — it runs the exact same five scripts, in the same
+order, as `modal_app.py`'s cloud path, and imports the same `reconcile_qualified` no-silent-failure
+guard rather than reimplementing it, so the two paths can't drift. Provider selection and job
+limit are the only things that differ, both resolved from `LOCAL_MODE` inside
+[`scripts/llm.py`](scripts/llm.py) and [`scripts/scrape_jobs.py`](scripts/scrape_jobs.py).
+
+At startup, `LOCAL_MODE=true` verifies Ollama is actually reachable and the configured model is
+pulled — and **fails loudly with an actionable error instead of silently falling back to a cloud
+provider** if not:
+
+```
+Ollama endpoint http://localhost:11434/v1 is not reachable (ConnectionError: ...).
+Start it with:
+    ollama serve
+```
+
+or
+
+```
+Ollama model 'qwen2.5:7b' is not available. Run:
+    ollama pull qwen2.5:7b
+```
+
+It's still resume-safe at any scale — if a 50-job local run stops partway (e.g. after 27/50
+scored), rerunning `scripts/run_pipeline.py` picks up exactly where it left off (same
+`output/*.json` artifacts, same Drive mirror, same job-URL dedup as the cloud path — see
+[Recovering a failed daily run](#recovering-a-failed-daily-run)) instead of redoing completed work
+or creating duplicate Sheet rows / Drive folders.
+
+To force a fresh Apify scrape instead of reusing today's cached `raw_jobs.json` (the default,
+6-hour cache still applies — see `scrape_jobs.py`), set `FORCE_SCRAPE=true` or pass `--force`.
+
+Small local models score tougher and are weaker at company research than the cloud chain; that's
+expected, not a bug.
 
 ## Telegram Failure Alerts
 

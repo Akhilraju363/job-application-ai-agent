@@ -16,7 +16,8 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from llm import call_llm, PROVIDER_SUMMARY  # noqa: E402
+from llm import call_llm, PROVIDER_SUMMARY, validate_local_setup  # noqa: E402
+from job_links import canonical_link  # noqa: E402
 
 QUALIFY_CUTOFF = 8
 
@@ -89,6 +90,7 @@ def score_jobs(jobs, resume_text, out_path=None, scored=None, on_progress=None):
 if __name__ == "__main__":
     import artifacts
 
+    validate_local_setup()  # no-op unless LOCAL_MODE=true; fails loudly, never falls back to cloud
     resume_text = (ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8")
 
     # Recovery: reuse whatever a failed earlier run already scraped/scored so a
@@ -100,8 +102,11 @@ if __name__ == "__main__":
     out_path = ROOT / "output" / "scored_jobs.json"
 
     already_scored = json.loads(out_path.read_text(encoding="utf-8")) if out_path.exists() else []
-    done_links = {j["link"] for j in already_scored}
-    remaining = [j for j in jobs if j["link"] not in done_links]
+    # Canonical (tracking-param-stripped) link, not the raw one -- a job re-scraped on a
+    # different day with a new trackingId/position is still the same posting. See
+    # scripts/job_links.py.
+    done_links = {canonical_link(j["link"]) for j in already_scored}
+    remaining = [j for j in jobs if canonical_link(j["link"]) not in done_links]
     if already_scored:
         print(f"Resuming: {len(already_scored)}/{len(jobs)} already scored, {len(remaining)} left")
 

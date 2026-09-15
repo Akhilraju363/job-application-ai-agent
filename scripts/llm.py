@@ -3,13 +3,19 @@
 Free-only by design. There is no paid model, no OpenRouter credit, no billing-enabled
 fallback anywhere in here -- see COST NOTES at the bottom.
 
-Two modes, selected automatically:
+Two modes, selected explicitly (never inferred just because Ollama happens to be
+installed):
 
-  LOCAL (recovery)   -- `llm_base_url` is set in .env (e.g. http://localhost:11434/v1).
-                        One provider, no failover chain, no request spacing, no cloud
-                        calls. This is the Ollama recovery path.
+  LOCAL (recovery / high-volume) -- `LOCAL_MODE=true`, or `llm_base_url` set directly
+                        (e.g. http://localhost:11434/v1 -- the older recovery
+                        convention, still supported). One provider, no failover chain,
+                        no cloud calls, ever -- see validate_local_setup(). This is the
+                        Ollama path, used both to recover a failed Modal run and for
+                        local high-volume runs (scripts/run_pipeline.py) that scrape
+                        more jobs than OpenRouter's free-tier daily quota would allow.
 
-  CLOUD (Modal cron) -- `llm_base_url` is NOT set. Builds a failover chain from whichever
+  CLOUD (Modal cron) -- LOCAL_MODE unset/false and `llm_base_url` NOT set. Builds a
+                        failover chain from whichever
                         of these API keys are present, in `llm_provider_order`:
 
     groq        api.groq.com/openai/v1            GROQ_API_KEY
@@ -38,6 +44,7 @@ Config (.env / Modal secret), all optional:
                             free chat models here answer in ~5-40s, so a longer wait means
                             a hung connection -- cut it and fail over rather than sit on it
   llm_groq_model / llm_openrouter_model / llm_gemini_model -- override the model per provider
+  LOCAL_MODE                default false -- explicit local-mode switch (see above)
   llm_base_url / llm_model / llm_api_key -- LOCAL mode only (Ollama)
 """
 import json
@@ -52,8 +59,18 @@ import requests
 REQUEST_DEADLINE = int(os.environ.get("llm_request_deadline", "120"))
 MAX_RETRIES = max(1, int(os.environ.get("llm_max_retries", "2")))
 
+# Explicit local high-volume switch. Distinct from (but compatible with) the older
+# recovery convention of just setting llm_base_url directly -- see "Recovering a failed
+# daily run" in README. LOCAL_MODE=true additionally defaults llm_base_url to the
+# standard local Ollama endpoint when it isn't set, and gates validate_local_setup()
+# below. It never silently infers local mode from Ollama merely being installed --
+# either llm_base_url or LOCAL_MODE must be set explicitly.
+LOCAL_MODE = os.environ.get("LOCAL_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+
 _LOCAL_BASE_URL = os.environ.get("llm_base_url", "").strip()
-IS_LOCAL = bool(_LOCAL_BASE_URL)
+if LOCAL_MODE and not _LOCAL_BASE_URL:
+    _LOCAL_BASE_URL = "http://localhost:11434/v1"
+IS_LOCAL = LOCAL_MODE or bool(_LOCAL_BASE_URL)
 
 # name -> (base_url, (api-key env names, first hit wins), default model, model-override env)
 _PROVIDER_SPECS = {
@@ -103,6 +120,42 @@ PROVIDERS = _build_providers()
 MODEL = PROVIDERS[0]["model"] if PROVIDERS else "(no provider configured)"
 FALLBACK_MODEL = PROVIDERS[1]["model"] if len(PROVIDERS) > 1 else ""
 PROVIDER_SUMMARY = " -> ".join(f"{p['name']}/{p['model']}" for p in PROVIDERS) or "(no provider configured)"
+
+
+def validate_local_setup():
+    """LOCAL_MODE startup gate: verify Ollama is actually reachable and the configured
+    model is pulled, failing loudly with an actionable message otherwise. Never falls
+    back to a cloud provider on failure -- that would defeat the point of local mode.
+    No-op (returns immediately) when LOCAL_MODE is off.
+
+    Call this once, early, from a local entrypoint (run_pipeline.py, or a script's own
+    __main__) before any call_llm() -- not at import time, so it stays easy to mock in
+    tests and doesn't fire for scripts that don't touch the LLM (e.g. scrape_jobs.py).
+    """
+    if not LOCAL_MODE:
+        return
+    if not _LOCAL_BASE_URL:
+        raise RuntimeError(
+            "LOCAL_MODE=true but no Ollama endpoint is configured. Set llm_base_url "
+            "(default: http://localhost:11434/v1)."
+        )
+    base = _LOCAL_BASE_URL.rstrip("/")
+    model = PROVIDERS[0]["model"] if PROVIDERS else (os.environ.get("llm_model") or "qwen2.5:7b")
+    try:
+        resp = requests.get(f"{base}/models", timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(
+            f"Ollama endpoint {base} is not reachable ({type(e).__name__}: {e}).\n"
+            f"Start it with:\n    ollama serve"
+        ) from e
+    try:
+        available = {m.get("id") for m in resp.json().get("data", [])}
+    except Exception as e:
+        raise RuntimeError(f"Ollama endpoint {base} returned an unexpected response: {e}") from e
+    if model not in available:
+        raise RuntimeError(f"Ollama model '{model}' is not available. Run:\n    ollama pull {model}")
+    print(f"Ollama endpoint: {base}\nOllama model: {model}\nLocal mode: enabled")
 
 
 class AllProvidersFailed(RuntimeError):
