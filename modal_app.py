@@ -68,7 +68,7 @@ image = (
     # other failure, well before this outer timeout could ever be hit.
     timeout=21600,
 )
-def run_pipeline():
+def run_pipeline(force: bool = False):
     import json
     import os
     import subprocess
@@ -125,16 +125,17 @@ def run_pipeline():
                                "GROQ_API_KEY (see scripts/llm.py).")
         print(f"LLM providers available: {provider_keys}")
 
-        def run(script, timeout):
+        def run(script, timeout, args=None):
             stage["name"] = script
             print(f"--- {script} ---")
-            subprocess.run(["python3", f"scripts/{script}"], check=True, cwd=workdir, timeout=timeout)
+            cmd = ["python3", f"scripts/{script}", *(args or [])]
+            subprocess.run(cmd, check=True, cwd=workdir, timeout=timeout)
 
         # Per-step timeouts sized generously for the free-provider chain: each job may walk
         # groq -> openrouter -> gemini, each with retries/backoff (see scripts/llm.py), plus
         # llm_request_delay_seconds spacing between calls. Worst case is minutes/job; these
         # caps are the outer bound before the step is killed and alerted.
-        run("scrape_jobs.py", timeout=600)
+        run("scrape_jobs.py", timeout=600, args=["--force"] if force else None)
         run("score_jobs.py", timeout=6000)
         run("tailor_job.py", timeout=7200)
         run("company_research.py", timeout=5400)
@@ -174,5 +175,5 @@ def run_pipeline():
 
 
 @app.local_entrypoint()
-def main():
-    run_pipeline.remote()
+def main(force: bool = False):
+    run_pipeline.remote(force=force)
