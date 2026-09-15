@@ -8,7 +8,13 @@ folder (Modal has no access to the local Desktop), linked from the Sheet.
 Deploy:  modal deploy modal_app.py
 Test:    modal run modal_app.py
 """
+import sys
+from pathlib import Path
+
 import modal
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
+from job_links import canonical_link  # noqa: E402
 
 app = modal.App("job-apply-agent")
 
@@ -17,15 +23,19 @@ def reconcile_qualified(scored, tailored):
     """Return (unmet_links, reason_by_link): qualified jobs with no saved resume.
 
     Pure function so the no-silent-failure guard is unit-testable. Empty unmet == the
-    run genuinely delivered every qualifying job. Keyed by job link (the pipeline's
-    identity for a posting) so a job saved on an earlier run still counts as met.
+    run genuinely delivered every qualifying job. Compared by *canonical* link
+    (tracking-param-stripped, see scripts/job_links.py), not the raw one -- a posting
+    re-scraped on a different day gets a new trackingId/position but is still the same
+    job, and tailor_job.py correctly skips creating a second Drive folder for it, so
+    that must not read here as "no saved resume". A job saved on an earlier run still
+    counts as met either way.
     """
-    qualified_links = {j["link"] for j in scored if j.get("qualified")}
-    saved_links = {j["link"] for j in tailored if j.get("status") == "saved"}
+    qualified_links = {canonical_link(j["link"]) for j in scored if j.get("qualified")}
+    saved_links = {canonical_link(j["link"]) for j in tailored if j.get("status") == "saved"}
     unmet = qualified_links - saved_links
     reason_by_link = {
-        j["link"]: j.get("reason", j.get("status", "no tailored_jobs entry"))
-        for j in tailored if j.get("link") in unmet
+        canonical_link(j["link"]): j.get("reason", j.get("status", "no tailored_jobs entry"))
+        for j in tailored if canonical_link(j.get("link")) in unmet
     }
     return unmet, reason_by_link
 

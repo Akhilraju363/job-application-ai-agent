@@ -81,6 +81,7 @@ job-apply-agent/
     validate_resume.py       # shared validation logic
     llm.py                    # provider-aware chat client: free cloud chain (Groq->OpenRouter->Gemini) or local Ollama
     artifacts.py              # best-effort Drive mirror of stage JSON, for cross-machine resume
+    run_pipeline.py            # LOCAL_MODE=true entrypoint: same 5 scripts in order, local high-volume runs
   tests/test_llm.py           # stdlib unittest: provider failover, 429/404/timeout/JSON handling, reconciliation
   output/                    # gitignored — raw/scored/tailored job data + .artifact_sync.json sidecar
   modal_app.py                # scheduled entrypoint
@@ -137,15 +138,28 @@ filename, an absolute path is rejected.
   fenced/prose-wrapped JSON) so a bad response fails over instead of corrupting an artifact.
   `llm_request_delay_seconds` (default 5s) spaces calls to avoid burst 429s.
 
-- **Local (recovery)** — set `llm_base_url` in `.env` (e.g. `http://localhost:11434/v1`).
-  Single provider, no chain, no cloud calls. This is the Ollama path. **Modal must never set
-  `llm_base_url`** — `modal_app.py` refuses to run if it's present, and also refuses if no
-  provider key is configured (fail fast, before spending an Apify scrape).
+- **Local (recovery / high-volume)** — set `llm_base_url` directly (older recovery convention),
+  or `LOCAL_MODE=true` (defaults `llm_base_url` to `http://localhost:11434/v1` if unset). Single
+  provider, no chain, **no cloud calls ever** — `validate_local_setup()` checks Ollama is
+  reachable and the model is pulled at startup and fails loudly (naming the `ollama serve` /
+  `ollama pull <model>` fix) rather than silently falling back to Groq/OpenRouter/Gemini. This is
+  the Ollama path, run via `python3 scripts/run_pipeline.py` (or the individual scripts) with
+  `LOCAL_MODE=true`. **Modal must never set `llm_base_url` or `LOCAL_MODE`** — `modal_app.py`
+  refuses to run if `llm_base_url` is present, and also refuses if no provider key is configured
+  (fail fast, before spending an Apify scrape).
+
+Job count is also mode-dependent (`scripts/scrape_jobs.py`): cloud uses `JOB_LIMIT` (default 10,
+sized to OpenRouter's shared ~50-req/day free-tier cap); local uses `LOCAL_JOB_LIMIT` (default
+50 — no such cap applies to Ollama, the ceiling is local compute time). Never change the global
+scrape default to 50; the two limits are independent and the Modal cron must keep processing 10.
 
 Modal secret needs at least `GROQ_API_KEY` (plus optionally `GEMINI_API_KEY`);
 `open_router_apikey` is still read for back-compat.
 
-The pipeline is **resume-safe**, keyed by job link at every stage:
+The pipeline is **resume-safe**, keyed by job link at every stage — identically whether driven by
+`modal_app.py` (cloud) or `scripts/run_pipeline.py` (local): same artifacts, same Drive mirror,
+same Sheet, so a job that fails on one path can be finished by the other without duplicating
+Sheet rows or Drive folders:
 - `score_jobs.py` skips links already in `output/scored_jobs.json` (incremental write).
 - `tailor_job.py` skips jobs already `status:"saved"` in `output/tailored_jobs.json` — it does
   **not** re-tailor or re-create Drive folders for finished jobs.
