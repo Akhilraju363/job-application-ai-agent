@@ -11,7 +11,7 @@ Results-driven Software Engineer with 4+ years of experience in full-stack devel
 - Frameworks: Spring Boot, Hibernate, JPA, Angular, RxJS, Angular Material, FastAPI
 - Architecture: Microservices, RESTful APIs, Nx Monorepo
 - Databases: MySQL, Oracle, PostgreSQL
-- Cloud & DevOps: AWS, Docker, Kubernetes, CI/CD
+- Cloud & DevOps: AWS, Docker, Kubernetes, Jenkins, Maven, CI/CD
 - Testing: JUnit, Mockito
 - Tools: Git, GitHub, GitLab, SCSS
 
