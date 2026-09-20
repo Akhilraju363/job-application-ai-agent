@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,6 +28,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from validate_resume import validate
 from llm import call_llm, validate_local_setup  # noqa: E402 -- LLM endpoint/model/retry config, .env-driven
 from job_links import canonical_link  # noqa: E402
+from activity import log_event  # noqa: E402
 
 TAILOR_PROMPT = """You are tailoring a candidate's resume to a specific job posting.
 
@@ -40,7 +42,10 @@ Preserve the section headers exactly: ## Summary, ## Skills, ## Experience, ## E
 - Skills: reorder so items matching the job's matched requirements appear first.
 - Experience: reorder/re-emphasize existing bullets toward what the job asks for. Do not alter
   dates, employers, titles, or the substance of any bullet -- only reorder bullets and lightly
-  reword phrasing, never metrics.
+  reword phrasing, never metrics. Never add or remove bullets, and never move a technology from
+  one employer's section to another (e.g. a language used at one job must not appear under a
+  different job). Keep every "###" role heading and its date line exactly as written.
+- Skills: only items already in the base resume's Skills section may appear.
 - Education and Certifications: carry over unchanged.
 
 Respond with ONLY the tailored resume in markdown, no commentary, no code fences.
@@ -84,7 +89,7 @@ def slugify(title):
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", title.lower())).strip("-")
 
 
-def tailor_text(job, resume_text):
+def tailor_text(job, resume_text, feedback=""):
     prompt = (
         TAILOR_PROMPT
         .replace("__RESUME__", resume_text)
@@ -94,6 +99,9 @@ def tailor_text(job, resume_text):
         .replace("__MISSING__", ", ".join(job.get("missing_must_haves", [])))
         .replace("__DESCRIPTION__", str(job.get("description")))
     )
+    if feedback:
+        prompt += ("\nYOUR PREVIOUS ATTEMPT WAS REJECTED for these reasons -- fix every one, keeping "
+                   "to the hard rule:\n" + feedback + "\n")
     return call_llm(prompt, job.get("title"))
 
 
@@ -107,30 +115,43 @@ def create_job_folder(company, slug, parent_folder_id):
     return folder["id"], folder["webViewLink"]
 
 
-def build_and_upload_resume(markdown_path, folder_id, tmp_pdf_path):
+def export_doc_file(markdown_path, out_path, mime_type="application/pdf"):
+    """Markdown -> formatted Google Doc -> exported file at out_path (PDF by default; pass the
+    DOCX mime type for Word). The intermediate Doc is always deleted. Shared by the Drive
+    pipeline below and the dashboard's Download PDF/DOCX."""
     doc = gws("docs", "documents", "create", "--json",
               json.dumps({"title": "Akhil Dalali Resume"}))
     doc_id = doc["documentId"]
+    try:
+        subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "format_resume_doc.py"), str(markdown_path), doc_id],
+            check=True,
+        )
 
-    subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "format_resume_doc.py"), str(markdown_path), doc_id],
-        check=True,
-    )
+        export_dir = out_path.parent
+        export_dir.mkdir(parents=True, exist_ok=True)
+        # macOS /tmp is a symlink to /private/tmp -- gws resolves the upload path to its
+        # real location but compares it against the unresolved cwd, so the sandbox check
+        # fails unless we resolve symlinks here too before either subprocess call.
+        export_dir = export_dir.resolve()
+        result = subprocess.run(
+            [*GWS_CMD, "drive", "files", "export", "--params",
+             json.dumps({"fileId": doc_id, "mimeType": mime_type}),
+             "--output", out_path.name],
+            cwd=export_dir, capture_output=True, text=True, encoding="utf-8",
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"export failed: {result.stderr}")
+    finally:
+        try:
+            gws("drive", "files", "delete", "--params", json.dumps({"fileId": doc_id}))
+        except Exception:  # noqa: BLE001 -- a leaked scratch Doc must not mask the real error
+            pass
 
-    export_dir = tmp_pdf_path.parent
-    export_dir.mkdir(parents=True, exist_ok=True)
-    # macOS /tmp is a symlink to /private/tmp -- gws resolves the upload path to its
-    # real location but compares it against the unresolved cwd, so the sandbox check
-    # fails unless we resolve symlinks here too before either subprocess call.
-    export_dir = export_dir.resolve()
-    result = subprocess.run(
-        [*GWS_CMD, "drive", "files", "export", "--params",
-         json.dumps({"fileId": doc_id, "mimeType": "application/pdf"}),
-         "--output", tmp_pdf_path.name],
-        cwd=export_dir, capture_output=True, text=True, encoding="utf-8",
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"export failed: {result.stderr}")
+
+def build_and_upload_resume(markdown_path, folder_id, tmp_pdf_path):
+    export_doc_file(markdown_path, tmp_pdf_path)
+    export_dir = tmp_pdf_path.parent.resolve()
 
     uploaded = gws("drive", "files", "create", "--params", json.dumps({"fields": "id,webViewLink"}),
                     "--json", json.dumps({
@@ -139,8 +160,6 @@ def build_and_upload_resume(markdown_path, folder_id, tmp_pdf_path):
                     }),
                     "--upload", tmp_pdf_path.name,
                     cwd=export_dir)
-
-    gws("drive", "files", "delete", "--params", json.dumps({"fileId": doc_id}))
 
     return uploaded["webViewLink"]
 
@@ -206,8 +225,11 @@ if __name__ == "__main__":
                     "title": job["title"], "company": job["company"], "link": link,
                     "score": job["score"], "drive_folder_link": folder_link,
                     "resume_link": resume_link, "status": "saved",
+                    "tailored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 }
                 print(f"SAVED {folder_name}")
+                log_event("resume_tailored", f"Resume tailored for {job['company']} - {job['title']}",
+                          company=job["company"], title=job["title"], link=link, source="pipeline")
         except Exception as e:
             by_link[key] = {**job, "status": "flagged_error", "reason": str(e)}
             print(f"ERROR {folder_name}: {e}")

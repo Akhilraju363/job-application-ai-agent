@@ -18,6 +18,7 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from llm import call_llm, PROVIDER_SUMMARY, validate_local_setup  # noqa: E402
 from job_links import canonical_link  # noqa: E402
+from activity import log_event  # noqa: E402
 
 QUALIFY_CUTOFF = 8
 
@@ -126,3 +127,6 @@ if __name__ == "__main__":
 
     qualified_count = sum(1 for j in scored if j["qualified"])
     print(f"{len(scored)} scraped, {qualified_count} qualified -> {out_path}")
+    log_event("jobs_scored", f"Scored {len(scored) - len(already_scored)} jobs "
+              f"({qualified_count} of {len(scored)} qualified at 8+)",
+              scored=len(scored) - len(already_scored), qualified=qualified_count, total=len(scored))

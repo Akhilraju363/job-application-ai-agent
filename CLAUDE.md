@@ -82,6 +82,14 @@ job-apply-agent/
     llm.py                    # provider-aware chat client: free cloud chain (Groq->OpenRouter->Gemini) or local Ollama
     artifacts.py              # best-effort Drive mirror of stage JSON, for cross-machine resume
     run_pipeline.py            # LOCAL_MODE=true entrypoint: same 5 scripts in order, local high-volume runs
+    tailoring_service.py     # ONE shared tailor path (manual JD + scraped job): analyze -> match -> tailor_job.tailor_text -> verify
+    jd_analysis.py           # JD sanitising, LLM requirement extraction, code-verified match vs base resume
+    no_fabrication.py        # verifier: rejects invented tech/employers/dates/numbers; reorder-only fallback lives in tailoring_service
+    resume_store.py          # output/generated_resumes/<id>/ (versions, exports)
+    tracker_service.py       # cached, failure-tolerant wrapper over write_sheet.py
+    dashboard_data.py / dashboard_tasks.py / dashboard_server.py   # dashboard read models, background tasks, stdlib HTTP server
+    activity.py / paths.py   # activity log (output/activity_log.jsonl), shared paths
+  web/                       # dashboard SPA (plain ES modules, no build); web/tests = node --test
   tests/test_llm.py           # stdlib unittest: provider failover, 429/404/timeout/JSON handling, reconciliation
   output/                    # gitignored — raw/scored/tailored job data + .artifact_sync.json sidecar
   modal_app.py                # scheduled entrypoint
@@ -185,3 +193,12 @@ Ollama run pick up a failed Modal run's state. `PIPELINE_DATE=YYYY-MM-DD` target
   the allowed tools.
 - Modal: scheduled function deploys, manual trigger runs end to end, forced failure produces the
   named Telegram alert.
+
+## Dashboard (built)
+
+`python scripts/dashboard_server.py` serves `web/` plus a JSON API over the existing artifacts and
+the tracker Sheet. Manual-JD and scraped-job tailoring both go through `tailoring_service.tailor_resume()` (-> `tailor()`)
+(reusing `tailor_job.tailor_text`, `validate_resume.validate`, `llm.call_llm`). Hard rules still
+apply: `no_fabrication.check_no_fabrication` gates every export and tracker save; the automated
+pipeline's 8+ cutoff is untouched (human-initiated dashboard actions may go below it, with a UI
+warning). Tests import `tests/fixtures.py` first, which disables `.env` loading.

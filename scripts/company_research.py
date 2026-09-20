@@ -15,6 +15,7 @@ load_dotenv(ROOT / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from llm import call_llm, validate_local_setup  # noqa: E402
+from activity import log_event  # noqa: E402
 
 RESEARCH_PROMPT = """Give 3-5 short talking points about __COMPANY__ useful for someone
 interviewing for a __TITLE__ role there -- what they do/their product, engineering culture
@@ -48,6 +49,8 @@ if __name__ == "__main__":
             job["company_notes"] = research_company(job["company"], job["title"])
             researched += 1
             print(f"researched {job['company']}")
+            log_event("company_research", f"Company research completed for {job['company']}",
+                      company=job["company"], title=job["title"], link=job.get("link"))
         except Exception as e:
             job["company_notes"] = ""
             print(f"ERROR researching {job['company']}: {e}")
