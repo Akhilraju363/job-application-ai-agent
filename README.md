@@ -139,6 +139,50 @@ Each stage writes a JSON artifact to `output/` (`raw_jobs.json` → `scored_jobs
 already in those artifacts instead of redoing it. See
 [Recovering a failed daily run](#recovering-a-failed-daily-run).
 
+## Dashboard
+
+An interactive UI over the same artifacts, Google Sheet and tailoring code the pipeline uses.
+It does not replace the Modal cron.
+
+```
+python scripts/dashboard_server.py --open      # http://127.0.0.1:8765
+```
+
+Pages: Dashboard, Find Jobs, **Tailor Resume** (`/tailor-resume`), Applications, Job Tracker,
+Job Alerts (search preferences), Settings. No new dependencies and no build step (stdlib server +
+plain ES modules).
+
+**JD -> tailored resume.** Paste any job description (or pick a scraped job and click Tailor). Both
+entry points call the same `scripts/tailoring_service.py`: extract requirements (LLM, via the
+existing provider chain) -> match against `resume/base_resume.md` in code -> tailor with the
+pipeline's own prompt -> verify -> store. Verification (`scripts/no_fabrication.py`) rejects any
+invented technology, employer, title, date, number or leadership claim, and any technology moved
+between employers. If the model's rewrite fails twice, a reorder-only version of the master resume
+is produced instead (clearly labelled). PDF/DOCX come from the same Google Doc export the pipeline
+uses (needs `gws` auth); Markdown is always available. Results live in `output/generated_resumes/`.
+
+**Entry point:** `tailoring_service.tailor_resume(job_description, job_title, company, job_url, source, job_id, user_id)`
+returns `{status, job, jd_analysis, match_analysis, resume, ats_validation, verification}`; also served at
+`GET /api/resumes/<id>/result`. A pasted JD and a scraped job (`job_id` set) differ only in that argument.
+
+**ATS score** = weighted, reproducible average of: required-skill coverage 30, keyword coverage 25, title
+relevance 10, structure 15, formatting 10, integrity (no unsupported claims) 10. It also lists missing and
+over-repeated keywords. It is a transparent heuristic, not a guarantee about any employer's ATS.
+
+**Duplicates:** the same job + JD + master-resume version reuses the existing verified resume (no LLM call);
+Regenerate always creates a new version (v2, v3...). The Sheet gets two extra columns, Resume ID and Match %.
+
+**Notes**
+- Application status lives in the Google Sheet (the tracker); the dashboard reads/writes it via
+  `write_sheet.py`. If Sheets is unreachable, tracker-backed cards show an error + Retry.
+- Human-initiated tailoring/saving works on any score. The automated pipeline's 8+ cutoff is
+  unchanged; the UI warns when you override it.
+- On a local model, resume generation can take minutes. In local mode the dashboard defaults
+  `llm_request_deadline` to 600s (override in `.env`).
+- Security: loopback only, Host/Origin checks, JSON-only writes, optional `DASHBOARD_TOKEN`,
+  secrets never serialised.
+- Tests: `python -m unittest discover -s tests` and `node --test "web/tests/*.test.mjs"`.
+
 ## Deploying (daily automatic run)
 
 ```bash

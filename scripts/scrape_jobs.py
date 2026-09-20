@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import time
+from datetime import date
 from pathlib import Path
 
 import requests
@@ -14,6 +15,10 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import paths  # noqa: E402
+from activity import log_event  # noqa: E402
 
 ACTOR_ID = "curious_coder~linkedin-jobs-scraper"
 RUN_URL = f"https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items"
@@ -45,6 +50,34 @@ def effective_job_limit():
     return LOCAL_JOB_LIMIT if LOCAL_MODE else JOB_LIMIT
 
 
+DEFAULT_KEYWORDS = "Full Stack Java Spring Boot Angular AWS Developer"
+DEFAULT_LOCATION = "India"
+DEFAULT_DATE_POSTED = "past24Hours"
+DATE_POSTED_OPTIONS = ("past24Hours", "pastWeek", "pastMonth")
+
+
+def load_preferences():
+    """Optional local search preferences saved from the dashboard's Job Alerts page
+    (output/preferences.json). Absent file == the defaults above, so the Modal cron (which
+    never has this file) is unaffected. The limit can only lower the mode's job cap."""
+    try:
+        raw = json.loads((paths.OUTPUT_DIR / "preferences.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    prefs = {
+        "keywords": str(raw.get("keywords") or DEFAULT_KEYWORDS).strip() or DEFAULT_KEYWORDS,
+        "location": str(raw.get("location") or DEFAULT_LOCATION).strip() or DEFAULT_LOCATION,
+        "date_posted": raw.get("date_posted") if raw.get("date_posted") in DATE_POSTED_OPTIONS
+        else DEFAULT_DATE_POSTED,
+    }
+    cap = effective_job_limit()
+    try:
+        prefs["limit"] = max(1, min(cap, int(raw.get("limit") or cap)))
+    except (TypeError, ValueError):
+        prefs["limit"] = cap
+    return prefs
+
+
 def scrape_jobs(keywords="Full Stack Java Spring Boot Angular AWS Developer", location="India", date_posted="past24Hours", limit=10):
     api_key = os.environ["apify_api_key"]
 
@@ -70,6 +103,9 @@ def scrape_jobs(keywords="Full Stack Java Spring Boot Angular AWS Developer", lo
             "link": job.get("link") or job.get("jobUrl") or job.get("url"),
             "description": job.get("descriptionText") or job.get("description"),
             "posted_date": job.get("postedDate") or job.get("postedAt") or job.get("publishedAt"),
+            "location": job.get("location") or job.get("jobLocation"),
+            "source": "LinkedIn",
+            "found_at": date.today().isoformat(),
         })
     return jobs
 
@@ -95,10 +131,13 @@ if __name__ == "__main__":
         artifacts.push("raw_jobs.json")
         sys.exit(0)
 
-    limit = effective_job_limit()
+    prefs = load_preferences()
+    limit = prefs["limit"]
     print(f"{'Local' if LOCAL_MODE else 'Cloud'} mode -- job limit: {limit}")
-    jobs = scrape_jobs(limit=limit)
+    jobs = scrape_jobs(keywords=prefs["keywords"], location=prefs["location"],
+                       date_posted=prefs["date_posted"], limit=limit)
     CACHE_PATH.parent.mkdir(exist_ok=True)
     CACHE_PATH.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
     artifacts.push("raw_jobs.json")
     print(f"Scraped {len(jobs)} jobs -> {CACHE_PATH}")
+    log_event("jobs_found", f"Found {len(jobs)} new jobs from LinkedIn", count=len(jobs), source="LinkedIn")
