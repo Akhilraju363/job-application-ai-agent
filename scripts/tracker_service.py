@@ -28,6 +28,10 @@ def _short(exc):
         else type(exc).__name__
 
 
+def _is_url(value):
+    return str(value or "").strip().lower().startswith(("https://", "http://"))
+
+
 class Tracker:
     def __init__(self):
         self._lock = threading.RLock()
@@ -79,14 +83,17 @@ class Tracker:
 
     def save_job(self, *, title, company, link, score, resume_path="", source="LinkedIn",
                  company_notes="", resume_id="", match_pct=None):
-        """Add one row (status "Not Applied"), or return the existing one -- never a duplicate."""
+        """Add one row (status "Not Applied"), or return the existing one -- never a duplicate.
+        `resume_path` is the resume's Google Drive URL (or empty); a local path is refused."""
+        if resume_path and not _is_url(resume_path):
+            raise ValueError("The tracker's resume link must be a Google Drive URL, not a local file path")
         try:
             sid = self._lookup_sheet_id(create=True)
             write_sheet.ensure_extra_headers(sid)
             rows = write_sheet.read_tracker(sid)
             existing = self._find(rows, link)
             if existing:
-                if resume_path and not existing["resume_path"]:
+                if resume_path and not _is_url(existing["resume_path"]):  # blank, or a legacy local path
                     write_sheet.update_range(sid, f"Sheet1!E{existing['row']}", [[resume_path]])
                     existing["resume_path"] = resume_path
                 self.invalidate()

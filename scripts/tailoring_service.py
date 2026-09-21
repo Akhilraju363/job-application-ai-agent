@@ -317,6 +317,9 @@ def to_result(rec, version=None):
 
     matching = jd_analysis._clean_list(m["skills"]["required_matched"] + m["skills"]["preferred_matched"]
                                        + m["skills"]["technologies_matched"], 60)
+    drive = v.get("drive") or {}
+    uploaded = [drive[f] for f in ("pdf", "docx") if (drive.get(f) or {}).get("status") == "uploaded"]
+    failed = [drive[f] for f in ("pdf", "docx") if (drive.get(f) or {}).get("status") == "failed"]
     return {
         "status": "completed" if val["ok"] else "blocked",
         "reused": bool(rec.get("reused")),
@@ -340,7 +343,9 @@ def to_result(rec, version=None):
             "notes": [n for n in (m.get("projects_note"), m.get("achievements_note")) if n]},
         "resume": {"id": rec["id"], "version": v["n"], "versions": len(versions), "kind": v["kind"],
                    "content": v.get("markdown", ""), "master_resume_version": rec.get("master_version"),
-                   "pdf_url": url("pdf"), "docx_url": url("docx")},
+                   "pdf_url": url("pdf"), "docx_url": url("docx"),
+                   "drive_url": uploaded[0]["url"] if uploaded else None,   # PDF first: the primary artifact
+                   "drive_error": failed[0]["error"] if failed else None},
         "ats_validation": {k: ats.get(k) for k in (
             "score", "keyword_coverage", "required_skill_coverage", "missing_keywords", "not_in_master_resume",
             "duplicate_keywords", "issues", "warnings", "components", "checks", "disclaimer")},

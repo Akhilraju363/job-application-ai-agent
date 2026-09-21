@@ -347,7 +347,7 @@ class TrackerSave(unittest.TestCase):
 
     def test_row_carries_job_source_score_resume_id_and_match(self):
         out = self.tr.save_job(title="Java Dev", company="Acme", link="https://acme.example/1", score=8,
-                               resume_path="output/generated_resumes/x/v1.pdf", source="Naukri",
+                               resume_path="https://drive.google.com/file/d/ABC123/view", source="Naukri",
                                resume_id="abcdef012345-v1", match_pct=79)
         self.assertEqual(out["result"], "added")
         (row,) = self.appended
@@ -355,16 +355,16 @@ class TrackerSave(unittest.TestCase):
         got = dict(zip(write_sheet.HEADERS, row))
         self.assertEqual((got["Job Title"], got["Company"], got["Job Link"], got["Fit Score"], got["Status"], got["Source"]),
                          ("Java Dev", "Acme", "https://acme.example/1", "8", "Not Applied", "Naukri"))
-        self.assertEqual((got["Resume Path"], got["Resume ID"], got["Match %"]), ("output/generated_resumes/x/v1.pdf", "abcdef012345-v1", "79"))
+        self.assertEqual((got["Resume Path"], got["Resume ID"], got["Match %"]), ("https://drive.google.com/file/d/ABC123/view", "abcdef012345-v1", "79"))
         self.assertRegex(got["Timestamp"], r"^\d{4}-\d{2}-\d{2}$")
 
     def test_no_duplicate_rows_and_missing_resume_path_is_filled_in(self):
         self.rows = [{"row": 5, "title": "Java Dev", "company": "Acme", "link": "https://acme.example/1?trackingId=zzz", "resume_path": "",
                       "status": "Applied"}]
-        out = self.tr.save_job(title="Java Dev", company="Acme", link="https://acme.example/1?trackingId=NEW", score=8, resume_path="p.md")
+        out = self.tr.save_job(title="Java Dev", company="Acme", link="https://acme.example/1?trackingId=NEW", score=8, resume_path="https://drive.google.com/file/d/P1/view")
         self.assertEqual(out["result"], "exists")
         self.assertEqual(self.appended, [])
-        self.assertEqual(self.updates, [("Sheet1!E5", [["p.md"]])])
+        self.assertEqual(self.updates, [("Sheet1!E5", [["https://drive.google.com/file/d/P1/view"]])])
 
     def test_sheet_failure_is_a_tracker_error_with_a_useful_message(self):
         with mock.patch.object(write_sheet, "append_rows", side_effect=RuntimeError("gws sheets +append failed: not signed in")):

@@ -115,3 +115,52 @@ def reorder_bullets(md):
         out.append(line)
     out.extend(reversed(bullets))
     return "\n".join(out) + "\n"
+
+
+class FakeDrive:
+    """In-memory stand-in for the `gws drive files list/create` calls drive_resumes makes.
+    Pass an instance as the side_effect of a patched drive_resumes._gws; it records every call and
+    every created file (with appProperties), so tests can assert what would exist in Drive."""
+
+    def __init__(self, fail=None):
+        self.files, self.calls, self.uploads, self.fail, self._n = [], [], [], fail, 0
+        self.fail_after_create = 0  # N creates land on "Drive" and then raise, simulating a lost response
+
+    def __call__(self, args, cwd=None):
+        import json
+        import re
+        self.calls.append(list(args))
+        if self.fail:
+            raise RuntimeError(self.fail)
+        params = json.loads(args[args.index("--params") + 1])
+        body = json.loads(args[args.index("--json") + 1]) if "--json" in args else {}
+        if args[2] == "list":
+            q = params["q"]
+            if "appProperties has" in q:
+                value = re.search(r"value='([^']*)'", q).group(1)
+                hits = [f for f in self.files if f.get("appProperties", {}).get("resume_key") == value]
+            else:
+                name, parent = re.search(r"name = '([^']*)'", q).group(1), re.search(r"'([^']*)' in parents", q).group(1)
+                hits = [f for f in self.files if f["name"] == name and parent in f["parents"] and f.get("folder")]
+            return {"files": [dict(f) for f in hits]}
+        self._n += 1
+        f = {"id": f"ID{self._n}", "name": body["name"], "parents": body.get("parents", []),
+             "appProperties": body.get("appProperties", {})}
+        if body.get("mimeType") == "application/vnd.google-apps.folder":
+            f["folder"] = True
+        else:
+            assert "--upload" in args and (Path(cwd) / args[args.index("--upload") + 1]).exists(), "upload file must exist in cwd"
+            f["webViewLink"] = f"https://drive.google.com/file/d/ID{self._n}/view?usp=drivesdk"
+            self.uploads.append({"name": f["name"], "content_type": args[args.index("--upload-content-type") + 1],
+                                 "cwd": cwd})
+        self.files.append(f)
+        if not f.get("folder") and self.fail_after_create > 0:
+            self.fail_after_create -= 1
+            raise RuntimeError("connection reset after upload")
+        return {k: v for k, v in f.items() if k in ("id", "name", "parents", "webViewLink")}
+
+    def resume_files(self):
+        return [f for f in self.files if not f.get("folder")]
+
+    def folders(self):
+        return [f for f in self.files if f.get("folder")]

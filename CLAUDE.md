@@ -202,3 +202,10 @@ the tracker Sheet. Manual-JD and scraped-job tailoring both go through `tailorin
 apply: `no_fabrication.check_no_fabrication` gates every export and tracker save; the automated
 pipeline's 8+ cutoff is untouched (human-initiated dashboard actions may go below it, with a UI
 warning). Tests import `tests/fixtures.py` first, which disables `.env` loading.
+
+**Resumes live in Google Drive, not local paths.** `scripts/drive_resumes.py` uploads each exported
+PDF/DOCX (`{resume_id}-v{n}.{ext}`) to `google_drive_folder_id/{company}-{title-slug}/` through the
+existing `gws` auth, idempotently (keyed by resume_id + version + format in the file's `appProperties`,
+so retries reuse the file). The tracker's Resume column always gets the PDF's Drive URL;
+`tracker_service.save_job` refuses a local path, and a failed upload blocks the row instead of falling
+back. `output/generated_resumes/` stays as the local cache/download source.
