@@ -22,6 +22,7 @@ for _scripts_dir in (Path(__file__).resolve().parent / "scripts", Path(SCRIPTS_R
     if _scripts_dir.is_dir():
         sys.path.insert(0, str(_scripts_dir))
 from job_links import canonical_link  # noqa: E402
+import dashboard_auth  # noqa: E402
 import logging_config as lc  # noqa: E402
 
 log = lc.get_logger("pipeline")
@@ -100,11 +101,14 @@ def validate_dashboard_config(env):
     """Fail-fast startup checks for the dashboard (pure, so they are unit-testable).
 
     The dashboard exposes the real resume, tracker and Drive links, so it must never come up
-    unauthenticated or with Host-header validation off. Raises RuntimeError naming the fix.
+    without sign-in credentials or with Host-header validation off. Raises RuntimeError naming the
+    fix (variable names only -- never a value).
     """
-    if not (env.get("DASHBOARD_TOKEN") or "").strip():
-        raise RuntimeError("DASHBOARD_TOKEN is not set in the Modal secret -- refusing to serve the "
-                           "dashboard unauthenticated. Add a long random token to job-apply-agent-dashboard-secrets.")
+    try:
+        dashboard_auth.require_config(env)  # DASHBOARD_USERNAME + a well-formed DASHBOARD_PASSWORD_HASH
+    except dashboard_auth.ConfigError as e:
+        raise RuntimeError(f"{e} Set them in job-apply-agent-dashboard-secrets "
+                           "(scripts/create_dashboard_password_hash.py generates them).") from None
     if not (env.get("DASHBOARD_ALLOWED_HOSTS") or "").strip():
         raise RuntimeError("DASHBOARD_ALLOWED_HOSTS is not set in the Modal secrets -- add the deployed "
                            "*.modal.run hostname without https:// (the Host-header check would reject every request).")
@@ -244,8 +248,9 @@ def run_pipeline(force: bool = False):
     secrets=[
         modal.Secret.from_name("job-apply-agent-secrets"),
         modal.Secret.from_name("gws-credentials"),
-        # Dashboard-only keys (DASHBOARD_TOKEN, DASHBOARD_ALLOWED_HOSTS). Kept out of the shared
-        # secret so adding them never means re-listing (and risking) the pipeline's API keys.
+        # Dashboard-only keys (DASHBOARD_USERNAME, DASHBOARD_PASSWORD_HASH, DASHBOARD_ALLOWED_HOSTS).
+        # Kept out of the shared secret so changing them never means re-listing (and risking) the
+        # pipeline's API keys. The cron does not read this secret and never needs a dashboard login.
         modal.Secret.from_name("job-apply-agent-dashboard-secrets"),
     ],
     volumes={"/app/output": dashboard_volume},
@@ -262,11 +267,12 @@ def run_pipeline(force: bool = False):
 def dashboard():
     """Serves web/ + the JSON API (scripts/dashboard_server.py) at the function's modal.run URL.
 
-    Required in job-apply-agent-dashboard-secrets:
-      DASHBOARD_TOKEN          bearer token the UI prompts for -- the server refuses to start
-                               without it, since this exposes the real resume and tracker.
-      DASHBOARD_ALLOWED_HOSTS  the deployed hostname (e.g. <workspace>--job-apply-agent-dashboard.modal.run);
-                               known only after the first deploy, then add it and redeploy.
+    Required in job-apply-agent-dashboard-secrets (the server refuses to start without them, since
+    this exposes the real resume and tracker):
+      DASHBOARD_USERNAME       the one sign-in account
+      DASHBOARD_PASSWORD_HASH  salted PBKDF2 hash (scripts/create_dashboard_password_hash.py) -- never the password
+      DASHBOARD_ALLOWED_HOSTS  the deployed hostname (e.g. <workspace>--job-apply-agent-dashboard.modal.run)
+    Sessions are server-side and mirrored to the Volume; see scripts/dashboard_auth.py.
     """
     import os
     import threading
@@ -280,16 +286,23 @@ def dashboard():
     try:
         validate_dashboard_config(os.environ)
     except RuntimeError as e:
+        lc.get_logger("auth").critical("auth_config_error", extra={"reason": str(e)})
         dashboard_log.critical("Dashboard configuration invalid", extra={"reason": str(e)})
         raise
     dashboard_log.info("Dashboard configuration validated")
+    if os.environ.get("DASHBOARD_TOKEN"):
+        dashboard_log.warning("Legacy DASHBOARD_TOKEN is set but no longer used for sign-in; remove it from the secret")
+    # Behind Modal's HTTPS proxy: session cookies are Secure and the client address (for the login
+    # rate limiter) comes from the proxy's X-Forwarded-For. Local development leaves both off.
+    os.environ.setdefault("DASHBOARD_COOKIE_SECURE", "1")
+    os.environ.setdefault("DASHBOARD_TRUST_PROXY", "1")
 
     materialize_gws_credentials()
     dashboard_log.info("Output directory initialized", extra={"path": "/app/output"})
 
     import dashboard_server  # noqa: E402 -- needs SCRIPTS_REMOTE_PATH on sys.path (set at top)
 
-    server = dashboard_server.make_server("0.0.0.0", DASHBOARD_PORT)  # SystemExit if DASHBOARD_TOKEN unset
+    server = dashboard_server.make_server("0.0.0.0", DASHBOARD_PORT)  # SystemExit if credentials are missing/malformed
     threading.Thread(target=server.serve_forever, daemon=True).start()
     dashboard_log.info("Dashboard server starting", extra={"host": "0.0.0.0", "port": DASHBOARD_PORT})
 

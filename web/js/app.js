@@ -1,6 +1,8 @@
 // App shell: sidebar + header + router. Every page renders into <main>.
 import { h, mount } from './dom.js';
 import { api, auth } from './api.js';
+import { ensureSession, signOut } from './lib/authClient.js';
+import { loginView } from './components/loginForm.js';
 import { icon } from './icons.js';
 import { errorState } from './ui.js';
 import { currentRoute, onRoute } from './router.js';
@@ -27,17 +29,12 @@ const NAV = [
 
 const app = document.getElementById('app');
 
-function tokenPrompt() {
+// Resolves once the server has accepted a username/password (the session cookie is set by then).
+function showLogin() {
   return new Promise((resolve) => {
-    const err = h('p', { class: 'error-text', role: 'alert', hidden: true });
-    const input = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', 'aria-label': 'Access token', required: true });
-    mount(app, h('form', { class: 'card login', onSubmit: async (e) => {
-      e.preventDefault();
-      auth.token = input.value.trim();
-      try { await api.get('/api/me'); resolve(); } catch (ex) { auth.token = ''; err.textContent = ex.status === 401 ? 'That token wasn’t accepted.' : ex.message; err.hidden = false; }
-    } }, h('h1', {}, 'Job Application AI Agent'), h('p', { class: 'muted' }, 'Enter the dashboard access token (DASHBOARD_TOKEN).'), input, err,
-    h('button', { class: 'btn btn-primary', type: 'submit' }, 'Unlock')));
-    input.focus();
+    const form = loginView({ onSignedIn: () => resolve() });
+    mount(app, form);
+    form.querySelector('input')?.focus();
   });
 }
 
@@ -57,7 +54,7 @@ function buildShell(profile) {
       h('div', { class: 'sidebar-foot' },
         h('div', { class: 'profile' }, h('span', { class: 'avatar', 'aria-hidden': 'true' }, initials(profile.name)),
           h('div', { class: 'profile-text' }, h('strong', {}, profile.name || 'Your profile'), h('small', {}, profile.email))),
-        profile.auth_required && h('button', { class: 'signout', onClick: () => { auth.token = ''; location.reload(); } }, icon('logout', 18), h('span', {}, 'Sign Out')))),
+        profile.auth_required && h('button', { class: 'signout', onClick: async () => { await signOut(); location.reload(); } }, icon('logout', 18), h('span', {}, 'Logout')))),
     h('div', { class: 'main-col' },
       h('header', { class: 'topbar' },
         h('button', { class: 'btn-icon menu-toggle', 'aria-label': 'Open navigation', onClick: () => shell.classList.toggle('nav-open') }, icon('menu', 22)),
@@ -71,10 +68,9 @@ function buildShell(profile) {
 }
 
 async function boot() {
-  auth.onUnauthorized = () => { auth.token = ''; location.reload(); };
+  auth.onUnauthorized = () => location.reload(); // the session ended -> boot() shows the login screen
   try {
-    const { required } = await fetch('/api/auth').then((r) => r.json());
-    if (required && !auth.token) await tokenPrompt();
+    await ensureSession({ showLogin });
   } catch { /* server unreachable: /api/me below reports it */ }
 
   let profile;

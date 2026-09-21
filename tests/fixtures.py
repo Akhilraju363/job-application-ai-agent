@@ -20,6 +20,19 @@ os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+# Password hashing is deliberately slow (600k PBKDF2 rounds); tests use a cheap-but-real hash.
+# Tests that check the production minimum patch MIN_ITERATIONS back up themselves.
+import dashboard_auth  # noqa: E402
+
+dashboard_auth.MIN_ITERATIONS = 1000
+AUTH_USER = "akhil"
+AUTH_PASSWORD = "correct-horse-battery-staple"
+
+
+def auth_env(password=AUTH_PASSWORD, user=AUTH_USER):
+    """Environment that turns dashboard sign-in on. The hash is real PBKDF2, just few iterations."""
+    return {"DASHBOARD_USERNAME": user, "DASHBOARD_PASSWORD_HASH": dashboard_auth.hash_password(password, iterations=1000)}
+
 BASE = """# Jane Roe
 Software Engineer | Java | Spring Boot | Angular
 

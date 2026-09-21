@@ -1,18 +1,21 @@
 """Local dashboard: static SPA (web/) + JSON API over the existing pipeline artifacts.
 
     python scripts/dashboard_server.py            # http://127.0.0.1:8765
-    DASHBOARD_TOKEN=... python scripts/dashboard_server.py --host 0.0.0.0
+    DASHBOARD_USERNAME=... DASHBOARD_PASSWORD_HASH=... python scripts/dashboard_server.py --host 0.0.0.0
 
 Stdlib only (no new dependencies). The Modal cron is unchanged -- this is the interactive
 surface: it reads the same output/*.json artifacts and the same Google Sheet the pipeline
 writes, and calls the same tailoring / scoring code.
 
 Security model
-  * binds to loopback; a non-loopback --host is refused unless DASHBOARD_TOKEN is set
+  * binds to loopback; a non-loopback --host is refused unless sign-in credentials are configured
   * every request's Host header must be one we serve (blocks DNS-rebinding)
   * every state-changing request must be application/json with a same-origin Origin
     (blocks cross-site form posts; these endpoints spend LLM quota / paid Apify calls)
-  * optional bearer token (DASHBOARD_TOKEN) on all /api/* routes except /api/auth
+  * username/password sign-in (dashboard_auth.py) -> HttpOnly SameSite=Strict session cookie; every
+    /api/* route except /api/auth, /api/auth/login and /api/auth/logout needs a valid session
+    (default-deny). Login is rate limited. Unconfigured == open, loopback only (local development).
+  * cookie-authenticated writes also need a same-origin Origin / Sec-Fetch-Site (CSRF)
   * secrets are never serialised: settings/sources expose booleans and labels only
 """
 import argparse
@@ -44,6 +47,7 @@ if os.environ.get("llm_base_url", "").strip() or os.environ.get("LOCAL_MODE", ""
     os.environ.setdefault("llm_request_deadline", "600")
 
 import activity  # noqa: E402
+import dashboard_auth as da  # noqa: E402
 import dashboard_data as dd  # noqa: E402
 import dashboard_tasks as tasks  # noqa: E402
 import drive_resumes  # noqa: E402
@@ -59,6 +63,11 @@ from tracker_service import TrackerError, tracker  # noqa: E402
 logger = lc.get_logger("dashboard")
 auth_log = lc.get_logger("auth")
 tailoring_log = lc.get_logger("tailoring")
+
+# The only routes reachable without a session. Everything else under /api/ is default-deny.
+PUBLIC_API = frozenset({"/api/auth", "/api/auth/login", "/api/auth/logout"})
+SESSIONS = da.SessionStore(lambda: paths.OUTPUT_DIR / ".auth_sessions.json")
+LIMITER = da.LoginLimiter()
 
 MAX_BODY = 1_048_576
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -90,6 +99,10 @@ class Request:
 
     def q(self, name, default=None):
         return (self.query.get(name) or [default])[0]
+
+    def set_header(self, name, value):
+        """Add a response header (used for Set-Cookie); sent with whatever response this request ends in."""
+        self.handler.extra_headers.append((name, value))
 
     @property
     def body(self):
@@ -157,12 +170,55 @@ def _resume_public(meta):
 
 @route("GET", "/api/auth")
 def auth_info(req):
-    return {"required": bool(os.environ.get("DASHBOARD_TOKEN"))}
+    """Session status for the login screen. Reveals nothing beyond who you are signed in as."""
+    if not da.configured():
+        return {"authenticated": True, "auth_required": False}  # local development, loopback only
+    session = req.handler.current_session()
+    return {"authenticated": True, "username": session["username"]} if session else {"authenticated": False}
+
+
+@route("POST", "/api/auth/login")
+def auth_login(req):
+    if not da.configured():
+        raise ApiError(404, "Not found", "not_found")
+    body = req.body
+    user, password = body.get("username"), body.get("password")
+    if not isinstance(user, str) or not isinstance(password, str) or not user.strip() or not password \
+            or len(user) > da.MAX_INPUT_LENGTH or len(password) > da.MAX_INPUT_LENGTH:
+        raise ApiError(400, "Enter your username and password.", "invalid_input")
+    client = da.client_ip(req.handler.headers, req.handler.client_address[0])
+    if LIMITER.blocked(client, user):
+        auth_log.warning("rate_limited", extra={"client": client})
+        raise ApiError(429, "Too many sign-in attempts. Please wait a few minutes and try again.", "rate_limited")
+    # Always run BOTH checks so a wrong username and a wrong password take the same time and give the same answer.
+    user_ok = hmac.compare_digest(user.strip().encode("utf-8"), da.username().encode("utf-8"))
+    password_ok = da.verify_password(password, da.password_hash())
+    if not (user_ok and password_ok):
+        LIMITER.failure(client, user)
+        auth_log.warning("login_failed", extra={"client": client})  # never the attempted username or password
+        raise ApiError(401, "Invalid username or password.", "invalid_credentials")
+    LIMITER.success(client, user)
+    secure = da.request_is_secure(req.handler.headers)
+    lifetime = da.session_lifetime_seconds()
+    session_id = SESSIONS.create(da.username(), da.fingerprint(), lifetime)
+    req.set_header("Set-Cookie", da.build_cookie(session_id, secure, lifetime))
+    auth_log.info("login_success", extra={"username": da.username(), "client": client})
+    return {"authenticated": True, "username": da.username()}
+
+
+@route("POST", "/api/auth/logout")
+def auth_logout(req):
+    session_id = da.read_session_id(req.handler.headers.get("Cookie"))
+    record = SESSIONS.destroy(session_id) if session_id else None
+    req.set_header("Set-Cookie", da.clear_cookie(da.request_is_secure(req.handler.headers)))
+    if record:
+        auth_log.info("logout", extra={"username": record.get("u")})
+    return {"authenticated": False}
 
 
 @route("GET", "/api/me")
 def me(req):
-    return {**dd.profile(), "auth_required": bool(os.environ.get("DASHBOARD_TOKEN"))}
+    return {**dd.profile(), "auth_required": da.configured()}
 
 
 # ---------------------------------------------------------------------------
@@ -558,7 +614,7 @@ def settings(req):
             "master_resume": {"path": "resume/base_resume.md", "sections": list(parsed["sections"]),
                               "roles": [r["heading"] for r in parsed["roles"]],
                               "skills": len(parsed["skill_items"]), "years": jd_analysis.resume_years(md)},
-            "auth": {"token_required": bool(os.environ.get("DASHBOARD_TOKEN"))}}
+            "auth": {"password_required": da.configured()}}
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +667,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
+        for k, v in self.extra_headers:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -621,12 +679,11 @@ class Handler(BaseHTTPRequestHandler):
         self.error_code = code
         self._json(status, {"error": {"code": code, "message": message}})
 
-    def _authorized(self):
-        token = os.environ.get("DASHBOARD_TOKEN")
-        if not token:
-            return True
-        supplied = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-        return hmac.compare_digest(supplied.encode(), token.encode())
+    def current_session(self):
+        """The signed-in session ({username, expires}), or None. Auth unconfigured == open (loopback dev)."""
+        if not da.configured():
+            return {"username": None, "expires": None}
+        return SESSIONS.validate(da.read_session_id(self.headers.get("Cookie")), da.username(), da.fingerprint())
 
     def _check_origin(self, unsafe):
         host = (self.headers.get("Host") or "").lower()
@@ -636,11 +693,16 @@ class Handler(BaseHTTPRequestHandler):
             origin = self.headers.get("Origin")
             if origin and origin.lower() not in (f"http://{host}", f"https://{host}"):
                 raise ApiError(403, "Cross-origin request refused", "bad_origin")
+            # Browsers label every fetch; anything not same-origin is a cross-site write attempt (CSRF).
+            if (self.headers.get("Sec-Fetch-Site") or "same-origin").lower() not in ("same-origin", "none"):
+                raise ApiError(403, "Cross-origin request refused", "bad_origin")
             if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
                 raise ApiError(415, "Content-Type must be application/json", "bad_content_type")
 
     # -- dispatch
     body_read = False
+    extra_headers = ()
+    client_gone = False
 
     def _drain(self):
         """Consume a small unread request body before replying to a rejected request; closing
@@ -658,6 +720,7 @@ class Handler(BaseHTTPRequestHandler):
         Never logs headers, query strings or bodies (tokens, JDs and resumes travel there)."""
         self.request_id = lc.safe_request_id(self.headers.get("X-Request-ID")) or lc.new_request_id()
         self.response_status, self.error_code = None, None
+        self.extra_headers, self.client_gone = [], False
         started = time.monotonic()
         with lc.bind(request_id=self.request_id):
             try:
@@ -669,7 +732,7 @@ class Handler(BaseHTTPRequestHandler):
         status = self.response_status or 0
         # successful polling / static traffic is DEBUG so it can't drown (or rotate away) real events
         quiet = status and status < 400 and (not path.startswith("/api/") or path.startswith(("/api/tasks/", "/api/logs")))
-        if quiet:
+        if quiet or self.client_gone:  # a client that hung up is not a server error
             level = logging.DEBUG
         elif 400 <= status < 500:
             level = logging.WARNING
@@ -695,14 +758,14 @@ class Handler(BaseHTTPRequestHandler):
         except ApiError as e:
             self._drain()
             self._error(e.status, e.message, e.code)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        except ConnectionError:  # BrokenPipe / Reset / Aborted (Windows): the browser navigated away mid-response
+            self.client_gone = True
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error while serving request", extra={"method": method})
             self._error(500, "Internal error", "internal")
 
     def _api(self, method, url):
-        if url.path != "/api/auth" and not self._authorized():
+        if url.path not in PUBLIC_API and self.current_session() is None:
             auth_log.warning("Authentication failed", extra={"method": method, "path": url.path[:200]})
             raise ApiError(401, "Authentication required", "unauthorized")
         path_matched = False
@@ -759,8 +822,14 @@ class Handler(BaseHTTPRequestHandler):
 
 def make_server(host="127.0.0.1", port=8765):
     loopback = host in ("127.0.0.1", "localhost", "::1")
-    if not loopback and not os.environ.get("DASHBOARD_TOKEN"):
-        raise SystemExit("Refusing to bind a non-loopback address without DASHBOARD_TOKEN set.")
+    try:
+        da.require_config(require=False)  # half-configured or malformed credentials must never start "open"
+    except da.ConfigError as e:
+        auth_log.critical("auth_config_error", extra={"reason": str(e)})
+        raise SystemExit(str(e)) from None
+    if not loopback and not da.configured():
+        raise SystemExit("Refusing to bind a non-loopback address without sign-in credentials "
+                         "(set DASHBOARD_USERNAME and DASHBOARD_PASSWORD_HASH; see scripts/create_dashboard_password_hash.py).")
     server = ThreadingHTTPServer((host, port), Handler)
     port = server.server_address[1]
     hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}", f"{host}:{port}"}
@@ -780,11 +849,11 @@ def main():
     server = make_server(args.host, args.port)
     url = f"http://{args.host}:{server.server_address[1]}/"
     print(f"Job Application AI Agent dashboard: {url}"
-          + ("  (token required)" if os.environ.get("DASHBOARD_TOKEN") else ""))
+          + ("  (sign-in required)" if da.configured() else ""))
     if args.open:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
     logger.info("Dashboard server starting", extra={"host": args.host, "port": server.server_address[1],
-                                                    "auth": bool(os.environ.get("DASHBOARD_TOKEN"))})
+                                                    "auth": da.configured()})
     try:
         server.serve_forever()
     except KeyboardInterrupt:

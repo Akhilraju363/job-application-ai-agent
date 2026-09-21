@@ -179,7 +179,8 @@ Regenerate always creates a new version (v2, v3...). The Sheet gets two extra co
   unchanged; the UI warns when you override it.
 - On a local model, resume generation can take minutes. In local mode the dashboard defaults
   `llm_request_deadline` to 600s (override in `.env`).
-- Security: loopback only, Host/Origin checks, JSON-only writes, optional `DASHBOARD_TOKEN`,
+- Security: loopback only unless sign-in is configured, Host/Origin checks, JSON-only writes, optional
+  username/password sign-in (see [Dashboard authentication](#dashboard-authentication)),
   secrets never serialised.
 - Tests: `python -m unittest discover -s tests` and `node --test "web/tests/*.test.mjs"`.
 
@@ -221,23 +222,18 @@ service, no CORS. The frontend only uses relative `/api/...` URLs.
 Browser --HTTPS--> https://<workspace>--job-apply-agent-dashboard.modal.run
                      -> dashboard_server.py (0.0.0.0:8765)
                           +- /            web/ static UI
-                          +- /api/...     dashboard API (bearer token)
+                          +- /api/...     dashboard API (needs a signed-in session)
 ```
 
-**Secret setup.** The dashboard reads two extra keys from its own secret,
-`job-apply-agent-dashboard-secrets` (kept separate so you never have to re-list the pipeline's API
-keys; the function refuses to start without either, so it can never run unauthenticated or with
-Host checking off):
+**Secret.** The dashboard reads its own secret, `job-apply-agent-dashboard-secrets` (kept separate so you
+never re-list the pipeline's API keys). The function refuses to start unless all three keys are present and
+valid, so it can never run without sign-in or with Host checking off:
 
-- `DASHBOARD_TOKEN` — a long random string (`python -c "import secrets; print(secrets.token_urlsafe(32))"`).
-  The UI prompts for it and keeps it in `sessionStorage` only; it is never in the frontend source.
-- `DASHBOARD_ALLOWED_HOSTS` — the deployed hostname **without** `https://`. Modal builds it as
-  `<workspace>--job-apply-agent-dashboard.modal.run`; if you'd rather confirm it, deploy once (Modal
-  prints the URL), set it, then redeploy.
-
-```bash
-modal secret create job-apply-agent-dashboard-secrets   DASHBOARD_TOKEN=... DASHBOARD_ALLOWED_HOSTS=<workspace>--job-apply-agent-dashboard.modal.run
-```
+- `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD_HASH` — the sign-in account; see
+  [Dashboard authentication](#dashboard-authentication) for how to create them.
+- `DASHBOARD_ALLOWED_HOSTS` — the deployed hostname **without** `https://`:
+  `akhildalali07--job-apply-agent-dashboard.modal.run` (Modal builds it as
+  `<workspace>--job-apply-agent-dashboard.modal.run`).
 
 ```bash
 modal deploy modal_app.py   # also (re)deploys the daily cron, code unchanged
@@ -252,6 +248,64 @@ modal deploy modal_app.py   # also (re)deploys the daily cron, code unchanged
 - **Google access:** the same `gws-credentials` secret and `materialize_gws_credentials()` helper
   as the cron.
 - Local use is unchanged: `python scripts/dashboard_server.py` on `127.0.0.1:8765`.
+
+## Dashboard authentication
+
+**Dashboard:** https://akhildalali07--job-apply-agent-dashboard.modal.run
+
+Open it, enter your username and password, and you're in — no token to paste. The morning cron does not
+depend on this login (it never touches the dashboard or its secret).
+
+```
+Browser -> Login page -> POST /api/auth/login {username, password}
+        -> rate-limit check -> PBKDF2 check against the stored hash
+        -> random session id in an HttpOnly cookie -> dashboard (/api/* needs that session)
+```
+
+- **Credentials** live in the Modal secret `job-apply-agent-dashboard-secrets`: `DASHBOARD_USERNAME`,
+  `DASHBOARD_PASSWORD_HASH` (a salted PBKDF2-SHA256 hash, 600k rounds — never the password) and
+  `DASHBOARD_ALLOWED_HOSTS`. Nothing is committed; nothing is stored in the browser except the session cookie.
+- **Sessions** are server-side (the cookie is an opaque random id; only its SHA-256 is stored), last 12 hours
+  (`DASHBOARD_SESSION_HOURS` to change), survive a scale-to-zero restart (mirrored to the Volume) and are
+  signed out by Logout or by changing the password. The cookie is `HttpOnly`, `Secure` (`__Host-` prefixed on
+  HTTPS), `SameSite=Strict`. Writes also require a same-origin `Origin` / `Sec-Fetch-Site` (CSRF), and the
+  Host-header allow-list still applies.
+- **Brute force:** 5 failed attempts per client/username (15 per client) lock that client out for 15 minutes
+  (HTTP 429). This is in-memory, **single-container** protection — not distributed rate limiting.
+- **Local development** with no credentials configured runs open on `127.0.0.1` only (the server refuses to bind
+  anywhere else without them). To try the login screen locally, export `DASHBOARD_USERNAME` and
+  `DASHBOARD_PASSWORD_HASH` (from the command below) before `python scripts/dashboard_server.py`.
+
+### Initial password setup
+
+```bash
+python scripts/create_dashboard_password_hash.py      # prompts (hidden, confirmed); prints username + hash
+```
+
+Put the two printed values into the secret together with the host (this replaces the secret's contents, so
+include all three keys), then deploy:
+
+```bash
+modal secret create job-apply-agent-dashboard-secrets   DASHBOARD_USERNAME=<username> DASHBOARD_PASSWORD_HASH=<hash>   DASHBOARD_ALLOWED_HOSTS=akhildalali07--job-apply-agent-dashboard.modal.run --force
+modal deploy modal_app.py
+```
+
+### Password reset
+
+Forgot it, or want a new one? No source edits needed:
+
+```bash
+python scripts/reset_dashboard_password.py --host akhildalali07--job-apply-agent-dashboard.modal.run
+```
+
+1. Run it and choose a username and new password (hidden, confirmed). It prints the exact
+   `modal secret create ... --force` command with the new hash. (`--apply` runs that for you through the
+   `modal` CLI you are already logged into; no Modal credential is read or stored by this repo.)
+2. Update the `job-apply-agent-dashboard-secrets` secret with that command.
+3. Redeploy: `modal deploy modal_app.py` — every old session is signed out.
+4. Sign in with the new password.
+
+The old `DASHBOARD_TOKEN` is no longer used; remove it from the secret when convenient.
 
 ## Logging
 
@@ -281,7 +335,7 @@ code -> Python logging -+-> stderr  -> Modal runtime logs   (always; survives a 
 - **Rotation** — `RotatingFileHandler`, 10 MB x 5 backups per file by default
   (`LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`); only log files rotate — resumes and the activity log are never
   touched. Other settings: `LOG_LEVEL` (default `INFO`), `LOG_DIR`, `LOG_TO_FILE=0`.
-- **Security** — never logged: the dashboard token, API keys, Google credentials, `Authorization`/cookie
+- **Security** — never logged: passwords, password hashes, session cookies, API keys, Google credentials, `Authorization`/cookie
   headers, request bodies, query strings, prompts, model output, full JDs or full resumes. Only metadata
   (ids, counts, durations, provider/model, status codes). A redaction pass masks secret-shaped values as a
   safety net, and `/api/logs` redacts again on the way out.

@@ -175,7 +175,7 @@ class Activity(unittest.TestCase):
 class Sources(unittest.TestCase):
     SECRETS = {"apify_api_key": "apify-SECRET-123456", "GROQ_API_KEY": "gsk_SECRET_abcdef", "open_router_apikey": "sk-or-SECRET-xyz",
                "GEMINI_API_KEY": "AIzaSECRETgemini", "google_sheet_id": "SHEETID_SECRET_1", "google_drive_folder_id": "DRIVEID_SECRET_1",
-               "TELEGRAM_BOT_TOKEN": "123456:TELEGRAM-SECRET", "TELEGRAM_CHAT_ID": "99887766", "DASHBOARD_TOKEN": "tok-SECRET-9"}
+               "TELEGRAM_BOT_TOKEN": "123456:TELEGRAM-SECRET", "TELEGRAM_CHAT_ID": "99887766", "DASHBOARD_PASSWORD_HASH": "pbkdf2-sha256:1000:c2FsdHNhbHRzYWx0:aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g"}
 
     def test_reports_configuration_without_exposing_any_secret(self):
         with mock.patch.dict(os.environ, self.SECRETS):

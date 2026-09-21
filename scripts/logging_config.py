@@ -117,7 +117,8 @@ _SECRET_ENV_NAME = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", re.I)
 _PATTERNS = (
     (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}"), r"\1 ***"),
     (re.compile(r"(?i)\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|"
-                r"token|secret|password|cookie)(\"?\s*[:=]\s*\"?)([^\s\",;&]+)"), r"\1\2***"),
+                r"token|secret|password|cookie|session|(?:__host-)?jobagent_session)(\"?\s*[:=]\s*\"?)([^\s\",;&]+)"), r"\1\2***"),
+    (re.compile(r"\bpbkdf2-sha256:\d+:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+"), "***"),  # a stored password hash
     (re.compile(r"\bgsk_[A-Za-z0-9]{10,}|\bsk-[A-Za-z0-9_-]{16,}|\bAIza[A-Za-z0-9_-]{20,}"
                 r"|\bya29\.[A-Za-z0-9._-]{20,}|\b1//[A-Za-z0-9._-]{20,}"), "***"),
 )

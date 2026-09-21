@@ -19,7 +19,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from unittest import mock
 
-from fixtures import BASE, JD_TEXT, ANALYSIS, TempOutput, reorder_bullets  # noqa: F401 -- also disables .env loading
+from fixtures import AUTH_PASSWORD, AUTH_USER, BASE, JD_TEXT, ANALYSIS, TempOutput, auth_env, reorder_bullets  # noqa: F401 -- also disables .env loading
 import activity
 import dashboard_tasks as tasks
 import log_reader
@@ -27,7 +27,7 @@ import logging_config as lc
 from test_dashboard_server import ServerCase
 from test_tailoring_service import FAKE_KAFKA, FAKE_ROLE, run as run_tailor
 
-SECRET_ENV = {"MY_SERVICE_API_KEY": "sk-live-ABCDEFGH12345678", "DASHBOARD_TOKEN": "dash-TOKEN-value-987654"}
+SECRET_ENV = {"MY_SERVICE_API_KEY": "sk-live-ABCDEFGH12345678", "SOME_SERVICE_TOKEN": "svc-TOKEN-value-987654"}
 
 
 def reset_logging():
@@ -248,13 +248,13 @@ class Redaction(LogCase):
             log = lc.get_logger("llm")
             log.info("calling with key %s", SECRET_ENV["MY_SERVICE_API_KEY"])
             log.info("headers Authorization: Bearer abcdefghijklmnop", extra={"reason": "api_key=hunter2hunter2"})
-            log.info("token=" + SECRET_ENV["DASHBOARD_TOKEN"])
+            log.info("token=" + SECRET_ENV["SOME_SERVICE_TOKEN"])
             try:
-                raise RuntimeError("failed for https://x.example/?token=" + SECRET_ENV["DASHBOARD_TOKEN"])
+                raise RuntimeError("failed for https://x.example/?token=" + SECRET_ENV["SOME_SERVICE_TOKEN"])
             except RuntimeError:
                 log.exception("request failed")
             out = self.everything_written()
-        for leaked in (SECRET_ENV["MY_SERVICE_API_KEY"], SECRET_ENV["DASHBOARD_TOKEN"], "abcdefghijklmnop", "hunter2hunter2"):
+        for leaked in (SECRET_ENV["MY_SERVICE_API_KEY"], SECRET_ENV["SOME_SERVICE_TOKEN"], "abcdefghijklmnop", "hunter2hunter2"):
             self.assertNotIn(leaked, out)
         self.assertIn("***", out)
 
@@ -392,7 +392,7 @@ class LogsApi(ServerCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="jobagent-apilog-"))
         self.logs = self.tmp / "logs"
-        patcher = mock.patch.dict(os.environ, {"LOG_DIR": str(self.logs), "DASHBOARD_TOKEN": ""})
+        patcher = mock.patch.dict(os.environ, {"LOG_DIR": str(self.logs), "DASHBOARD_USERNAME": "", "DASHBOARD_PASSWORD_HASH": ""})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -413,12 +413,16 @@ class LogsApi(ServerCase):
         self.flush()
 
     def test_requires_authentication(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_TOKEN": "s3cret-token"}):
+        with mock.patch.dict(os.environ, auth_env()):
             self.assertEqual(self.call("GET", "/api/logs")[0], 401)
             self.assertEqual(self.call("GET", "/api/logs", headers={"Authorization": "Bearer nope"})[0], 401)
-            s, _, body = self.call("GET", "/api/logs", headers={"Authorization": "Bearer s3cret-token"})
+            self.assertEqual(self.call("GET", "/api/logs", headers={"Cookie": "jobagent_session=" + "x" * 43})[0], 401)
+            cookie = self.sign_in()
+            s, _, body = self.call("GET", "/api/logs", headers={"Cookie": cookie})
             self.assertEqual(s, 200)
             self.assertIn("entries", body)
+            self.call("POST", "/api/auth/logout", {}, headers={"Cookie": cookie})
+            self.assertEqual(self.call("GET", "/api/logs", headers={"Cookie": cookie})[0], 401)  # protected again after logout
 
     def test_returns_structured_entries_newest_first(self):
         self.seed()
@@ -590,21 +594,28 @@ class RequestLogging(ServerCase):
         self.assertNotIn("very-private-search-term", raw)
         self.assertNotIn(JD_TEXT[:60], raw)
 
-    def test_authorization_header_and_token_are_never_logged(self):
-        token = "tok-Zq9-unique-dashboard-token"
-        with mock.patch.dict(os.environ, {"DASHBOARD_TOKEN": token}):
-            self.call("GET", "/api/me", headers={"Authorization": f"Bearer {token}"})
-            self.call("GET", "/api/me", headers={"Authorization": "Bearer wrong-guess-abcdef"})  # 401
-            self.call("GET", "/api/me", headers={"Cookie": "session=cookie-value-123456"})
+    def test_credentials_headers_and_cookies_are_never_logged(self):
+        wrong = "wrong-guess-abcdefgh"
+        with mock.patch.dict(os.environ, auth_env()):
+            self.call("POST", "/api/auth/login", {"username": AUTH_USER, "password": wrong})  # 401
+            cookie = self.sign_in()
+            session_id = cookie.split("=", 1)[1]
+            self.call("GET", "/api/me", headers={"Cookie": cookie})
+            self.call("GET", "/api/me", headers={"Authorization": "Bearer bearer-guess-abcdef"})  # 401: bearer is not an auth method
+            self.call("POST", "/api/auth/logout", {}, headers={"Cookie": cookie})
+            phash = os.environ["DASHBOARD_PASSWORD_HASH"]
         raw = self.rec.raw_text()  # what the code handed to the logger -- before redaction could hide anything
-        for secret in (token, "wrong-guess-abcdef", "cookie-value-123456"):
+        for secret in (AUTH_PASSWORD, wrong, session_id, phash, "bearer-guess-abcdef"):
             self.assertNotIn(secret, raw)
             self.assertNotIn(secret, self.stream.getvalue())
-        self.assertTrue(any(r.name == "auth" and r.getMessage() == "Authentication failed" for r in self.rec.records))
+        messages = [(r.name, r.getMessage()) for r in self.rec.records]
+        for event in ("login_failed", "login_success", "logout"):
+            self.assertIn(("auth", event), messages)
+        self.assertIn(("auth", "Authentication failed"), messages)
         end = time.time() + 3
-        while len([r for r in self.requests() if r.path == "/api/me"]) < 3 and time.time() < end:
+        while len([r for r in self.requests() if r.path == "/api/me"]) < 2 and time.time() < end:
             time.sleep(0.02)
-        self.assertEqual(sorted(r.status for r in self.requests() if r.path == "/api/me"), [200, 401, 401])
+        self.assertEqual(sorted(r.status for r in self.requests() if r.path == "/api/me"), [200, 401])
 
     def test_unhandled_errors_are_logged_with_a_traceback_and_return_a_safe_500(self):
         import dashboard_data
@@ -617,6 +628,17 @@ class RequestLogging(ServerCase):
         self.assertTrue(any("kaboom-internal" in str(r.exc_info[1]) for r in errors))
         self.assertIn("X-Request-ID", headers)
         self.assertTrue(any(r.status == 500 and r.levelno == logging.ERROR for r in self.requests("/api/dashboard/summary")))
+
+    def test_a_client_that_hangs_up_is_not_logged_as_a_server_error(self):
+        import http.client
+        import dashboard_data
+        for exc in (ConnectionAbortedError("aborted"), ConnectionResetError("reset"), BrokenPipeError("pipe")):
+            with mock.patch.object(dashboard_data, "summary", side_effect=exc):
+                with self.assertRaises((http.client.RemoteDisconnected, ConnectionError)):
+                    self.call("GET", "/api/dashboard/summary")
+        found = self.requests("/api/dashboard/summary")
+        self.assertFalse([r for r in self.rec.records if r.levelno >= logging.ERROR], "disconnects must not reach errors.log")
+        self.assertTrue(found and all(r.levelno == logging.DEBUG for r in found if r.path == "/api/dashboard/summary"))
 
     def test_existing_activity_log_is_untouched_by_logging(self):
         with TempOutput():

@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import fixtures  # noqa: F401 -- disables .env loading before any script is imported
+from fixtures import AUTH_PASSWORD, AUTH_USER, auth_env  # noqa: F401 -- also disables .env loading before any script is imported
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = (ROOT / "modal_app.py").read_text(encoding="utf-8")
@@ -139,7 +139,7 @@ class ModalLogging(unittest.TestCase):
 
 
 class StartupValidation(unittest.TestCase):
-    GOOD = {"DASHBOARD_TOKEN": "t" * 32, "DASHBOARD_ALLOWED_HOSTS": "ws--job-apply-agent-dashboard.modal.run"}
+    GOOD = {**auth_env(), "DASHBOARD_ALLOWED_HOSTS": "ws--job-apply-agent-dashboard.modal.run"}
 
     @classmethod
     def setUpClass(cls):
@@ -148,13 +148,29 @@ class StartupValidation(unittest.TestCase):
     def test_valid_config_passes(self):
         self.check(self.GOOD)
 
-    def test_missing_or_blank_token_fails_startup(self):
-        for env in ({k: v for k, v in self.GOOD.items() if k != "DASHBOARD_TOKEN"}, {**self.GOOD, "DASHBOARD_TOKEN": "  "}):
-            with self.assertRaisesRegex(RuntimeError, "DASHBOARD_TOKEN"):
+    def test_missing_or_blank_username_fails_startup(self):
+        for env in ({k: v for k, v in self.GOOD.items() if k != "DASHBOARD_USERNAME"}, {**self.GOOD, "DASHBOARD_USERNAME": "  "}):
+            with self.assertRaisesRegex(RuntimeError, "DASHBOARD_USERNAME is missing"):
                 self.check(env)
 
+    def test_missing_or_blank_password_hash_fails_startup(self):
+        for env in ({k: v for k, v in self.GOOD.items() if k != "DASHBOARD_PASSWORD_HASH"}, {**self.GOOD, "DASHBOARD_PASSWORD_HASH": ""}):
+            with self.assertRaisesRegex(RuntimeError, "DASHBOARD_PASSWORD_HASH is missing"):
+                self.check(env)
+
+    def test_malformed_or_plaintext_hash_fails_startup_without_echoing_it(self):
+        for bad in ("my-plain-password", "pbkdf2-sha256:abc:def:ghi", "sha256:1:2:3"):
+            with self.assertRaises(RuntimeError) as cm:
+                self.check({**self.GOOD, "DASHBOARD_PASSWORD_HASH": bad})
+            self.assertIn("not a valid password hash", str(cm.exception))
+            self.assertNotIn(bad, str(cm.exception))
+
+    def test_the_legacy_dashboard_token_no_longer_satisfies_startup(self):
+        with self.assertRaisesRegex(RuntimeError, "DASHBOARD_USERNAME is missing"):
+            self.check({"DASHBOARD_TOKEN": "t" * 32, "DASHBOARD_ALLOWED_HOSTS": self.GOOD["DASHBOARD_ALLOWED_HOSTS"]})
+
     def test_missing_or_blank_allowed_hosts_fails_startup(self):
-        for env in ({"DASHBOARD_TOKEN": "x"}, {**self.GOOD, "DASHBOARD_ALLOWED_HOSTS": ""}):
+        for env in (auth_env(), {**self.GOOD, "DASHBOARD_ALLOWED_HOSTS": ""}):
             with self.assertRaisesRegex(RuntimeError, "DASHBOARD_ALLOWED_HOSTS"):
                 self.check(env)
 
@@ -167,7 +183,7 @@ class StartupValidation(unittest.TestCase):
 
 
 class ModalBindAndHost(unittest.TestCase):
-    """The real server, bound the way the Modal function binds it (0.0.0.0 + token + allowed host)."""
+    """The real server, bound the way the Modal function binds it (0.0.0.0 + credentials + allowed host)."""
 
     HOST = "ws--job-apply-agent-dashboard.modal.run"
 
@@ -175,7 +191,7 @@ class ModalBindAndHost(unittest.TestCase):
         import dashboard_server as srv
         self.srv = srv
         self._saved_hosts = srv.Handler.allowed_hosts
-        env = mock.patch.dict(os.environ, {"DASHBOARD_TOKEN": "s3cret", "DASHBOARD_ALLOWED_HOSTS": self.HOST})
+        env = mock.patch.dict(os.environ, {**auth_env(), "DASHBOARD_ALLOWED_HOSTS": self.HOST})
         env.start()
         self.addCleanup(env.stop)
         self.server = srv.make_server("0.0.0.0", 0)
@@ -188,16 +204,26 @@ class ModalBindAndHost(unittest.TestCase):
         self.server.server_close()
         self.srv.Handler.allowed_hosts = self._saved_hosts
 
-    def get(self, path, host, token=None):
+    def get(self, path, host, cookie=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         headers = {"Host": host}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        if cookie:
+            headers["Cookie"] = cookie
         conn.request("GET", path, headers=headers)
         r = conn.getresponse()
         body = r.read()
         conn.close()
         return r.status, r.getheader("Content-Type", ""), body
+
+    def login(self, host, password=AUTH_PASSWORD):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("POST", "/api/auth/login", body=json.dumps({"username": AUTH_USER, "password": password}),
+                     headers={"Host": host, "Content-Type": "application/json", "Origin": f"https://{host}"})
+        r = conn.getresponse()
+        r.read()
+        cookie = r.getheader("Set-Cookie")
+        conn.close()
+        return r.status, cookie
 
     def test_binds_publicly_and_serves_ui_and_api_from_one_origin(self):
         status, ctype, body = self.get("/", self.HOST)
@@ -205,13 +231,17 @@ class ModalBindAndHost(unittest.TestCase):
         self.assertIn("text/html", ctype)
         self.assertIn(b"/js/app.js", body)
         status, _, body = self.get("/api/auth", self.HOST)
-        self.assertEqual((status, json.loads(body)), (200, {"required": True}))
+        self.assertEqual((status, json.loads(body)), (200, {"authenticated": False}))
         for asset in ("/js/app.js", "/css/app.css"):
             self.assertEqual(self.get(asset, self.HOST)[0], 200, asset)
 
-    def test_api_needs_the_token_and_rejects_a_wrong_one(self):
+    def test_api_needs_a_session_and_rejects_a_forged_one(self):
         self.assertEqual(self.get("/api/settings", self.HOST)[0], 401)
-        self.assertEqual(self.get("/api/settings", self.HOST, token="wrong")[0], 401)
+        self.assertEqual(self.get("/api/settings", self.HOST, cookie="jobagent_session=" + "z" * 43)[0], 401)
+        status, set_cookie = self.login(self.HOST)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.get("/api/settings", self.HOST, cookie=set_cookie.split(";")[0])[0], 200)
+        self.assertEqual(self.login(self.HOST, password="not the password")[0], 401)
 
     def test_unlisted_hosts_are_refused(self):
         self.assertEqual(self.get("/", "evil.example.com")[0], 403)
