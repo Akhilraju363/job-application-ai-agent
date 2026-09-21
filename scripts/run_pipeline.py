@@ -22,7 +22,7 @@ import json
 import os
 import subprocess
 import sys
-import traceback
+import time
 from pathlib import Path
 
 import requests
@@ -33,13 +33,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from modal_app import reconcile_qualified  # noqa: E402 -- reuse the exact cloud guard, no duplication
 import llm  # noqa: E402
+import logging_config as lc  # noqa: E402
+
+log = lc.get_logger("pipeline")
 
 
 def send_telegram_alert(message):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
-        print("Telegram alert skipped: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set")
+        log.warning("Telegram alert skipped: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set")
         return
     try:
         requests.post(
@@ -48,16 +51,18 @@ def send_telegram_alert(message):
             timeout=15,
         )
     except Exception as alert_error:
-        print(f"Telegram alert failed to send: {alert_error}")
+        log.warning("Telegram alert failed to send", extra={"reason": f"{type(alert_error).__name__}: {alert_error}"})
 
 
 def run(script, args=None):
     cmd = [sys.executable, str(ROOT / "scripts" / script), *(args or [])]
-    print(f"--- {script} ---")
+    log.info("Pipeline step started", extra={"script": script})
     subprocess.run(cmd, check=True, cwd=ROOT)
+    log.info("Pipeline step finished", extra={"script": script})
 
 
 def main():
+    lc.configure_logging("pipeline")
     if not llm.LOCAL_MODE:
         raise RuntimeError(
             "run_pipeline.py is the LOCAL high-volume entrypoint -- set LOCAL_MODE=true "
@@ -66,10 +71,12 @@ def main():
         )
 
     stage = {"name": "startup"}
+    started = time.monotonic()
+    log.info("Pipeline started", extra={"mode": "local"})
     try:
         stage["name"] = "ollama validation"
         llm.validate_local_setup()
-        print(f"Job limit: {os.environ.get('LOCAL_JOB_LIMIT', '50')}")
+        log.info("Job limit configured", extra={"job_limit": os.environ.get("LOCAL_JOB_LIMIT", "50")})
 
         force_scrape = os.environ.get("FORCE_SCRAPE", "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -100,11 +107,12 @@ def main():
                 f"{len(unmet)}/{qualified_total} qualified job(s) produced no saved resume:\n{detail}"
             )
 
-        print("JOB-APPLY-AGENT (local) -- run complete")
+        log.info("JOB-APPLY-AGENT (local) -- run complete", extra={
+            "qualified_count": qualified_total, "duration_seconds": round(time.monotonic() - started, 1)})
     except Exception as e:
         failed_stage = stage["name"]
-        print(f"JOB-APPLY-AGENT (local) -- PIPELINE FAILED at {failed_stage}")
-        traceback.print_exc()
+        log.exception(f"JOB-APPLY-AGENT (local) -- PIPELINE FAILED at {failed_stage}",
+                      extra={"stage": failed_stage, "duration_seconds": round(time.monotonic() - started, 1)})
         # Stage name + exception type/message only -- never secrets.
         send_telegram_alert(
             "JOB-APPLY-AGENT — WHAT BROKE\n\n"

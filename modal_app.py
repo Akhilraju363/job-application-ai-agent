@@ -22,6 +22,10 @@ for _scripts_dir in (Path(__file__).resolve().parent / "scripts", Path(SCRIPTS_R
     if _scripts_dir.is_dir():
         sys.path.insert(0, str(_scripts_dir))
 from job_links import canonical_link  # noqa: E402
+import logging_config as lc  # noqa: E402
+
+log = lc.get_logger("pipeline")
+dashboard_log = lc.get_logger("dashboard")
 
 app = modal.App("job-apply-agent")
 
@@ -131,16 +135,22 @@ def run_pipeline(force: bool = False):
     import json
     import os
     import subprocess
-    import traceback
+    import time
     from pathlib import Path
 
     import requests
+
+    # stdout/stderr -> Modal runtime logs. Console only: this container has no Volume, so files
+    # would vanish with it. Exported so the pipeline subprocesses below inherit the same choice.
+    os.environ["LOG_TO_FILE"] = "0"
+    lc.configure_logging("cron", to_file=False)
+    started = time.monotonic()
 
     def send_telegram_alert(message):
         token = os.environ.get("TELEGRAM_BOT_TOKEN")
         chat_id = os.environ.get("TELEGRAM_CHAT_ID")
         if not token or not chat_id:
-            print("Telegram alert skipped: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set")
+            log.warning("Telegram alert skipped: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set")
             return
         try:
             requests.post(
@@ -149,9 +159,10 @@ def run_pipeline(force: bool = False):
                 timeout=15,
             )
         except Exception as alert_error:
-            print(f"Telegram alert failed to send: {alert_error}")
+            log.warning("Telegram alert failed to send", extra={"reason": f"{type(alert_error).__name__}: {alert_error}"})
 
     stage = {"name": "startup"}
+    log.info("Pipeline started", extra={"mode": "cron", "force": force})
 
     try:
         materialize_gws_credentials()
@@ -171,13 +182,16 @@ def run_pipeline(force: bool = False):
         if not provider_keys:
             raise RuntimeError("no free LLM provider key in the Modal secret -- set at least "
                                "GROQ_API_KEY (see scripts/llm.py).")
-        print(f"LLM providers available: {provider_keys}")
+        log.info("LLM providers available", extra={"providers": ",".join(provider_keys)})
 
         def run(script, timeout, args=None):
             stage["name"] = script
-            print(f"--- {script} ---")
+            log.info("Pipeline step started", extra={"script": script})
+            step_started = time.monotonic()
             cmd = ["python3", f"scripts/{script}", *(args or [])]
             subprocess.run(cmd, check=True, cwd=workdir, timeout=timeout)
+            log.info("Pipeline step finished", extra={"script": script,
+                                                       "duration_seconds": round(time.monotonic() - step_started, 1)})
 
         # Per-step timeouts sized generously for the free-provider chain: each job may walk
         # groq -> openrouter -> gemini, each with retries/backoff (see scripts/llm.py), plus
@@ -207,11 +221,14 @@ def run_pipeline(force: bool = False):
                 f"{len(unmet)}/{qualified_total} qualified job(s) produced no saved resume:\n{detail}"
             )
 
-        print("JOB-APPLY-AGENT — daily run complete")
+        log.info("JOB-APPLY-AGENT — daily run complete", extra={
+            "scored_count": len(scored), "qualified_count": qualified_total,
+            "duration_seconds": round(time.monotonic() - started, 1)})
+        log.info("Pipeline completed", extra={"duration_seconds": round(time.monotonic() - started, 1)})
     except Exception as e:
         failed_stage = stage["name"]
-        print(f"JOB-APPLY-AGENT — PIPELINE FAILED at {failed_stage}")
-        traceback.print_exc()
+        log.exception(f"JOB-APPLY-AGENT — PIPELINE FAILED at {failed_stage}", extra={
+            "stage": failed_stage, "duration_seconds": round(time.monotonic() - started, 1)})
         # Stage name + exception type/message only -- never secrets. If every free LLM
         # provider was throttled/down, recover locally with Ollama (see README).
         send_telegram_alert(
@@ -255,15 +272,26 @@ def dashboard():
     import threading
     import time
 
-    validate_dashboard_config(os.environ)
+    # Console (-> Modal runtime logs) + rotating files under /app/output/logs on the dashboard Volume.
+    # Configure first so a rejected configuration below is itself logged, not just raised.
+    (Path("/app") / "output").mkdir(exist_ok=True)
+    log_dir = lc.configure_logging("dashboard")
+    dashboard_log.info("Dashboard starting", extra={"log_dir": str(log_dir) if log_dir else "console-only"})
+    try:
+        validate_dashboard_config(os.environ)
+    except RuntimeError as e:
+        dashboard_log.critical("Dashboard configuration invalid", extra={"reason": str(e)})
+        raise
+    dashboard_log.info("Dashboard configuration validated")
 
     materialize_gws_credentials()
-    (Path("/app") / "output").mkdir(exist_ok=True)
+    dashboard_log.info("Output directory initialized", extra={"path": "/app/output"})
 
     import dashboard_server  # noqa: E402 -- needs SCRIPTS_REMOTE_PATH on sys.path (set at top)
 
     server = dashboard_server.make_server("0.0.0.0", DASHBOARD_PORT)  # SystemExit if DASHBOARD_TOKEN unset
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    dashboard_log.info("Dashboard server starting", extra={"host": "0.0.0.0", "port": DASHBOARD_PORT})
 
     def commit_volume_periodically():
         while True:
@@ -271,7 +299,7 @@ def dashboard():
             try:
                 dashboard_volume.commit()
             except Exception as e:  # noqa: BLE001 -- best-effort; Drive stays the source of truth for resumes
-                print(f"volume commit failed: {e}")
+                dashboard_log.warning("Volume commit failed", extra={"reason": f"{type(e).__name__}: {e}"})
 
     threading.Thread(target=commit_volume_periodically, daemon=True).start()
 

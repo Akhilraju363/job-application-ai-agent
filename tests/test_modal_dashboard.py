@@ -112,6 +112,32 @@ class CronUnchanged(unittest.TestCase):
         self.assertNotIn("credentials.json", cron_body)
 
 
+class ModalLogging(unittest.TestCase):
+    def test_cron_uses_central_logging_console_only_and_no_volume(self):
+        start = SRC.index("\ndef run_pipeline(")
+        cron_body = SRC[start:SRC.index("\n@app.function(", start)]
+        self.assertIn('lc.configure_logging("cron", to_file=False)', cron_body)
+        self.assertIn('os.environ["LOG_TO_FILE"] = "0"', cron_body)  # children inherit console-only too
+        self.assertIn('log.info("Pipeline started"', cron_body)
+        self.assertIn('log.info("Pipeline completed"', cron_body)
+        self.assertIn("log.exception(", cron_body)  # failures carry a traceback into Modal's logs
+        self.assertNotIn("print(", cron_body)
+        self.assertNotIn("traceback.print_exc", cron_body)
+        self.assertNotIn("volumes", decorator_block("run_pipeline"))  # logging must not attach the dashboard Volume
+
+    def test_dashboard_configures_file_logging_before_validating_and_logs_startup(self):
+        self.assertLess(DASHBOARD_BODY.index('lc.configure_logging("dashboard")'), DASHBOARD_BODY.index("validate_dashboard_config("))
+        for message in ("Dashboard starting", "Dashboard configuration validated", "Output directory initialized",
+                        "Dashboard server starting", "Dashboard configuration invalid"):
+            self.assertIn(message, DASHBOARD_BODY)
+        self.assertNotIn("print(", DASHBOARD_BODY)
+        self.assertNotIn("DASHBOARD_TOKEN\"]", DASHBOARD_BODY)  # the token is never passed to a logger
+
+    def test_logs_live_on_the_existing_dashboard_volume_and_no_second_volume_exists(self):
+        self.assertEqual(SRC.count("modal.Volume.from_name("), 1)
+        self.assertIn('volumes={"/app/output": dashboard_volume}', decorator_block("dashboard"))
+
+
 class StartupValidation(unittest.TestCase):
     GOOD = {"DASHBOARD_TOKEN": "t" * 32, "DASHBOARD_ALLOWED_HOSTS": "ws--job-apply-agent-dashboard.modal.run"}
 

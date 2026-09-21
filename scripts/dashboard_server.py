@@ -18,12 +18,13 @@ Security model
 import argparse
 import hmac
 import json
+import logging
 import mimetypes
 import os
 import re
 import sys
 import threading
-import traceback
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -47,11 +48,17 @@ import dashboard_data as dd  # noqa: E402
 import dashboard_tasks as tasks  # noqa: E402
 import drive_resumes  # noqa: E402
 import jd_analysis  # noqa: E402
+import log_reader  # noqa: E402
+import logging_config as lc  # noqa: E402
 import no_fabrication as nf  # noqa: E402
 import resume_store  # noqa: E402
 import scrape_jobs  # noqa: E402
 import tailoring_service  # noqa: E402
 from tracker_service import TrackerError, tracker  # noqa: E402
+
+logger = lc.get_logger("dashboard")
+auth_log = lc.get_logger("auth")
+tailoring_log = lc.get_logger("tailoring")
 
 MAX_BODY = 1_048_576
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -255,6 +262,8 @@ def _start_tailor(fields, *, job_id=None, resume_id=None, pipeline_score=None):
     """The only place a tailoring task is started. Manual JD and scraped-job requests
     both end up here, and from here in tailoring_service.tailor_resume()."""
     _require_master()
+    tailoring_log.info("Tailoring requested", extra={"job_id": job_id, "resume_id": resume_id,
+                                                      "source": fields["source"], "company": fields["company"]})
 
     def work(task):
         result = tailoring_service.tailor_resume(
@@ -395,14 +404,17 @@ def _export_local(rid, n, fmt):
     """Markdown -> Google Doc -> local v<n>.<fmt> (the dashboard download + the file Drive gets)."""
     import tailor_job  # gws + Docs export shared with the Drive pipeline
 
+    ctx = {"resume_id": rid, "version": n, "format": fmt}
     try:
         tailor_job.export_doc_file(resume_store.version_path(rid, n, "md"),
                                    resume_store.version_path(rid, n, fmt), EXPORT_FORMATS[fmt])
     except Exception as e:  # noqa: BLE001 -- gws missing / not signed in / Docs API error
+        tailoring_log.error("Resume export failed", exc_info=True, extra=ctx)
         detail = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
         raise RuntimeError(f"{'PDF' if fmt == 'pdf' else 'DOCX'} generation failed: {detail}. "
                            "Check that the Google Workspace CLI (gws) is signed in, or download the Markdown.") from e
     resume_store.mark_export(rid, n, fmt)
+    tailoring_log.info(f"{fmt.upper()} export completed", extra=ctx)
 
 
 def _safe_filename(meta, ext):
@@ -550,6 +562,24 @@ def settings(req):
 
 
 # ---------------------------------------------------------------------------
+# application logs (read-only viewer over <output>/logs -- see log_reader.py for the safety rules)
+# ---------------------------------------------------------------------------
+
+@route("GET", "/api/logs")
+def logs_list(req):
+    try:
+        filters = log_reader.parse_filters({k: req.q(k) for k in
+                                            ("level", "component", "date", "limit", "offset", *log_reader.ID_FIELDS)})
+    except log_reader.LogQueryError as e:
+        raise ApiError(400, str(e), "bad_log_query") from None
+    try:
+        return log_reader.query(lc.default_log_dir(), filters)
+    except OSError:
+        logger.exception("Could not read application logs")
+        raise ApiError(500, "Unable to load application logs.", "logs_unavailable") from None
+
+
+# ---------------------------------------------------------------------------
 # HTTP plumbing
 # ---------------------------------------------------------------------------
 
@@ -569,7 +599,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- helpers
     def _send(self, status, body, ctype, extra=None):
+        self.response_status = status
         self.send_response(status)
+        self.send_header("X-Request-ID", getattr(self, "request_id", "-"))
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Content-Security-Policy", CSP)
@@ -586,6 +618,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(payload).encode("utf-8"), "application/json; charset=utf-8")
 
     def _error(self, status, message, code="error"):
+        self.error_code = code
         self._json(status, {"error": {"code": code, "message": message}})
 
     def _authorized(self):
@@ -621,6 +654,35 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _dispatch(self, method):
+        """One request: assign/echo a request id, run it, log method/path/status/duration.
+        Never logs headers, query strings or bodies (tokens, JDs and resumes travel there)."""
+        self.request_id = lc.safe_request_id(self.headers.get("X-Request-ID")) or lc.new_request_id()
+        self.response_status, self.error_code = None, None
+        started = time.monotonic()
+        with lc.bind(request_id=self.request_id):
+            try:
+                self._handle(method)
+            finally:
+                self._log_request(method, urlsplit(self.path).path, started)
+
+    def _log_request(self, method, path, started):
+        status = self.response_status or 0
+        # successful polling / static traffic is DEBUG so it can't drown (or rotate away) real events
+        quiet = status and status < 400 and (not path.startswith("/api/") or path.startswith(("/api/tasks/", "/api/logs")))
+        if quiet:
+            level = logging.DEBUG
+        elif 400 <= status < 500:
+            level = logging.WARNING
+        else:
+            level = logging.ERROR if (status >= 500 or not status) else logging.INFO
+        try:
+            logger.log(level, "Dashboard request", extra={
+                "method": method, "path": path[:200], "status": status,
+                "duration_ms": int((time.monotonic() - started) * 1000), **({"error": self.error_code} if self.error_code else {})})
+        except Exception:  # noqa: BLE001 -- logging must never affect the response
+            pass
+
+    def _handle(self, method):
         self.body_read = False
         try:
             self._check_origin(method != "GET")
@@ -636,11 +698,12 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception:  # noqa: BLE001
-            traceback.print_exc()
+            logger.exception("Unhandled error while serving request", extra={"method": method})
             self._error(500, "Internal error", "internal")
 
     def _api(self, method, url):
         if url.path != "/api/auth" and not self._authorized():
+            auth_log.warning("Authentication failed", extra={"method": method, "path": url.path[:200]})
             raise ApiError(401, "Authentication required", "unauthorized")
         path_matched = False
         for m, pattern, fn in ROUTES:
@@ -713,16 +776,20 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--open", action="store_true", help="open the dashboard in a browser")
     args = ap.parse_args()
+    lc.configure_logging("dashboard")
     server = make_server(args.host, args.port)
     url = f"http://{args.host}:{server.server_address[1]}/"
     print(f"Job Application AI Agent dashboard: {url}"
           + ("  (token required)" if os.environ.get("DASHBOARD_TOKEN") else ""))
     if args.open:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
+    logger.info("Dashboard server starting", extra={"host": args.host, "port": server.server_address[1],
+                                                    "auth": bool(os.environ.get("DASHBOARD_TOKEN"))})
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nshutting down")
+        logger.info("Dashboard server stopped")
 
 
 if __name__ == "__main__":

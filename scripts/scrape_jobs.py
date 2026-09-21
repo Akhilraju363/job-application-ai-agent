@@ -17,8 +17,11 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import logging_config as lc  # noqa: E402
 import paths  # noqa: E402
 from activity import log_event  # noqa: E402
+
+log = lc.get_logger("scraper")
 
 ACTOR_ID = "curious_coder~linkedin-jobs-scraper"
 RUN_URL = f"https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items"
@@ -112,6 +115,7 @@ def scrape_jobs(keywords="Full Stack Java Spring Boot Angular AWS Developer", lo
 
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    lc.configure_logging("pipeline")
     import artifacts
 
     force = "--force" in sys.argv or os.environ.get("FORCE_SCRAPE", "").strip().lower() in (
@@ -124,20 +128,18 @@ if __name__ == "__main__":
 
     if not force and cache_age is not None and cache_age < CACHE_MAX_AGE_SECONDS:
         cached = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-        print(
-            f"Using cached {CACHE_PATH} ({len(cached)} jobs, "
-            f"{cache_age / 60:.0f}m old) -- pass --force or set FORCE_SCRAPE=true to re-scrape"
-        )
+        log.info("Using cached scrape (pass --force or set FORCE_SCRAPE=true to re-scrape)",
+                 extra={"cached_count": len(cached), "cache_age_minutes": round(cache_age / 60), "path": str(CACHE_PATH)})
         artifacts.push("raw_jobs.json")
         sys.exit(0)
 
     prefs = load_preferences()
     limit = prefs["limit"]
-    print(f"{'Local' if LOCAL_MODE else 'Cloud'} mode -- job limit: {limit}")
+    log.info("Scrape started", extra={"mode": "local" if LOCAL_MODE else "cloud", "job_limit": limit})
     jobs = scrape_jobs(keywords=prefs["keywords"], location=prefs["location"],
                        date_posted=prefs["date_posted"], limit=limit)
     CACHE_PATH.parent.mkdir(exist_ok=True)
     CACHE_PATH.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
     artifacts.push("raw_jobs.json")
-    print(f"Scraped {len(jobs)} jobs -> {CACHE_PATH}")
+    log.info("Scrape completed", extra={"scraped_count": len(jobs), "path": str(CACHE_PATH)})
     log_event("jobs_found", f"Found {len(jobs)} new jobs from LinkedIn", count=len(jobs), source="LinkedIn")

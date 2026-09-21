@@ -30,9 +30,10 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
+
+import logging_config as lc
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = ROOT / "output"
@@ -102,7 +103,11 @@ def _save_sidecar(data):
 
 
 def _warn(msg):
-    print(f"  [artifacts] {msg}", file=sys.stderr)
+    lc.get_logger("pipeline").warning("Artifact sync: " + str(msg))
+
+
+def _note(msg):
+    lc.get_logger("pipeline").info("Artifact sync: " + str(msg))
 
 
 def _folder_id():
@@ -181,7 +186,7 @@ def pull(name):
 
     sidecar[name] = meta["modifiedTime"]
     _save_sidecar(sidecar)
-    _warn(f"pulled {name} from Drive ({_remote_name(name)})")
+    _note(f"pulled {name} from Drive ({_remote_name(name)})")
 
 
 def push(name):
@@ -224,4 +229,4 @@ def push(name):
         os.utime(local, (ts, ts))
     except OSError:
         pass
-    _warn(f"pushed {name} to Drive ({remote_name})")
+    _note(f"pushed {name} to Drive ({remote_name})")

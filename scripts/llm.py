@@ -56,6 +56,10 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 import requests
 
+import logging_config as lc
+
+log = lc.get_logger("llm")
+
 REQUEST_DEADLINE = int(os.environ.get("llm_request_deadline", "120"))
 MAX_RETRIES = max(1, int(os.environ.get("llm_max_retries", "2")))
 
@@ -155,7 +159,7 @@ def validate_local_setup():
         raise RuntimeError(f"Ollama endpoint {base} returned an unexpected response: {e}") from e
     if model not in available:
         raise RuntimeError(f"Ollama model '{model}' is not available. Run:\n    ollama pull {model}")
-    print(f"Ollama endpoint: {base}\nOllama model: {model}\nLocal mode: enabled")
+    log.info("Local mode enabled", extra={"endpoint": base, "model": model})
 
 
 class AllProvidersFailed(RuntimeError):
@@ -223,7 +227,7 @@ def _backoff_429(resp, attempt):
     if retry_after is None:
         retry_after = 5.0 * (2 ** (attempt - 1))  # 5, 10, 20, ...
     wait = min(retry_after + random.uniform(0, 3), 90.0)
-    print(f"    429 -- backing off {wait:.1f}s (attempt {attempt})")
+    log.warning("LLM rate limited (429), backing off", extra={"wait_seconds": round(wait, 1), "attempt": attempt})
     time.sleep(wait)
 
 
@@ -259,7 +263,7 @@ def _call_provider(provider, prompt, label, json_mode):
             if status == 400 and send_json_param:
                 # provider likely rejects response_format -- retry once without it, then
                 # fall back to tolerant parsing of a plain completion.
-                print(f"  {provider['name']}: 400 with response_format -- retrying without it")
+                log.warning("LLM 400 with response_format, retrying without it", extra={"provider": provider["name"]})
                 payload.pop("response_format", None)
                 send_json_param = False
                 continue
@@ -273,8 +277,9 @@ def _call_provider(provider, prompt, label, json_mode):
                 _backoff_429(resp, attempt)
             else:
                 wait = min(30.0, 2.0 * (2 ** attempt)) + random.uniform(0, 2)
-                print(f"  retry {attempt}/{MAX_RETRIES} {provider['name']}/{provider['model']} "
-                      f"for {label!r} after {last} ({wait:.1f}s)")
+                log.warning("LLM request failed, retrying", extra={
+                    "provider": provider["name"], "model": provider["model"], "attempt": attempt,
+                    "max_retries": MAX_RETRIES, "reason": last, "wait_seconds": round(wait, 1)})
                 time.sleep(wait)
         finally:
             ex.shutdown(wait=False)
@@ -299,15 +304,25 @@ def call_llm(prompt, label, json_mode=False):
         )
 
     failures = []
-    for provider in PROVIDERS:
+    for index, provider in enumerate(PROVIDERS):
+        # metadata only: never the prompt, the response, headers or keys
+        meta = {"provider": provider["name"], "model": provider["model"], "json_mode": json_mode, "label": str(label)[:80]}
+        if index:
+            log.info("LLM fallback provider selected", extra=meta)
+        log.info("LLM request started", extra=meta)
+        started = time.monotonic()
         try:
-            return _call_provider(provider, prompt, label, json_mode)
+            result = _call_provider(provider, prompt, label, json_mode)
+            log.info("LLM request completed", extra={**meta, "duration_ms": int((time.monotonic() - started) * 1000)})
+            return result
         except _SkipProvider as e:
-            print(f"  provider {provider['name']} unavailable for {label!r}: {e}")
+            log.warning("LLM request failed", extra={**meta, "reason": str(e),
+                                                       "duration_ms": int((time.monotonic() - started) * 1000)})
             failures.append(f"{provider['name']} ({e})")
         if len(PROVIDERS) > 1:
             time.sleep(random.uniform(0.5, 1.5))  # small gap before the next provider
 
+    log.error("All LLM providers failed", extra={"provider_count": len(PROVIDERS), "label": str(label)[:80]})
     raise AllProvidersFailed(
         f"all {len(PROVIDERS)} provider(s) failed for {label!r}: " + "; ".join(failures)
     )

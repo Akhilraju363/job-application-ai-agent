@@ -89,6 +89,7 @@ job-apply-agent/
     tracker_service.py       # cached, failure-tolerant wrapper over write_sheet.py
     dashboard_data.py / dashboard_tasks.py / dashboard_server.py   # dashboard read models, background tasks, stdlib HTTP server
     activity.py / paths.py   # activity log (output/activity_log.jsonl), shared paths
+    logging_config.py / log_reader.py   # ONE logging setup (console->Modal logs + rotating files in output/logs) and the bounded /api/logs reader; never log secrets/JDs/resumes
   web/                       # dashboard SPA (plain ES modules, no build); web/tests = node --test
   tests/test_llm.py           # stdlib unittest: provider failover, 429/404/timeout/JSON handling, reconciliation
   output/                    # gitignored — raw/scored/tailored job data + .artifact_sync.json sidecar

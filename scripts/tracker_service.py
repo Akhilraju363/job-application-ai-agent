@@ -11,8 +11,11 @@ import time
 from datetime import date
 
 import activity
+import logging_config as lc
 import write_sheet
 from job_links import canonical_link
+
+log = lc.get_logger("tracker")
 
 TTL_SECONDS = 45
 FAILURE_TTL_SECONDS = 15  # don't re-run a failing `gws` call once per dashboard widget
@@ -66,8 +69,10 @@ class Tracker:
                             "configured": False}
                 rows = write_sheet.read_tracker(sid)
                 self._cache = (time.time(), rows)
+                log.info("Tracker read", extra={"row_count": len(rows)})
                 return {"rows": rows, "available": True, "error": None, "stale": False, "configured": True}
             except Exception as e:  # noqa: BLE001 -- gws missing / not authed / offline
+                log.error("Tracker read failed", exc_info=True)
                 self._failure = (time.time(), _short(e))
                 return self._failed(self._failure[1])
 
@@ -96,6 +101,10 @@ class Tracker:
                 if resume_path and not _is_url(existing["resume_path"]):  # blank, or a legacy local path
                     write_sheet.update_range(sid, f"Sheet1!E{existing['row']}", [[resume_path]])
                     existing["resume_path"] = resume_path
+                    log.info("Tracker row updated", extra={"resume_id": resume_id, "company": company, "row": existing["row"]})
+                else:
+                    log.info("Duplicate tracker row avoided", extra={"resume_id": resume_id, "company": company,
+                                                                      "row": existing["row"]})
                 self.invalidate()
                 return {"result": "exists", "row": existing}
             row = write_sheet.build_row({"title": title, "company": company, "link": link,
@@ -105,7 +114,9 @@ class Tracker:
             write_sheet.append_rows(sid, [row])
             self.invalidate()
         except Exception as e:  # noqa: BLE001
+            log.error("Tracker row save failed", exc_info=True, extra={"resume_id": resume_id, "company": company})
             raise TrackerError(_short(e)) from e
+        log.info("Tracker row created", extra={"resume_id": resume_id, "company": company})
         activity.log_event("tracker_saved", f"Saved {title} at {company} to the tracker",
                            company=company, title=title, link=link or None)
         return {"result": "added", "row": None}
@@ -126,7 +137,9 @@ class Tracker:
         except (LookupError, ValueError):
             raise
         except Exception as e:  # noqa: BLE001
+            log.error("Tracker status update failed", exc_info=True, extra={"status": status})
             raise TrackerError(_short(e)) from e
+        log.info("Tracker row updated", extra={"company": row["company"], "row": row["row"], "status": status})
         activity.log_event("status_changed", f"{row['title']} at {row['company']} marked {status}",
                            company=row["company"], title=row["title"], link=link or None, status=status)
         return {"row": row["row"], "status": status}

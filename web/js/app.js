@@ -12,6 +12,7 @@ import { tailorPage } from './pages/tailor.js';
 import { applicationsPage, trackerBoardPage } from './pages/applications.js';
 import { alertsPage } from './pages/alerts.js';
 import { settingsPage } from './pages/settings.js';
+import { logsPage } from './pages/logs.js';
 
 const NAV = [
   { path: '/', label: 'Dashboard', icon: 'home', page: dashboardPage },
@@ -20,6 +21,7 @@ const NAV = [
   { path: '/applications', label: 'Applications', icon: 'send', page: applicationsPage },
   { path: '/job-tracker', label: 'Job Tracker', icon: 'list', page: trackerBoardPage },
   { path: '/job-alerts', label: 'Job Alerts', icon: 'bell', page: alertsPage },
+  { path: '/logs', label: 'Logs', icon: 'terminal', page: logsPage },
   { path: '/settings', label: 'Settings', icon: 'settings', page: settingsPage },
 ];
 

@@ -13,7 +13,10 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
+import logging_config as lc
 import paths
+
+log = lc.get_logger("resume")
 
 _ID_RE = re.compile(r"^[0-9a-f]{12}$")
 _lock = threading.RLock()
@@ -73,6 +76,7 @@ def create(*, source, job, analysis, match, provider, dedupe_key=None, master_ve
             "versions": [], "tracker": None}
     with _lock:
         _write_meta(rid, meta)
+    log.info("Resume record created", extra={"resume_id": rid, "source": source})
     return rid
 
 
@@ -90,6 +94,8 @@ def add_version(rid, markdown, kind, validation, match=None, analysis=None):
             meta["analysis"] = analysis
         meta["updated_at"] = now_iso()
         _write_meta(rid, meta)
+    log.info("Resume version stored", extra={"resume_id": rid, "version": n, "kind": kind,
+                                              "verification_ok": bool((validation or {}).get("ok"))})
     return n
 
 

@@ -16,6 +16,9 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from llm import call_llm, validate_local_setup  # noqa: E402
 from activity import log_event  # noqa: E402
+import logging_config as lc  # noqa: E402
+
+log = lc.get_logger("research")
 
 RESEARCH_PROMPT = """Give 3-5 short talking points about __COMPANY__ useful for someone
 interviewing for a __TITLE__ role there -- what they do/their product, engineering culture
@@ -30,6 +33,7 @@ def research_company(company, title):
 
 
 if __name__ == "__main__":
+    lc.configure_logging("pipeline")
     import artifacts
 
     validate_local_setup()  # no-op unless LOCAL_MODE=true; fails loudly, never falls back to cloud
@@ -48,15 +52,15 @@ if __name__ == "__main__":
         try:
             job["company_notes"] = research_company(job["company"], job["title"])
             researched += 1
-            print(f"researched {job['company']}")
+            log.info("Company research completed", extra={"company": job["company"]})
             log_event("company_research", f"Company research completed for {job['company']}",
                       company=job["company"], title=job["title"], link=job.get("link"))
         except Exception as e:
             job["company_notes"] = ""
-            print(f"ERROR researching {job['company']}: {e}")
+            log.error("Company research failed", exc_info=True, extra={"company": job["company"]})
         tailored_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
         artifacts.push("tailored_jobs.json")
 
     tailored_path.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
     artifacts.push("tailored_jobs.json")
-    print(f"{researched} companies researched")
+    log.info(f"{researched} companies researched", extra={"researched_count": researched})

@@ -22,8 +22,11 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import logging_config as lc
 import resume_store
 import write_sheet  # reuses its gws resolution (Windows .cmd-shim workaround)
+
+log = lc.get_logger("drive")
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
 MIME = {"pdf": "application/pdf",
@@ -109,14 +112,18 @@ def _find_existing(key):
 def upload_resume(rid, n, fmt, job=None):
     """Upload output/generated_resumes/<rid>/v<n>.<fmt> to Drive, or reuse the file already
     uploaded for (rid, n, fmt). Returns {file_id, url, name, folder_id, reused}."""
+    ctx = {"resume_id": rid, "version": int(n), "format": fmt}
     if fmt not in MIME:
+        log.error("Drive upload rejected: unsupported format", extra=ctx)
         raise DriveUploadError(f"Unsupported resume format for Drive: {fmt}")
     path = resume_store.version_path(rid, n, fmt)
     if not path.exists():
+        log.error("Drive upload rejected: local file not generated yet", extra=ctx)
         raise DriveUploadError(f"Google Drive upload failed: the {fmt.upper()} hasn't been generated locally yet.")
     job = job or resume_store.get(rid, with_markdown=False)["job"]
     key, name = resume_key(rid, n, fmt), drive_file_name(rid, n, fmt)
 
+    log.info("Drive upload started", extra=ctx)
     with _lock:
         last = None
         for attempt in range(1, ATTEMPTS + 1):
@@ -124,6 +131,7 @@ def upload_resume(rid, n, fmt, job=None):
                 # Look first on every attempt: a create that "failed" may have landed on Drive.
                 existing = _find_existing(key)
                 if existing:
+                    log.info("Drive existing file reused", extra={**ctx, "drive_file_id": existing["id"]})
                     return {"file_id": existing["id"], "url": _link(existing), "name": existing.get("name", name),
                             "folder_id": (existing.get("parents") or [None])[0], "reused": True}
                 folder_id = _ensure_folder(folder_name(job), _parent_id())
@@ -134,15 +142,19 @@ def upload_resume(rid, n, fmt, job=None):
                                cwd=str(path.parent.resolve()))
                 if not created.get("id"):
                     raise RuntimeError("Drive returned no file id")
+                log.info("Drive upload completed", extra={**ctx, "drive_file_id": created["id"], "attempt": attempt})
                 return {"file_id": created["id"], "url": _link(created), "name": name, "folder_id": folder_id,
                         "reused": False}
-            except DriveUploadError:
+            except DriveUploadError as e:
+                log.error("Drive upload failed", extra={**ctx, "reason": str(e)[:200]})
                 raise
             except Exception as e:  # noqa: BLE001 -- any gws/auth/network failure
                 last = e
                 if _AUTH_WORDS.search(str(e)) or attempt == ATTEMPTS:
                     break  # re-trying an expired login only repeats the failure
+                log.warning("Drive upload retry", extra={**ctx, "attempt": attempt, "reason": type(e).__name__})
                 time.sleep(RETRY_DELAY_SECONDS)
+        log.error("Drive upload failed", exc_info=last, extra={**ctx, "attempts": attempt})
         raise DriveUploadError(_explain(last)) from last
 
 

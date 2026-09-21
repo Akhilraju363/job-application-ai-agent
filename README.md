@@ -253,6 +253,42 @@ modal deploy modal_app.py   # also (re)deploys the daily cron, code unchanged
   as the cron.
 - Local use is unchanged: `python scripts/dashboard_server.py` on `127.0.0.1:8765`.
 
+## Logging
+
+Diagnostics for whoever runs this (developer/operator), separate from the **Recent Activity** feed
+(`output/activity_log.jsonl`), which stays the user-facing history. Everything goes through one
+module, [`scripts/logging_config.py`](scripts/logging_config.py) (standard `logging`, no new
+dependency); modules just call `get_logger("tailoring")` etc.
+
+```
+code -> Python logging -+-> stderr  -> Modal runtime logs   (always; survives a crash)
+                        +-> rotating files -> output/logs/  -> Modal Volume on the dashboard
+```
+
+- **Application logs** — `output/logs/` (`/app/output/logs/` on Modal): `application.log` (everything,
+  JSON lines), `errors.log` (ERROR+, with tracebacks) and one file per area (`dashboard`, `pipeline`,
+  `tailoring`, `drive`, `tracker`). The directory is created automatically; if it can't be written the
+  app keeps running with console logging only.
+- **Modal logs** — the same records, human-readable, in Modal's runtime logs for both the dashboard and
+  the daily cron (`modal app logs job-apply-agent`). The cron logs to the console only: it has no Volume.
+- **Dashboard → Logs page** — authenticated viewer over `GET /api/logs` (level, component, date, and
+  request/task/resume/job id filters, pagination, click a row for the traceback). It can only read the
+  log directory, validates every filter, caps results at 500 per page and never loads a whole file.
+  Level `ERROR` also shows `CRITICAL`.
+- **Ids** — every dashboard response carries `X-Request-ID` (a safe client-supplied one is kept); the
+  same id, plus the background `task_id`, `resume_id` and `job_id` when known, appears on the related
+  log lines, so one request can be followed from the HTTP call to the LLM call to the Drive upload.
+- **Rotation** — `RotatingFileHandler`, 10 MB x 5 backups per file by default
+  (`LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`); only log files rotate — resumes and the activity log are never
+  touched. Other settings: `LOG_LEVEL` (default `INFO`), `LOG_DIR`, `LOG_TO_FILE=0`.
+- **Security** — never logged: the dashboard token, API keys, Google credentials, `Authorization`/cookie
+  headers, request bodies, query strings, prompts, model output, full JDs or full resumes. Only metadata
+  (ids, counts, durations, provider/model, status codes). A redaction pass masks secret-shaped values as a
+  safety net, and `/api/logs` redacts again on the way out.
+- **Persistence** — dashboard logs live on the existing `job-apply-agent-dashboard` Volume (no new
+  Volume), committed every 30s. A container restart does not necessarily preserve an in-progress
+  background tailoring task, but the log files on the Volume remain.
+
 ## Recovering a failed daily run
 
 Normal day: the Modal cron runs the free provider chain (Groq → OpenRouter → Gemini), finishes,

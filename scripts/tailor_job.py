@@ -29,6 +29,9 @@ from validate_resume import validate
 from llm import call_llm, validate_local_setup  # noqa: E402 -- LLM endpoint/model/retry config, .env-driven
 from job_links import canonical_link  # noqa: E402
 from activity import log_event  # noqa: E402
+import logging_config as lc  # noqa: E402
+
+log = lc.get_logger("tailoring")
 
 TAILOR_PROMPT = """You are tailoring a candidate's resume to a specific job posting.
 
@@ -165,6 +168,7 @@ def build_and_upload_resume(markdown_path, folder_id, tmp_pdf_path):
 
 
 if __name__ == "__main__":
+    lc.configure_logging("pipeline")
     import artifacts
 
     validate_local_setup()  # no-op unless LOCAL_MODE=true; fails loudly, never falls back to cloud
@@ -177,6 +181,7 @@ if __name__ == "__main__":
 
     jobs = json.loads((ROOT / "output" / "scored_jobs.json").read_text(encoding="utf-8"))
     qualified = [j for j in jobs if j.get("qualified")]
+    log.info("Tailoring started", extra={"operation": "pipeline_tailor", "qualified_count": len(qualified)})
 
     tailored_dir = ROOT / "output" / "tailored"
     tailored_dir.mkdir(parents=True, exist_ok=True)
@@ -204,7 +209,7 @@ if __name__ == "__main__":
         # scraped this run under different tracking params) must not both create a
         # Drive folder; the second sees the first's "saved" write and skips.
         if by_link.get(key, {}).get("status") == "saved":
-            print(f"SKIP (already tailored) {folder_name}")
+            log.info("Skipping already-tailored job", extra={"folder": folder_name})
             continue
 
         try:
@@ -212,7 +217,7 @@ if __name__ == "__main__":
             ok, reason = validate(text)
             if not ok:
                 by_link[key] = {**job, "status": "flagged_validation_failed", "reason": reason}
-                print(f"FLAGGED {folder_name}: {reason}")
+                log.warning("Tailored resume flagged by validation", extra={"folder": folder_name, "reason": str(reason)[:200]})
             else:
                 md_path = tailored_dir / f"{folder_name}.md"
                 md_path.write_text(text, encoding="utf-8")
@@ -227,12 +232,12 @@ if __name__ == "__main__":
                     "resume_link": resume_link, "status": "saved",
                     "tailored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 }
-                print(f"SAVED {folder_name}")
+                log.info("Tailored resume saved", extra={"folder": folder_name, "company": job["company"]})
                 log_event("resume_tailored", f"Resume tailored for {job['company']} - {job['title']}",
                           company=job["company"], title=job["title"], link=link, source="pipeline")
         except Exception as e:
             by_link[key] = {**job, "status": "flagged_error", "reason": str(e)}
-            print(f"ERROR {folder_name}: {e}")
+            log.error("Tailoring failed for job", exc_info=True, extra={"folder": folder_name})
 
         out_path.write_text(json.dumps(list(by_link.values()), indent=2), encoding="utf-8")
         artifacts.push("tailored_jobs.json")
@@ -243,4 +248,5 @@ if __name__ == "__main__":
     results = list(by_link.values())
     saved = sum(1 for r in results if r["status"] == "saved")
     flagged = len(results) - saved
-    print(f"{len(qualified)} qualified, {saved} saved, {flagged} flagged")
+    log.info(f"{len(qualified)} qualified, {saved} saved, {flagged} flagged",
+             extra={"qualified_count": len(qualified), "saved_count": saved, "flagged_count": flagged})
