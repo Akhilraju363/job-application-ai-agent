@@ -210,6 +210,47 @@ name on every run. Get the id once from your master "Job Application Tracker" sh
 secret** — Modal must use the cloud provider chain, and `modal_app.py` refuses to start if it
 finds `llm_base_url` set.
 
+## Deploying the dashboard on Modal (UI + API, one URL)
+
+`modal_app.py` also defines a `dashboard` web function that runs the same
+`scripts/dashboard_server.py` you use locally. That one process serves the `web/` UI **and** the
+`/api/...` routes, so the browser talks to a single HTTPS origin — no GitHub Pages, no second
+service, no CORS. The frontend only uses relative `/api/...` URLs.
+
+```
+Browser --HTTPS--> https://<workspace>--job-apply-agent-dashboard.modal.run
+                     -> dashboard_server.py (0.0.0.0:8765)
+                          +- /            web/ static UI
+                          +- /api/...     dashboard API (bearer token)
+```
+
+**Two-step secret setup.** Add both keys to `job-apply-agent-secrets` (the function refuses to
+start without either, so it can never run unauthenticated or with Host checking off):
+
+1. `DASHBOARD_TOKEN` — a long random string (`python -c "import secrets; print(secrets.token_urlsafe(32))"`).
+   The UI prompts for it and keeps it in `sessionStorage` only; it is never in the frontend source.
+2. `DASHBOARD_ALLOWED_HOSTS` — the deployed hostname **without** `https://`,
+   `<workspace>--job-apply-agent-dashboard.modal.run` (Modal prints the URL on deploy). Deploy once
+   to see it, set it, then redeploy.
+
+> A Modal secret is replaced as a whole: `modal secret create job-apply-agent-secrets ... --force`
+> drops any key you don't re-list, so include every existing key (see above) plus the two new ones.
+> Or add the keys from the Secrets page of the Modal web dashboard, which avoids re-listing the others.
+
+```bash
+modal deploy modal_app.py   # also (re)deploys the daily cron, code unchanged
+```
+
+- **Persistence:** the `job-apply-agent-dashboard` Volume is mounted at `/app/output` (generated
+  resumes, activity log, preferences), committed every 30s. The cron does **not** mount it and stays
+  stateless. Exported PDF/DOCX files live in Google Drive; the tracker links the Drive URL.
+- **One container:** `max_containers=1` with scale-to-zero (`scaledown_window=900`). Background
+  tailoring/export tasks are held in memory, so a container restart or redeploy while a task is
+  running loses that task — just re-run it (results already saved to Drive/Sheet are unaffected).
+- **Google access:** the same `gws-credentials` secret and `materialize_gws_credentials()` helper
+  as the cron.
+- Local use is unchanged: `python scripts/dashboard_server.py` on `127.0.0.1:8765`.
+
 ## Recovering a failed daily run
 
 Normal day: the Modal cron runs the free provider chain (Groq → OpenRouter → Gemini), finishes,

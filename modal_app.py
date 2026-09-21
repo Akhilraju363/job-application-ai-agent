@@ -64,7 +64,49 @@ image = (
     )
     .add_local_dir("scripts", remote_path=SCRIPTS_REMOTE_PATH)
     .add_local_dir("resume", remote_path="/app/resume")
+    .add_local_dir("web", remote_path="/app/web")
 )
+
+# Dashboard state (generated resumes, activity log, preferences, pipeline artifacts a dashboard
+# action produces). Mounted at /app/output because the pipeline scripts hardcode ROOT/"output".
+# Deliberately NOT attached to the cron: that run stays stateless and resume-safe via the Drive
+# mirror, so a stale volume can never change what the daily run scrapes or skips.
+dashboard_volume = modal.Volume.from_name("job-apply-agent-dashboard", create_if_missing=True)
+DASHBOARD_PORT = 8765
+
+
+def materialize_gws_credentials():
+    """gws credentials are Keychain-encrypted locally; a container has no Keychain, so write the
+    plain credentials file gws also supports and keep its token cache on disk."""
+    import json
+    import os
+
+    os.environ["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
+    config_dir = Path.home() / ".config" / "gws"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "credentials.json").write_text(json.dumps({
+        "client_id": os.environ["client_id"],
+        "client_secret": os.environ["client_secret"],
+        "refresh_token": os.environ["refresh_token"],
+        "type": os.environ["type"],
+    }))
+
+
+def validate_dashboard_config(env):
+    """Fail-fast startup checks for the dashboard (pure, so they are unit-testable).
+
+    The dashboard exposes the real resume, tracker and Drive links, so it must never come up
+    unauthenticated or with Host-header validation off. Raises RuntimeError naming the fix.
+    """
+    if not (env.get("DASHBOARD_TOKEN") or "").strip():
+        raise RuntimeError("DASHBOARD_TOKEN is not set in the Modal secret -- refusing to serve the "
+                           "dashboard unauthenticated. Add a long random token to job-apply-agent-secrets.")
+    if not (env.get("DASHBOARD_ALLOWED_HOSTS") or "").strip():
+        raise RuntimeError("DASHBOARD_ALLOWED_HOSTS is not set in the Modal secret -- add the deployed "
+                           "*.modal.run hostname without https:// (the Host-header check would reject every request).")
+    if (env.get("llm_base_url") or "").strip():
+        raise RuntimeError("llm_base_url is set in the Modal secret -- Modal must use the "
+                           "cloud provider chain, not a local endpoint. Remove it from the secret.")
 
 
 @app.function(
@@ -112,18 +154,7 @@ def run_pipeline(force: bool = False):
     stage = {"name": "startup"}
 
     try:
-        # gws credentials are Keychain-encrypted locally; this container has no
-        # Keychain, so materialize the plain credentials file gws also supports and
-        # tell gws to keep its token cache on disk instead of a (missing) keyring.
-        os.environ["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
-        config_dir = Path.home() / ".config" / "gws"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / "credentials.json").write_text(json.dumps({
-            "client_id": os.environ["client_id"],
-            "client_secret": os.environ["client_secret"],
-            "refresh_token": os.environ["refresh_token"],
-            "type": os.environ["type"],
-        }))
+        materialize_gws_credentials()
 
         workdir = Path("/app")
         (workdir / "output").mkdir(exist_ok=True)
@@ -189,6 +220,57 @@ def run_pipeline(force: bool = False):
             f"Reason: {type(e).__name__}: {e}"
         )
         raise
+
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("job-apply-agent-secrets"),
+        modal.Secret.from_name("gws-credentials"),
+    ],
+    volumes={"/app/output": dashboard_volume},
+    # One container only: dashboard_tasks keeps task state in memory and the stdlib server
+    # serialises LLM work behind a single slot, so a second container would split both.
+    max_containers=1,
+    # Scale to zero when idle, but stay up long enough that a tailoring/export task the UI is
+    # polling is never cut off. Requests in flight keep the container alive regardless.
+    scaledown_window=900,
+    timeout=21600,
+)
+@modal.concurrent(max_inputs=32)
+@modal.web_server(DASHBOARD_PORT, startup_timeout=60)
+def dashboard():
+    """Serves web/ + the JSON API (scripts/dashboard_server.py) at the function's modal.run URL.
+
+    Required in job-apply-agent-secrets:
+      DASHBOARD_TOKEN          bearer token the UI prompts for -- the server refuses to start
+                               without it, since this exposes the real resume and tracker.
+      DASHBOARD_ALLOWED_HOSTS  the deployed hostname (e.g. <workspace>--job-apply-agent-dashboard.modal.run);
+                               known only after the first deploy, then add it and redeploy.
+    """
+    import os
+    import threading
+    import time
+
+    validate_dashboard_config(os.environ)
+
+    materialize_gws_credentials()
+    (Path("/app") / "output").mkdir(exist_ok=True)
+
+    import dashboard_server  # noqa: E402 -- needs SCRIPTS_REMOTE_PATH on sys.path (set at top)
+
+    server = dashboard_server.make_server("0.0.0.0", DASHBOARD_PORT)  # SystemExit if DASHBOARD_TOKEN unset
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def commit_volume_periodically():
+        while True:
+            time.sleep(30)
+            try:
+                dashboard_volume.commit()
+            except Exception as e:  # noqa: BLE001 -- best-effort; Drive stays the source of truth for resumes
+                print(f"volume commit failed: {e}")
+
+    threading.Thread(target=commit_volume_periodically, daemon=True).start()
 
 
 @app.local_entrypoint()
