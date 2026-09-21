@@ -252,7 +252,7 @@ class Errors(unittest.TestCase):
 
     def test_empty_short_and_invalid_jd_are_rejected_before_any_llm_call(self):
         with TempOutput(), mock.patch("llm.call_llm") as a_llm:
-            for bad in (dict(job_description=""), dict(job_description="too short"), dict(job_title=""), dict(company=" "),
+            for bad in (dict(job_description=""), dict(job_description="too short"), dict(job_title=""), dict(job_title="   "),
                         dict(job_url="javascript:alert(1)")):
                 args = dict(job_description=JD_TEXT, job_title="Dev", company="Acme", job_url=None, source=None, job_id=None)
                 args.update(bad)
@@ -393,6 +393,67 @@ class TrackerSave(unittest.TestCase):
         row = write_sheet.build_row({"title": "T", "company": "C", "link": "L", "score": 8, "resume_link": "R", "company_notes": "N"}, "2026-09-20")
         self.assertEqual(row[:8], ["T", "C", "L", "8", "R", "Not Applied", "2026-09-20", "N"])
         self.assertEqual(row[8:], ["LinkedIn", "", "", ""])
+
+
+class OptionalCompany(unittest.TestCase):
+    """Manual JDs may omit the employer: stored as "Company Not Specified", never guessed, never in the resume."""
+
+    def test_blank_company_completes_the_whole_flow_with_the_fallback(self):
+        for blank in ("", "   ", None):
+            with TempOutput():
+                r, t_llm, a_llm = run(company=blank, job_title="JAVA DEVELOPER")
+                self.assertEqual((r["status"], r["job"]["title"], r["job"]["company"]),
+                                 ("completed", "JAVA DEVELOPER", "Company Not Specified"), repr(blank))
+                self.assertTrue(r["verification"]["ok"])
+                self.assertNotIn("Company Not Specified", r["resume"]["content"])   # metadata, not an employer
+                self.assertNotIn("Company Not Specified", a_llm.call_args.args[0])  # nor shown to either model as one
+                self.assertNotIn("Company Not Specified", t_llm.call_args.args[0])
+                self.assertIn("COMPANY: (not specified)", t_llm.call_args.args[0])
+
+    def test_no_company_is_invented(self):
+        with TempOutput():
+            r, _, _ = run(company="", job_title="Java Developer",
+                          job_description="Looking for Java Developers to join in Bangalore! " + JD_TEXT)
+        self.assertEqual(r["job"]["company"], "Company Not Specified")
+        for wrong in ("Bangalore", "LinkedIn", "Java Developer", "Recruiter", "Unknown"):
+            self.assertNotIn(wrong, r["job"]["company"])
+
+    def test_real_company_is_used_when_supplied(self):
+        with TempOutput():
+            r, t_llm, _ = run(company="ABC Technologies")
+        self.assertEqual(r["job"]["company"], "ABC Technologies")
+        self.assertIn("COMPANY: ABC Technologies", t_llm.call_args.args[0])
+
+    def test_placeholder_leaking_into_the_resume_is_blocked_by_verification(self):
+        leaked = BASE.replace("REST API design", "REST API design at Company Not Specified")
+        self.assertIn("Company Not Specified", leaked)
+        v = ts.verify(leaked, BASE, analysis=ANALYSIS)
+        self.assertFalse(v["ok"])
+        self.assertTrue(any("Company Not Specified" in p for p in v["problems"]), v["problems"])
+
+    def test_storage_and_ids_are_valid_without_a_company(self):
+        with TempOutput():
+            r, _, _ = run(company="", job_url=None)
+            rec = resume_store.get(r["resume"]["id"])
+        self.assertRegex(r["resume"]["id"], r"^[0-9a-f]{12}")
+        self.assertEqual(rec["job"]["company"], "Company Not Specified")
+        self.assertTrue(rec["job"]["link"].startswith("manual:"))
+
+    def test_duplicate_prevention_still_reuses_a_blank_company_resume(self):
+        with TempOutput():
+            first, _, _ = run(company="")
+            second, t_llm, _ = run(company="")
+            third, _, _ = run(company="Company Not Specified")
+        self.assertFalse(first["reused"])
+        self.assertTrue(second["reused"])
+        t_llm.assert_not_called()
+        self.assertEqual(second["resume"]["id"], first["resume"]["id"])
+        self.assertEqual(third["resume"]["id"], first["resume"]["id"])   # same job identity (link-keyed), unchanged
+
+    def test_tracker_row_has_the_fallback_company(self):
+        row = write_sheet.build_row({"title": "JAVA DEVELOPER", "company": ja.normalize_job("JAVA DEVELOPER", "", "", JD_TEXT)["company"],
+                                     "link": "manual:abc", "score": 8}, "2026-09-21")
+        self.assertEqual(row[:3], ["JAVA DEVELOPER", "Company Not Specified", "manual:abc"])
 
 
 if __name__ == "__main__":

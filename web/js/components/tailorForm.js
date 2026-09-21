@@ -3,13 +3,14 @@
 import { h } from '../dom.js';
 import { icon } from '../icons.js';
 import { toast, withBusy } from '../ui.js';
+import { MAX_JD, validateTailorInput } from '../lib/tailorValidation.js';
 
-const MIN_JD = 80, MAX_JD = 30000, MAX_FILE = 200 * 1024;
+const MAX_FILE = 200 * 1024;
 
 export function tailorForm({ onSubmit }) {
   const field = (id, label, props = {}) => h('label', { class: 'field', for: id }, h('span', {}, label), h('input', { id, class: 'input', autocomplete: 'off', ...props }));
   const title = field('jd-title', 'Job Title', { placeholder: 'e.g. Full Stack Java Developer', maxlength: 160, required: true });
-  const company = field('jd-company', 'Company', { placeholder: 'e.g. Acme Corp', maxlength: 160, required: true });
+  const company = field('jd-company', 'Company', { placeholder: 'e.g. Acme Corp (optional)', maxlength: 160 });
   const url = field('jd-url', 'Job URL (optional)', { type: 'url', placeholder: 'https://…', maxlength: 2000 });
   const source = h('label', { class: 'field', for: 'jd-source' }, h('span', {}, 'Job Source'),
     h('select', { id: 'jd-source', class: 'input' }, ...['LinkedIn', 'Naukri', 'Other'].map((o) => h('option', { value: o }, o))));
@@ -51,10 +52,8 @@ export function tailorForm({ onSubmit }) {
   const form = h('form', { class: 'card tailor-form', novalidate: true, onSubmit: async (e) => {
     e.preventDefault();
     const v = values();
-    if (!v.title || !v.company) return showError('Job title and company are required.');
-    if (v.description.length < MIN_JD) return showError(`Paste the job description (at least ${MIN_JD} characters).`);
-    if (v.description.length > MAX_JD) return showError(`That job description is too long (max ${MAX_JD.toLocaleString()} characters).`);
-    if (v.url && !/^https?:\/\/\S+$/i.test(v.url)) return showError('Job URL must start with http:// or https://');
+    const problem = validateTailorInput(v);
+    if (problem) return showError(problem);
     showError('');
     await withBusy(go, () => onSubmit(v));
   } },

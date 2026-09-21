@@ -6,6 +6,7 @@ import {
 } from '../js/lib/format.js';
 import { parseResume, groupBullets } from '../js/lib/resumeMarkdown.js';
 import { niceMax, gridTicks, donutArcs, percentOf } from '../js/lib/chartGeometry.js';
+import { validateTailorInput } from '../js/lib/tailorValidation.js';
 
 const NOW = Date.parse('2026-09-20T12:00:00Z');
 
@@ -120,4 +121,18 @@ test('donut arcs tile the full circle without overlap and skip nothing', () => {
   assert.ok(Math.abs(arcs[1].offset + arcs[0].dash) < 1e-9);
   assert.equal(arcs[2].dash, 0);
   assert.equal(donutArcs([{ key: 'a', value: 0 }], 70)[0].dash, 0); // empty data never divides by zero
+});
+
+test('tailor form: job title required in any case, company optional', () => {
+  const JD = 'Looking for Java Developers to join in Bangalore. 3+ years of Java, Spring Boot and REST APIs required.';
+  const ok = (o) => validateTailorInput({ title: 'JAVA DEVELOPER', company: '', url: '', description: JD, ...o });
+  for (const title of ['java developer', 'Java Developer', 'JAVA DEVELOPER', 'JaVa DeVeLoPeR']) assert.equal(ok({ title }), '', title);
+  for (const company of ['', '   ', undefined, 'Acme']) assert.equal(ok({ company }), '', String(company));
+  for (const title of ['', '   ', undefined]) {
+    assert.equal(ok({ title }), 'Job title is required.');
+    assert.equal(ok({ title, company: 'Acme' }), 'Job title is required.');
+  }
+  assert.doesNotMatch(ok({ title: '' }), /company/i);
+  assert.match(ok({ description: 'short' }), /at least 80/);
+  assert.match(ok({ url: 'javascript:alert(1)' }), /http/);
 });

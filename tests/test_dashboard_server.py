@@ -281,9 +281,20 @@ class TailoringEntryPoints(ServerCase):
 
     def test_jd_validation_errors(self):
         good = {"title": "Java Dev", "company": "Acme", "description": JD_TEXT}
-        for bad in ({**good, "title": ""}, {**good, "company": ""}, {**good, "description": ""}, {**good, "description": "short"},
+        for bad in ({**good, "title": ""}, {**good, "title": "  "}, {**good, "description": ""}, {**good, "description": "short"},
                     {**good, "url": "javascript:alert(1)"}, {**good, "description": "x" * 40000}):
             self.assertEqual(self.call("POST", "/api/tailor", bad)[0], 400, bad.get("url") or bad["title"])
+
+    def test_company_is_optional_and_title_is_required_with_a_clear_message(self):
+        good = {"title": "JAVA DEVELOPER", "company": "", "description": JD_TEXT}
+        with mock.patch.object(srv.tailoring_service, "tailor_resume", side_effect=self.fake_service):
+            for ok in (good, {**good, "company": "   "}, {**good, "company": None}, {**good, "title": "java developer"}):
+                self.assertEqual(self.call("POST", "/api/tailor", ok)[0], 200, ok)
+        for bad in ({**good, "title": ""}, {**good, "title": "   ", "company": "Acme"}):
+            s, _, r = self.call("POST", "/api/tailor", bad)
+            self.assertEqual(s, 400)
+            self.assertIn("Job title is required.", json.dumps(r))
+            self.assertNotIn("company", json.dumps(r).lower())
 
     def test_scraped_job_without_description_is_rejected(self):
         (self.dir / "raw_jobs.json").write_text(json.dumps([{"title": "No JD", "company": "X", "link": "https://l.example/jobs/77"}]))

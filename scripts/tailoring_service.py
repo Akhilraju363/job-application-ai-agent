@@ -150,6 +150,9 @@ def verify(markdown, base_md, jd_terms=(), analysis=None, match=None, title=""):
     unsupported = nf.check_no_fabrication(base_md, markdown, jd_terms)
     problems = [f"{c['name']}: {c['detail']}" if c["detail"] else c["name"] for c in checks if c["status"] == "fail"]
     problems += unsupported
+    placeholder = jd_analysis.COMPANY_NOT_SPECIFIED
+    if placeholder.lower() in markdown.lower() and placeholder.lower() not in base_md.lower():
+        problems.append(f'"{placeholder}" is a tracker placeholder, not an employer -- remove it from the resume')
     ats = ats_validation(markdown, base_md, analysis, match, title, checks, unsupported)
     warnings = [f"Omitted from this version: {r}" for r in nf.omitted_roles(base_md, markdown)]
     return {"ok": not problems, "problems": problems, "warnings": warnings, "ats": ats}
@@ -227,7 +230,7 @@ def tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key=
     match = jd_analysis.compute_match(analysis, base_md)
     if match["overall"] is None:
         raise jd_analysis.InputError("Could not compute a match from this job description")
-    tailor_input = {**job,
+    tailor_input = {**job, "company": jd_analysis.real_company(job),  # placeholder is metadata, not an employer
                     "matched_must_haves": match["skills"]["required_matched"] + match["skills"]["technologies_matched"],
                     "missing_must_haves": match["missing_skills"]}
 
