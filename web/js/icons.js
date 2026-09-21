@@ -32,6 +32,7 @@ const P = {
   chevron: 'M6 9l6 6 6-6',
   wand: 'M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8L19 13M17.8 6.2L19 5M12.2 6.2L11 5M3 21l9-9M12.2 11.8L11 13',
   zap: 'M13 2L3 14h9l-1 8 10-12h-9z',
+  terminal: 'M4 17l6-6-6-6M12 19h8',
 };
 
 export function icon(name, size = 18, cls = '') {

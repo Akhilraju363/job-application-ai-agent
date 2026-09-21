@@ -22,6 +22,11 @@ for _scripts_dir in (Path(__file__).resolve().parent / "scripts", Path(SCRIPTS_R
     if _scripts_dir.is_dir():
         sys.path.insert(0, str(_scripts_dir))
 from job_links import canonical_link  # noqa: E402
+import dashboard_auth  # noqa: E402
+import logging_config as lc  # noqa: E402
+
+log = lc.get_logger("pipeline")
+dashboard_log = lc.get_logger("dashboard")
 
 app = modal.App("job-apply-agent")
 
@@ -64,7 +69,52 @@ image = (
     )
     .add_local_dir("scripts", remote_path=SCRIPTS_REMOTE_PATH)
     .add_local_dir("resume", remote_path="/app/resume")
+    .add_local_dir("web", remote_path="/app/web")
 )
+
+# Dashboard state (generated resumes, activity log, preferences, pipeline artifacts a dashboard
+# action produces). Mounted at /app/output because the pipeline scripts hardcode ROOT/"output".
+# Deliberately NOT attached to the cron: that run stays stateless and resume-safe via the Drive
+# mirror, so a stale volume can never change what the daily run scrapes or skips.
+dashboard_volume = modal.Volume.from_name("job-apply-agent-dashboard", create_if_missing=True)
+DASHBOARD_PORT = 8765
+
+
+def materialize_gws_credentials():
+    """gws credentials are Keychain-encrypted locally; a container has no Keychain, so write the
+    plain credentials file gws also supports and keep its token cache on disk."""
+    import json
+    import os
+
+    os.environ["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
+    config_dir = Path.home() / ".config" / "gws"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "credentials.json").write_text(json.dumps({
+        "client_id": os.environ["client_id"],
+        "client_secret": os.environ["client_secret"],
+        "refresh_token": os.environ["refresh_token"],
+        "type": os.environ["type"],
+    }))
+
+
+def validate_dashboard_config(env):
+    """Fail-fast startup checks for the dashboard (pure, so they are unit-testable).
+
+    The dashboard exposes the real resume, tracker and Drive links, so it must never come up
+    without sign-in credentials or with Host-header validation off. Raises RuntimeError naming the
+    fix (variable names only -- never a value).
+    """
+    try:
+        dashboard_auth.require_config(env)  # DASHBOARD_USERNAME + a well-formed DASHBOARD_PASSWORD_HASH
+    except dashboard_auth.ConfigError as e:
+        raise RuntimeError(f"{e} Set them in job-apply-agent-dashboard-secrets "
+                           "(scripts/create_dashboard_password_hash.py generates them).") from None
+    if not (env.get("DASHBOARD_ALLOWED_HOSTS") or "").strip():
+        raise RuntimeError("DASHBOARD_ALLOWED_HOSTS is not set in the Modal secrets -- add the deployed "
+                           "*.modal.run hostname without https:// (the Host-header check would reject every request).")
+    if (env.get("llm_base_url") or "").strip():
+        raise RuntimeError("llm_base_url is set in the Modal secret -- Modal must use the "
+                           "cloud provider chain, not a local endpoint. Remove it from the secret.")
 
 
 @app.function(
@@ -89,16 +139,22 @@ def run_pipeline(force: bool = False):
     import json
     import os
     import subprocess
-    import traceback
+    import time
     from pathlib import Path
 
     import requests
+
+    # stdout/stderr -> Modal runtime logs. Console only: this container has no Volume, so files
+    # would vanish with it. Exported so the pipeline subprocesses below inherit the same choice.
+    os.environ["LOG_TO_FILE"] = "0"
+    lc.configure_logging("cron", to_file=False)
+    started = time.monotonic()
 
     def send_telegram_alert(message):
         token = os.environ.get("TELEGRAM_BOT_TOKEN")
         chat_id = os.environ.get("TELEGRAM_CHAT_ID")
         if not token or not chat_id:
-            print("Telegram alert skipped: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set")
+            log.warning("Telegram alert skipped: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set")
             return
         try:
             requests.post(
@@ -107,23 +163,13 @@ def run_pipeline(force: bool = False):
                 timeout=15,
             )
         except Exception as alert_error:
-            print(f"Telegram alert failed to send: {alert_error}")
+            log.warning("Telegram alert failed to send", extra={"reason": f"{type(alert_error).__name__}: {alert_error}"})
 
     stage = {"name": "startup"}
+    log.info("Pipeline started", extra={"mode": "cron", "force": force})
 
     try:
-        # gws credentials are Keychain-encrypted locally; this container has no
-        # Keychain, so materialize the plain credentials file gws also supports and
-        # tell gws to keep its token cache on disk instead of a (missing) keyring.
-        os.environ["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
-        config_dir = Path.home() / ".config" / "gws"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / "credentials.json").write_text(json.dumps({
-            "client_id": os.environ["client_id"],
-            "client_secret": os.environ["client_secret"],
-            "refresh_token": os.environ["refresh_token"],
-            "type": os.environ["type"],
-        }))
+        materialize_gws_credentials()
 
         workdir = Path("/app")
         (workdir / "output").mkdir(exist_ok=True)
@@ -140,13 +186,16 @@ def run_pipeline(force: bool = False):
         if not provider_keys:
             raise RuntimeError("no free LLM provider key in the Modal secret -- set at least "
                                "GROQ_API_KEY (see scripts/llm.py).")
-        print(f"LLM providers available: {provider_keys}")
+        log.info("LLM providers available", extra={"providers": ",".join(provider_keys)})
 
         def run(script, timeout, args=None):
             stage["name"] = script
-            print(f"--- {script} ---")
+            log.info("Pipeline step started", extra={"script": script})
+            step_started = time.monotonic()
             cmd = ["python3", f"scripts/{script}", *(args or [])]
             subprocess.run(cmd, check=True, cwd=workdir, timeout=timeout)
+            log.info("Pipeline step finished", extra={"script": script,
+                                                       "duration_seconds": round(time.monotonic() - step_started, 1)})
 
         # Per-step timeouts sized generously for the free-provider chain: each job may walk
         # groq -> openrouter -> gemini, each with retries/backoff (see scripts/llm.py), plus
@@ -176,11 +225,14 @@ def run_pipeline(force: bool = False):
                 f"{len(unmet)}/{qualified_total} qualified job(s) produced no saved resume:\n{detail}"
             )
 
-        print("JOB-APPLY-AGENT — daily run complete")
+        log.info("JOB-APPLY-AGENT — daily run complete", extra={
+            "scored_count": len(scored), "qualified_count": qualified_total,
+            "duration_seconds": round(time.monotonic() - started, 1)})
+        log.info("Pipeline completed", extra={"duration_seconds": round(time.monotonic() - started, 1)})
     except Exception as e:
         failed_stage = stage["name"]
-        print(f"JOB-APPLY-AGENT — PIPELINE FAILED at {failed_stage}")
-        traceback.print_exc()
+        log.exception(f"JOB-APPLY-AGENT — PIPELINE FAILED at {failed_stage}", extra={
+            "stage": failed_stage, "duration_seconds": round(time.monotonic() - started, 1)})
         # Stage name + exception type/message only -- never secrets. If every free LLM
         # provider was throttled/down, recover locally with Ollama (see README).
         send_telegram_alert(
@@ -189,6 +241,80 @@ def run_pipeline(force: bool = False):
             f"Reason: {type(e).__name__}: {e}"
         )
         raise
+
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("job-apply-agent-secrets"),
+        modal.Secret.from_name("gws-credentials"),
+        # Dashboard-only keys (DASHBOARD_USERNAME, DASHBOARD_PASSWORD_HASH, DASHBOARD_ALLOWED_HOSTS).
+        # Kept out of the shared secret so changing them never means re-listing (and risking) the
+        # pipeline's API keys. The cron does not read this secret and never needs a dashboard login.
+        modal.Secret.from_name("job-apply-agent-dashboard-secrets"),
+    ],
+    volumes={"/app/output": dashboard_volume},
+    # One container only: dashboard_tasks keeps task state in memory and the stdlib server
+    # serialises LLM work behind a single slot, so a second container would split both.
+    max_containers=1,
+    # Scale to zero when idle, but stay up long enough that a tailoring/export task the UI is
+    # polling is never cut off. Requests in flight keep the container alive regardless.
+    scaledown_window=900,
+    timeout=21600,
+)
+@modal.concurrent(max_inputs=32)
+@modal.web_server(DASHBOARD_PORT, startup_timeout=60)
+def dashboard():
+    """Serves web/ + the JSON API (scripts/dashboard_server.py) at the function's modal.run URL.
+
+    Required in job-apply-agent-dashboard-secrets (the server refuses to start without them, since
+    this exposes the real resume and tracker):
+      DASHBOARD_USERNAME       the one sign-in account
+      DASHBOARD_PASSWORD_HASH  salted PBKDF2 hash (scripts/create_dashboard_password_hash.py) -- never the password
+      DASHBOARD_ALLOWED_HOSTS  the deployed hostname (e.g. <workspace>--job-apply-agent-dashboard.modal.run)
+    Sessions are server-side and mirrored to the Volume; see scripts/dashboard_auth.py.
+    """
+    import os
+    import threading
+    import time
+
+    # Console (-> Modal runtime logs) + rotating files under /app/output/logs on the dashboard Volume.
+    # Configure first so a rejected configuration below is itself logged, not just raised.
+    (Path("/app") / "output").mkdir(exist_ok=True)
+    log_dir = lc.configure_logging("dashboard")
+    dashboard_log.info("Dashboard starting", extra={"log_dir": str(log_dir) if log_dir else "console-only"})
+    try:
+        validate_dashboard_config(os.environ)
+    except RuntimeError as e:
+        lc.get_logger("auth").critical("auth_config_error", extra={"reason": str(e)})
+        dashboard_log.critical("Dashboard configuration invalid", extra={"reason": str(e)})
+        raise
+    dashboard_log.info("Dashboard configuration validated")
+    if os.environ.get("DASHBOARD_TOKEN"):
+        dashboard_log.warning("Legacy DASHBOARD_TOKEN is set but no longer used for sign-in; remove it from the secret")
+    # Behind Modal's HTTPS proxy: session cookies are Secure and the client address (for the login
+    # rate limiter) comes from the proxy's X-Forwarded-For. Local development leaves both off.
+    os.environ.setdefault("DASHBOARD_COOKIE_SECURE", "1")
+    os.environ.setdefault("DASHBOARD_TRUST_PROXY", "1")
+
+    materialize_gws_credentials()
+    dashboard_log.info("Output directory initialized", extra={"path": "/app/output"})
+
+    import dashboard_server  # noqa: E402 -- needs SCRIPTS_REMOTE_PATH on sys.path (set at top)
+
+    server = dashboard_server.make_server("0.0.0.0", DASHBOARD_PORT)  # SystemExit if credentials are missing/malformed
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    dashboard_log.info("Dashboard server starting", extra={"host": "0.0.0.0", "port": DASHBOARD_PORT})
+
+    def commit_volume_periodically():
+        while True:
+            time.sleep(30)
+            try:
+                dashboard_volume.commit()
+            except Exception as e:  # noqa: BLE001 -- best-effort; Drive stays the source of truth for resumes
+                dashboard_log.warning("Volume commit failed", extra={"reason": f"{type(e).__name__}: {e}"})
+
+    threading.Thread(target=commit_volume_periodically, daemon=True).start()
 
 
 @app.local_entrypoint()

@@ -89,6 +89,8 @@ job-apply-agent/
     tracker_service.py       # cached, failure-tolerant wrapper over write_sheet.py
     dashboard_data.py / dashboard_tasks.py / dashboard_server.py   # dashboard read models, background tasks, stdlib HTTP server
     activity.py / paths.py   # activity log (output/activity_log.jsonl), shared paths
+    dashboard_auth.py         # username/password sign-in: PBKDF2 hashes, server-side sessions, login rate limiter; create_/reset_dashboard_password.py are the setup utilities
+    logging_config.py / log_reader.py   # ONE logging setup (console->Modal logs + rotating files in output/logs) and the bounded /api/logs reader; never log secrets/JDs/resumes
   web/                       # dashboard SPA (plain ES modules, no build); web/tests = node --test
   tests/test_llm.py           # stdlib unittest: provider failover, 429/404/timeout/JSON handling, reconciliation
   output/                    # gitignored — raw/scored/tailored job data + .artifact_sync.json sidecar
@@ -209,3 +211,29 @@ existing `gws` auth, idempotently (keyed by resume_id + version + format in the 
 so retries reuse the file). The tracker's Resume column always gets the PDF's Drive URL;
 `tracker_service.save_job` refuses a local path, and a failed upload blocks the row instead of falling
 back. `output/generated_resumes/` stays as the local cache/download source.
+
+## Hosted dashboard, authentication and logging (built)
+
+**Hosting.** `modal_app.py` has a second Modal function, `dashboard`, that runs the same
+`scripts/dashboard_server.py` (UI from `web/` + `/api/*`) behind one HTTPS origin —
+`https://akhildalali07--job-apply-agent-dashboard.modal.run`. No CORS, no separate API host; the frontend
+only calls relative `/api/...`. It mounts the `job-apply-agent-dashboard` Volume at `/app/output`,
+runs a single container (`max_containers=1`, scale-to-zero) and keeps background tasks in memory, so a
+restart mid-task loses that task. **The daily cron (`run_pipeline`) is independent**: it never mounts that
+Volume, never reads the dashboard secret and never needs a dashboard login — don't couple them.
+
+**Authentication** (`scripts/dashboard_auth.py`). Username/password only; the old `DASHBOARD_TOKEN` is gone.
+`DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD_HASH` (PBKDF2-SHA256, 600k rounds) and `DASHBOARD_ALLOWED_HOSTS`
+live in the Modal secret `job-apply-agent-dashboard-secrets`; the dashboard refuses to start without them.
+Sessions are opaque server-side ids in an HttpOnly/SameSite=Strict (Secure on HTTPS) cookie, mirrored to the
+Volume. Every `/api/*` route except `/api/auth`, `/api/auth/login` and `/api/auth/logout` is default-deny;
+login is rate limited (in-memory, single container). No credentials configured == open on loopback only
+(local dev). Never write a password, hash, session id or token into code, docs, logs or the frontend. Set or
+change the password with `scripts/create_dashboard_password_hash.py` / `scripts/reset_dashboard_password.py`
+(README: "Dashboard authentication").
+
+**Logging** (`scripts/logging_config.py`). One setup for everything: stderr (Modal runtime logs) plus rotating
+JSON files in `output/logs/`, with request/task/resume/job ids and secret redaction. Use
+`get_logger("<component>")`, never `print()` for diagnostics, and never log prompts, JDs, resumes, request
+bodies or credentials. `/api/logs` + the Logs page (`scripts/log_reader.py`) are authenticated, validated and
+bounded. `scripts/activity.py` (the user-facing Recent Activity feed) is separate and unchanged.

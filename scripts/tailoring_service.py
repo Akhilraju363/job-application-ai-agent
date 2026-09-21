@@ -21,6 +21,7 @@ import re
 
 import activity
 import jd_analysis
+import logging_config as lc
 import no_fabrication as nf
 import paths
 import resume_store
@@ -36,6 +37,15 @@ STAGES = [
     ("prepare", "Preparing downloads"),
 ]
 MAX_ATTEMPTS = 2
+
+log = lc.get_logger("tailoring")
+jd_log = lc.get_logger("jd_analysis")
+verify_log = lc.get_logger("verification")
+
+
+def _brief(problems, n=3, width=140):
+    """A few fact-check problems, truncated -- enough to diagnose, never a resume dump."""
+    return " | ".join(str(p)[:width] for p in problems[:n])
 
 
 def _strip_fences(text):
@@ -200,6 +210,21 @@ def _dedupe_key(job, master_version):
 
 
 def tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key=None, reuse=True, user_id=None):
+    """Observability wrapper around _tailor: binds job/company ids to every log line and records
+    a failure (with traceback) before re-raising it unchanged."""
+    with lc.bind(job_id=job_key, company=job.get("company"), operation="tailor"):
+        try:
+            return _tailor(job, source=source, resume_id=resume_id, on_stage=on_stage, base_md=base_md,
+                           job_key=job_key, reuse=reuse, user_id=user_id)
+        except (jd_analysis.InputError, paths.MasterResumeError) as e:
+            log.warning("Tailoring rejected", extra={"reason": type(e).__name__})
+            raise
+        except Exception:
+            log.exception("Tailoring failed", extra={"resume_id": resume_id})
+            raise
+
+
+def _tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key=None, reuse=True, user_id=None):
     """Generate (or regenerate, when resume_id is given) a tailored resume for one job.
 
     `job` is {title, company, link, description[, source, pipeline_score]}; already validated
@@ -214,10 +239,12 @@ def tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key=
     base_md = base_md or paths.read_base_resume()
     master_version = paths.master_resume_version(base_md)
     dedupe_key = _dedupe_key(job, master_version)
+    log.info("Tailoring started", extra={"source": source, "regenerate": bool(resume_id), "resume_id": resume_id})
 
     if reuse and not resume_id:
         existing = resume_store.find_reusable(dedupe_key)
         if existing:
+            log.info("Reusing existing verified resume; no LLM call", extra={"resume_id": existing["id"]})
             stage("prepare")
             rec = resume_store.get(existing["id"])
             rec["reused"] = True
@@ -225,11 +252,14 @@ def tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key=
 
     stage("analyze")
     analysis = jd_analysis.analyze_jd(job)
+    jd_log.info("JD analysis completed", extra={"required_skill_count": len(analysis.get("required_skills") or [])})
 
     stage("match")
     match = jd_analysis.compute_match(analysis, base_md)
     if match["overall"] is None:
         raise jd_analysis.InputError("Could not compute a match from this job description")
+    log.info("Resume match completed", extra={"match_overall": match["overall"],
+                                               "missing_skill_count": len(match.get("missing_skills") or [])})
     tailor_input = {**job, "company": jd_analysis.real_company(job),  # placeholder is metadata, not an employer
                     "matched_must_haves": match["skills"]["required_matched"] + match["skills"]["technologies_matched"],
                     "missing_must_haves": match["missing_skills"]}
@@ -241,20 +271,32 @@ def tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key=
     for attempt in range(1, MAX_ATTEMPTS + 1):
         stage("generate")
         markdown = _strip_fences(tailor_job.tailor_text(tailor_input, base_md, feedback=feedback))
+        log.info("Resume generation completed", extra={"attempt": attempt, "chars": len(markdown)})
         stage("validate")
         match = jd_analysis.compute_match(analysis, base_md, markdown)
         verdict = check(markdown, match)
+        log.info("ATS validation completed", extra={"attempt": attempt, "ats_score": verdict["ats"].get("score"),
+                                                     "ats_ok": verdict["ats"].get("ok")})
         if verdict["ok"]:
+            verify_log.info("No-fabrication verification passed", extra={"attempt": attempt})
             break
         llm_problems = verdict["problems"]
+        verify_log.warning("Resume fact-check failed" if attempt < MAX_ATTEMPTS else "Resume fact-check failed after retry",
+                           extra={"attempt": attempt, "problem_count": len(llm_problems), "problems": _brief(llm_problems)})
+        if attempt < MAX_ATTEMPTS:
+            log.info("Retrying resume generation", extra={"attempt": attempt + 1})
         feedback = "- " + "\n- ".join(verdict["problems"])
     else:
         # Both model rewrites failed fact-checking. Fall back to a reorder-only version of the
         # master resume rather than leaving the user with nothing (or an unverified rewrite).
+        log.info("Using reorder-only fallback", extra={"attempts": attempt})
         markdown = conservative_resume(base_md, analysis, match)
         match = jd_analysis.compute_match(analysis, base_md, markdown)
         verdict = check(markdown, match)
         kind_override = "conservative"
+        (verify_log.info if verdict["ok"] else verify_log.warning)(
+            "Fallback resume verification " + ("passed" if verdict["ok"] else "failed"),
+            extra={"problem_count": len(verdict["problems"]), "problems": _brief(verdict["problems"])})
 
     stage("prepare")
     validation = {**verdict, "attempts": attempt, "llm_problems": llm_problems if kind_override else []}
@@ -279,6 +321,9 @@ def tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key=
                         else f"Resume for {label} failed verification"),
                        company=job["company"], title=job["title"], link=job["link"] or None,
                        resume_id=rid, source=source)
+    log.info("Tailoring completed", extra={
+        "resume_id": rid, "kind": kind, "verification": "passed" if verdict["ok"] else "failed",
+        "ats_score": verdict["ats"].get("score"), "attempts": attempt, "fallback": bool(kind_override)})
     return resume_store.get(rid)
 
 

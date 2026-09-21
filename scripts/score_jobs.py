@@ -18,7 +18,10 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from llm import call_llm, PROVIDER_SUMMARY, validate_local_setup  # noqa: E402
 from job_links import canonical_link  # noqa: E402
+import logging_config as lc  # noqa: E402
 from activity import log_event  # noqa: E402
+
+log = lc.get_logger("scoring")
 
 QUALIFY_CUTOFF = 8
 
@@ -78,8 +81,8 @@ def score_jobs(jobs, resume_text, out_path=None, scored=None, on_progress=None):
         try:
             scored.append(score_job(job, resume_text))
         except Exception as e:
-            print(f"FAILED, skipping {job.get('title')!r} (providers: {PROVIDER_SUMMARY}): "
-                  f"{type(e).__name__}: {e}")
+            log.error("Scoring failed, skipping job", exc_info=True,
+                      extra={"title": str(job.get("title"))[:80], "providers": PROVIDER_SUMMARY})
             continue
         if out_path is not None:
             out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
@@ -89,6 +92,7 @@ def score_jobs(jobs, resume_text, out_path=None, scored=None, on_progress=None):
 
 
 if __name__ == "__main__":
+    lc.configure_logging("pipeline")
     import artifacts
 
     validate_local_setup()  # no-op unless LOCAL_MODE=true; fails loudly, never falls back to cloud
@@ -109,7 +113,9 @@ if __name__ == "__main__":
     done_links = {canonical_link(j["link"]) for j in already_scored}
     remaining = [j for j in jobs if canonical_link(j["link"]) not in done_links]
     if already_scored:
-        print(f"Resuming: {len(already_scored)}/{len(jobs)} already scored, {len(remaining)} left")
+        log.info("Resuming scoring", extra={"already_scored": len(already_scored), "total": len(jobs), "remaining": len(remaining)})
+    else:
+        log.info("Scoring started", extra={"total": len(jobs)})
 
     push_scored = lambda: artifacts.push("scored_jobs.json")  # noqa: E731
     scored = (score_jobs(remaining, resume_text, out_path=out_path, scored=already_scored,
@@ -126,7 +132,9 @@ if __name__ == "__main__":
         raise RuntimeError(f"scored 0/{len(remaining)} jobs this run -- every job failed, see retry logs above")
 
     qualified_count = sum(1 for j in scored if j["qualified"])
-    print(f"{len(scored)} scraped, {qualified_count} qualified -> {out_path}")
+    log.info(f"{len(scored)} scraped, {qualified_count} qualified", extra={
+        "scored_count": len(scored), "qualified_count": qualified_count, "rejected_count": len(scored) - qualified_count,
+        "path": str(out_path)})
     log_event("jobs_scored", f"Scored {len(scored) - len(already_scored)} jobs "
               f"({qualified_count} of {len(scored)} qualified at 8+)",
               scored=len(scored) - len(already_scored), qualified=qualified_count, total=len(scored))

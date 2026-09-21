@@ -14,7 +14,7 @@ from unittest import mock
 
 from contextlib import contextmanager
 
-from fixtures import ANALYSIS, BASE, JD_TEXT, FakeDrive, TempOutput, reorder_bullets
+from fixtures import ANALYSIS, AUTH_PASSWORD, AUTH_USER, BASE, JD_TEXT, FakeDrive, TempOutput, auth_env, reorder_bullets
 import dashboard_data as dd
 import dashboard_server as srv
 import dashboard_tasks as tasks
@@ -43,7 +43,7 @@ class ServerCase(unittest.TestCase):
         base_file.write_text(BASE, encoding="utf-8")
         cls.patches = [
             mock.patch.object(paths, "BASE_RESUME", base_file),
-            mock.patch.dict(os.environ, {**SECRETS, "DASHBOARD_TOKEN": "", "google_drive_folder_id": "PARENT_FOLDER"}),
+            mock.patch.dict(os.environ, {**SECRETS, "DASHBOARD_USERNAME": "", "DASHBOARD_PASSWORD_HASH": "", "google_drive_folder_id": "PARENT_FOLDER"}),
             mock.patch.object(srv.tracker, "snapshot", side_effect=lambda force=False: tracker_state(cls.tracker_rows)),
             # tests never reach real Google Drive: any un-mocked upload fails fast (see ResumeActions.fake_drive)
             mock.patch.object(drive_resumes, "_gws", side_effect=RuntimeError("no real Google Drive in tests")),
@@ -86,6 +86,13 @@ class ServerCase(unittest.TestCase):
         if raw:
             return r.status, dict(r.getheaders()), data
         return r.status, dict(r.getheaders()), (json.loads(data) if data and r.getheader("Content-Type", "").startswith("application/json") else data)
+
+    def sign_in(self, user=AUTH_USER, password=AUTH_PASSWORD):
+        """Sign in through the real endpoint (call inside `mock.patch.dict(os.environ, auth_env())`);
+        returns the Cookie header value to send on later requests."""
+        s, h, body = self.call("POST", "/api/auth/login", {"username": user, "password": password})
+        self.assertEqual(s, 200, body)
+        return h["Set-Cookie"].split(";")[0]
 
     def wait_task(self, task_id, timeout=15):
         end = time.time() + timeout
@@ -149,17 +156,15 @@ class Security(ServerCase):
         conn.request("POST", "/api/tailor", body=b"x", headers={"Content-Type": "application/json", "Content-Length": str(srv.MAX_BODY + 1)})
         self.assertEqual(conn.getresponse().status, 413)
 
-    def test_bearer_token_gates_the_api_when_configured(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_TOKEN": "s3cret-token"}):
+    def test_sign_in_gates_the_api_when_configured(self):  # the full matrix is in test_dashboard_auth.py
+        with mock.patch.dict(os.environ, auth_env()):
             self.assertEqual(self.call("GET", "/api/me")[0], 401)
-            self.assertEqual(self.call("GET", "/api/me", headers={"Authorization": "Bearer wrong"})[0], 401)
-            self.assertEqual(self.call("GET", "/api/me", headers={"Authorization": "Bearer s3cret-token"})[0], 200)
-            s, _, body = self.call("GET", "/api/auth")
-            self.assertEqual((s, body), (200, {"required": True}))
-        self.assertEqual(self.call("GET", "/api/auth")[2], {"required": False})
+            self.assertEqual(self.call("GET", "/api/me", headers={"Authorization": "Bearer anything"})[0], 401)  # no bearer path any more
+            self.assertEqual(self.call("GET", "/api/auth")[2], {"authenticated": False})
+        self.assertEqual(self.call("GET", "/api/auth")[2], {"authenticated": True, "auth_required": False})  # local dev, no credentials
 
-    def test_refuses_to_bind_publicly_without_a_token(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_TOKEN": ""}), self.assertRaises(SystemExit):
+    def test_refuses_to_bind_publicly_without_credentials(self):
+        with mock.patch.dict(os.environ, {"DASHBOARD_USERNAME": "", "DASHBOARD_PASSWORD_HASH": ""}), self.assertRaises(SystemExit):
             srv.make_server("0.0.0.0", 0)
 
     def test_errors_do_not_leak_internals(self):

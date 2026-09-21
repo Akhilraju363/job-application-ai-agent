@@ -25,7 +25,7 @@ export function settingsPage(root) {
         h('section', { class: 'card' }, h('h3', {}, 'Security'),
           h('ul', { class: 'plain-list' },
             h('li', {}, 'API keys, tokens and Google credentials stay on the server; this page only shows whether each is set.'),
-            h('li', {}, d.auth.token_required ? 'Access token is required for this dashboard.' : 'Local mode: the dashboard listens on this machine only. Set DASHBOARD_TOKEN to require a token.'))));
+            h('li', {}, d.auth.password_required ? 'Signing in with your username and password is required for this dashboard.' : 'Local mode: the dashboard listens on this machine only and has no sign-in.'))));
     },
   });
   mount(root, h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Settings'), h('p', { class: 'muted' }, 'Configuration status. Secrets are never displayed.'))), host);

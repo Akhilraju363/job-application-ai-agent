@@ -20,6 +20,9 @@ import sys  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from job_links import canonical_link  # noqa: E402
 from activity import log_event  # noqa: E402
+import logging_config as lc  # noqa: E402
+
+log = lc.get_logger("tracker")
 
 HEADERS = ["Job Title", "Company", "Job Link", "Fit Score", "Resume Path", "Status", "Timestamp",
            "Company Notes", "Source", "Status Updated", "Resume ID", "Match %"]
@@ -93,7 +96,7 @@ def get_or_create_sheet_id():
     sheet_id = find_sheet_by_title()
     if sheet_id:
         _remember_sheet_id(sheet_id)
-        print(f"Reusing existing sheet: {SHEET_TITLE} ({sheet_id})")
+        log.info("Reusing existing tracker sheet", extra={"sheet_title": SHEET_TITLE})
         return sheet_id
 
     created = gws("sheets", "spreadsheets", "create", "--json",
@@ -124,7 +127,7 @@ def get_or_create_sheet_id():
         }]}))
 
     _remember_sheet_id(sheet_id)
-    print(f"Created new sheet: {SHEET_TITLE} ({sheet_id})")
+    log.info("Created new tracker sheet", extra={"sheet_title": SHEET_TITLE})
     return sheet_id
 
 
@@ -187,6 +190,7 @@ def set_status(sheet_id, row_number, status, today):
 
 
 if __name__ == "__main__":
+    lc.configure_logging("pipeline")
     import artifacts
 
     # Recovery: log whatever a failed earlier run tailored. Dedup below (by job link
@@ -197,7 +201,7 @@ if __name__ == "__main__":
     saved_jobs = [j for j in tailored_jobs if j.get("status") == "saved"]
 
     if not saved_jobs:
-        print("0 saved jobs, nothing to log")
+        log.info("0 saved jobs, nothing to log")
         raise SystemExit(0)
 
     sheet_id = get_or_create_sheet_id()
@@ -220,10 +224,12 @@ if __name__ == "__main__":
         try:
             ensure_extra_headers(sheet_id)
         except Exception as e:  # noqa: BLE001 -- header cosmetics must not block logging rows
-            print(f"could not ensure Source/Status Updated headers: {e}")
+            log.warning("Could not ensure Source/Status Updated headers", exc_info=True)
         append_rows(sheet_id, new_rows)
         log_event("tracker_rows_added", f"Logged {len(new_rows)} job(s) to the Job Application Tracker",
                   count=len(new_rows))
 
-    print(f"{len(saved_jobs)} saved jobs, {len(new_rows)} new rows added, "
-          f"{len(saved_jobs) - len(new_rows)} already logged")
+    log.info(f"{len(saved_jobs)} saved jobs, {len(new_rows)} new rows added, "
+             f"{len(saved_jobs) - len(new_rows)} already logged",
+             extra={"saved_count": len(saved_jobs), "new_rows": len(new_rows),
+                    "duplicates_avoided": len(saved_jobs) - len(new_rows)})

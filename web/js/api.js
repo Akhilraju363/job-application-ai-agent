@@ -2,8 +2,6 @@
 // provider key, Apify token or Google credential (those live server-side).
 import { fileNameFromDisposition } from './lib/format.js';
 
-const TOKEN_KEY = 'jobagent.token';
-
 export class ApiError extends Error {
   constructor(message, status, code) {
     super(message);
@@ -12,16 +10,15 @@ export class ApiError extends Error {
   }
 }
 
+// The session is an HttpOnly cookie the browser sends on its own (same-origin); JavaScript never sees it.
+// A 401 from any protected call means the session ended -- app.js reloads into the login screen.
 export const auth = {
-  get token() { try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } },
-  set token(v) { try { v ? sessionStorage.setItem(TOKEN_KEY, v) : sessionStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ } },
   onUnauthorized: () => {},
 };
 
 function headers(json) {
   const h = {};
   if (json) h['Content-Type'] = 'application/json';
-  if (auth.token) h.Authorization = `Bearer ${auth.token}`;
   return h;
 }
 
@@ -41,6 +38,7 @@ async function request(method, path, body) {
   try {
     res = await fetch(path, {
       method,
+      credentials: 'same-origin',
       headers: headers(method !== 'GET'),
       body: method === 'GET' ? undefined : JSON.stringify(body ?? {}),
     });
@@ -68,7 +66,7 @@ export function qs(params) {
 // Download through fetch so the bearer token (when configured) is sent.
 export async function download(path, fallbackName) {
   let res;
-  try { res = await fetch(path, { headers: headers(false) }); } catch { throw new ApiError('Download failed: server unreachable', 0, 'network'); }
+  try { res = await fetch(path, { credentials: 'same-origin', headers: headers(false) }); } catch { throw new ApiError('Download failed: server unreachable', 0, 'network'); }
   if (!res.ok) await fail(res);
   const name = fileNameFromDisposition(res.headers.get('Content-Disposition'), fallbackName);
   const url = URL.createObjectURL(await res.blob());
