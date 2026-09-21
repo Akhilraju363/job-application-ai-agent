@@ -100,9 +100,9 @@ def validate_dashboard_config(env):
     """
     if not (env.get("DASHBOARD_TOKEN") or "").strip():
         raise RuntimeError("DASHBOARD_TOKEN is not set in the Modal secret -- refusing to serve the "
-                           "dashboard unauthenticated. Add a long random token to job-apply-agent-secrets.")
+                           "dashboard unauthenticated. Add a long random token to job-apply-agent-dashboard-secrets.")
     if not (env.get("DASHBOARD_ALLOWED_HOSTS") or "").strip():
-        raise RuntimeError("DASHBOARD_ALLOWED_HOSTS is not set in the Modal secret -- add the deployed "
+        raise RuntimeError("DASHBOARD_ALLOWED_HOSTS is not set in the Modal secrets -- add the deployed "
                            "*.modal.run hostname without https:// (the Host-header check would reject every request).")
     if (env.get("llm_base_url") or "").strip():
         raise RuntimeError("llm_base_url is set in the Modal secret -- Modal must use the "
@@ -227,6 +227,9 @@ def run_pipeline(force: bool = False):
     secrets=[
         modal.Secret.from_name("job-apply-agent-secrets"),
         modal.Secret.from_name("gws-credentials"),
+        # Dashboard-only keys (DASHBOARD_TOKEN, DASHBOARD_ALLOWED_HOSTS). Kept out of the shared
+        # secret so adding them never means re-listing (and risking) the pipeline's API keys.
+        modal.Secret.from_name("job-apply-agent-dashboard-secrets"),
     ],
     volumes={"/app/output": dashboard_volume},
     # One container only: dashboard_tasks keeps task state in memory and the stdlib server
@@ -242,7 +245,7 @@ def run_pipeline(force: bool = False):
 def dashboard():
     """Serves web/ + the JSON API (scripts/dashboard_server.py) at the function's modal.run URL.
 
-    Required in job-apply-agent-secrets:
+    Required in job-apply-agent-dashboard-secrets:
       DASHBOARD_TOKEN          bearer token the UI prompts for -- the server refuses to start
                                without it, since this exposes the real resume and tracker.
       DASHBOARD_ALLOWED_HOSTS  the deployed hostname (e.g. <workspace>--job-apply-agent-dashboard.modal.run);
