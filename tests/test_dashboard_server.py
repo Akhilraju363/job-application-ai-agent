@@ -12,10 +12,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fixtures import ANALYSIS, BASE, JD_TEXT, TempOutput, reorder_bullets
+from contextlib import contextmanager
+
+from fixtures import ANALYSIS, BASE, JD_TEXT, FakeDrive, TempOutput, reorder_bullets
 import dashboard_data as dd
 import dashboard_server as srv
 import dashboard_tasks as tasks
+import drive_resumes
 import paths
 import resume_store
 
@@ -40,8 +43,11 @@ class ServerCase(unittest.TestCase):
         base_file.write_text(BASE, encoding="utf-8")
         cls.patches = [
             mock.patch.object(paths, "BASE_RESUME", base_file),
-            mock.patch.dict(os.environ, {**SECRETS, "DASHBOARD_TOKEN": ""}),
+            mock.patch.dict(os.environ, {**SECRETS, "DASHBOARD_TOKEN": "", "google_drive_folder_id": "PARENT_FOLDER"}),
             mock.patch.object(srv.tracker, "snapshot", side_effect=lambda force=False: tracker_state(cls.tracker_rows)),
+            # tests never reach real Google Drive: any un-mocked upload fails fast (see ResumeActions.fake_drive)
+            mock.patch.object(drive_resumes, "_gws", side_effect=RuntimeError("no real Google Drive in tests")),
+            mock.patch.object(drive_resumes, "RETRY_DELAY_SECONDS", 0),
         ]
         for p in cls.patches:
             p.start()
@@ -281,9 +287,20 @@ class TailoringEntryPoints(ServerCase):
 
     def test_jd_validation_errors(self):
         good = {"title": "Java Dev", "company": "Acme", "description": JD_TEXT}
-        for bad in ({**good, "title": ""}, {**good, "company": ""}, {**good, "description": ""}, {**good, "description": "short"},
+        for bad in ({**good, "title": ""}, {**good, "title": "  "}, {**good, "description": ""}, {**good, "description": "short"},
                     {**good, "url": "javascript:alert(1)"}, {**good, "description": "x" * 40000}):
             self.assertEqual(self.call("POST", "/api/tailor", bad)[0], 400, bad.get("url") or bad["title"])
+
+    def test_company_is_optional_and_title_is_required_with_a_clear_message(self):
+        good = {"title": "JAVA DEVELOPER", "company": "", "description": JD_TEXT}
+        with mock.patch.object(srv.tailoring_service, "tailor_resume", side_effect=self.fake_service):
+            for ok in (good, {**good, "company": "   "}, {**good, "company": None}, {**good, "title": "java developer"}):
+                self.assertEqual(self.call("POST", "/api/tailor", ok)[0], 200, ok)
+        for bad in ({**good, "title": ""}, {**good, "title": "   ", "company": "Acme"}):
+            s, _, r = self.call("POST", "/api/tailor", bad)
+            self.assertEqual(s, 400)
+            self.assertIn("Job title is required.", json.dumps(r))
+            self.assertNotIn("company", json.dumps(r).lower())
 
     def test_scraped_job_without_description_is_rejected(self):
         (self.dir / "raw_jobs.json").write_text(json.dumps([{"title": "No JD", "company": "X", "link": "https://l.example/jobs/77"}]))
@@ -327,6 +344,18 @@ class ResumeActions(ServerCase):
         self.assertEqual(self.call("GET", "/api/resumes/" + "f" * 12)[0], 404)
         self.assertEqual(self.call("GET", "/api/resumes/..%2f..%2fx")[0], 404)
 
+    @contextmanager
+    def fake_drive(self, **kw):
+        """An in-memory Drive plus a fake Docs export that writes a local PDF/DOCX."""
+        drive = FakeDrive(**kw)
+
+        def fake_export(md_path, out_path, mime_type="application/pdf"):
+            Path(out_path).write_bytes(b"%PDF-fake" if mime_type == "application/pdf" else b"PK-fake-docx")
+
+        with mock.patch.object(drive_resumes, "_gws", side_effect=drive), \
+                mock.patch("tailor_job.export_doc_file", side_effect=fake_export):
+            yield drive
+
     def test_download_markdown_and_export_pdf_docx(self):
         rid = self.make_resume()
         s, h, body = self.call("GET", f"/api/resumes/{rid}/download?format=md", raw=True)
@@ -341,7 +370,8 @@ class ResumeActions(ServerCase):
             exported.append((Path(md_path).name, Path(out_path).suffix, mime_type))
             Path(out_path).write_bytes(b"%PDF-fake" if mime_type == "application/pdf" else b"PK-fake-docx")
 
-        with mock.patch("tailor_job.export_doc_file", side_effect=fake_export):
+        with mock.patch("tailor_job.export_doc_file", side_effect=fake_export), \
+                mock.patch.object(srv.drive_resumes, "upload_and_record", return_value={"url": "https://drive.google.com/file/d/X/view", "reused": False}):
             for fmt in ("pdf", "docx"):
                 s, _, t = self.call("POST", f"/api/resumes/{rid}/export", {"format": fmt})
                 self.assertEqual(s, 200)
@@ -369,7 +399,7 @@ class ResumeActions(ServerCase):
 
     def test_save_to_tracker_reuses_the_tracker_service(self):
         rid = self.make_resume()
-        with mock.patch.object(srv.tracker, "save_job", return_value={"result": "added", "row": None}) as save:
+        with self.fake_drive(), mock.patch.object(srv.tracker, "save_job", return_value={"result": "added", "row": None}) as save:
             s, _, r = self.call("POST", f"/api/resumes/{rid}/save-to-tracker")
         self.assertEqual((s, r["result"]), (200, "added"))
         kw = save.call_args.kwargs
@@ -377,23 +407,112 @@ class ResumeActions(ServerCase):
         self.assertEqual(kw["resume_id"], f"{rid}-v1")
         self.assertIsInstance(kw["match_pct"], int)
         self.assertTrue(kw["link"].startswith("manual:"))
-        self.assertTrue(kw["resume_path"].endswith("v1.md"))
+        self.assertRegex(kw["resume_path"], r"^https://drive\.google\.com/file/d/ID\d+/view")   # Drive URL, not a local path
+        self.assertNotIn("generated_resumes", kw["resume_path"])
         self.assertTrue(1 <= kw["score"] <= 10)
         self.assertEqual(self.call("GET", f"/api/resumes/{rid}")[2]["tracker"]["result"], "added")
 
     def test_scraped_resume_logs_the_pipeline_score_to_the_tracker(self):
         rid = self.make_resume(source="scraped", link=LINK)
         resume_store.update_meta(rid, job={"title": "Java Dev", "company": "Acme", "link": LINK, "description": JD_TEXT, "pipeline_score": 9})
-        with mock.patch.object(srv.tracker, "save_job", return_value={"result": "exists", "row": {}}) as save:
+        with self.fake_drive(), mock.patch.object(srv.tracker, "save_job", return_value={"result": "exists", "row": {}}) as save:
             self.call("POST", f"/api/resumes/{rid}/save-to-tracker")
         self.assertEqual((save.call_args.kwargs["score"], save.call_args.kwargs["source"]), (9, "LinkedIn"))
 
     def test_tracker_outage_on_save_is_a_clear_502(self):
         from tracker_service import TrackerError
         rid = self.make_resume()
-        with mock.patch.object(srv.tracker, "save_job", side_effect=TrackerError("gws: offline")):
+        with self.fake_drive(), mock.patch.object(srv.tracker, "save_job", side_effect=TrackerError("gws: offline")):
             s, _, r = self.call("POST", f"/api/resumes/{rid}/save-to-tracker")
         self.assertEqual((s, r["error"]["code"]), (502, "tracker_unavailable"))
+
+    # -- Google Drive ------------------------------------------------------------------------
+
+    def export(self, rid, fmt):
+        _, _, t = self.call("POST", f"/api/resumes/{rid}/export", {"format": fmt})
+        return self.wait_task(t["task_id"])
+
+    def test_export_uploads_to_drive_and_keeps_the_local_download(self):
+        rid = self.make_resume()
+        with self.fake_drive() as drive:
+            pdf, docx = self.export(rid, "pdf"), self.export(rid, "docx")
+        self.assertEqual((pdf["status"], docx["status"]), ("done", "done"))
+        self.assertEqual([s["key"] for s in pdf["stages"]], ["export", "upload"])
+        self.assertEqual(pdf["result"]["drive"]["status"], "uploaded")
+        self.assertEqual(sorted(f["name"] for f in drive.resume_files()), [f"{rid}-v1.docx", f"{rid}-v1.pdf"])
+        res = self.call("GET", f"/api/resumes/{rid}/result")[2]["resume"]
+        self.assertEqual(res["drive_url"], pdf["result"]["drive"]["url"])           # PDF is the primary link
+        self.assertIsNone(res["drive_error"])
+        self.assertIn("format=pdf", res["pdf_url"])                                 # local downloads unchanged
+        self.assertEqual(self.call("GET", f"/api/resumes/{rid}/download?format=docx", raw=True)[2], b"PK-fake-docx")
+
+    def test_re_export_does_not_upload_a_second_copy(self):
+        rid = self.make_resume()
+        with self.fake_drive() as drive:
+            first, again = self.export(rid, "pdf"), self.export(rid, "pdf")
+        self.assertEqual(len(drive.resume_files()), 1)
+        self.assertEqual((first["result"]["drive"]["reused"], again["result"]["drive"]["reused"]), (False, True))
+        self.assertEqual(first["result"]["drive"]["url"], again["result"]["drive"]["url"])
+
+    def test_drive_failure_on_export_is_reported_but_the_local_file_survives(self):
+        rid = self.make_resume()
+        with self.fake_drive(fail="network unreachable"):
+            t = self.export(rid, "pdf")
+        self.assertEqual(t["status"], "done")                                       # the export itself worked
+        self.assertEqual(t["result"]["drive"]["status"], "failed")
+        self.assertIn("Google Drive upload failed", t["result"]["drive"]["error"])
+        self.assertNotIn("url", t["result"]["drive"])
+        res = self.call("GET", f"/api/resumes/{rid}/result")[2]["resume"]
+        self.assertEqual((res["drive_url"], res["drive_error"] is not None), (None, True))
+        self.assertEqual(self.call("GET", f"/api/resumes/{rid}/download?format=pdf", raw=True)[2], b"%PDF-fake")
+
+    def test_save_to_tracker_sends_only_the_drive_url_never_the_local_path(self):
+        rid = self.make_resume()
+        local = str(resume_store.version_path(rid, 1, "md"))
+        with self.fake_drive() as drive, mock.patch.object(srv.tracker, "save_job", return_value={"result": "added", "row": None}) as save:
+            s, _, r = self.call("POST", f"/api/resumes/{rid}/save-to-tracker")
+        self.assertEqual(s, 200)
+        (f,) = drive.resume_files()
+        self.assertEqual(f["name"], f"{rid}-v1.pdf")                                 # the PDF was exported, then uploaded
+        url = save.call_args.kwargs["resume_path"]
+        self.assertEqual((url, r["resume_path"], r["drive_url"]), (f["webViewLink"],) * 3)
+        self.assertNotIn(local, [url, r["resume_path"]])
+        self.assertEqual(self.call("GET", f"/api/resumes/{rid}")[2]["tracker"]["drive_url"], url)
+
+    def test_drive_failure_on_save_blocks_the_row_and_never_falls_back_to_a_local_path(self):
+        rid = self.make_resume()
+        with self.fake_drive(fail="network unreachable"), mock.patch.object(srv.tracker, "save_job") as save:
+            s, _, r = self.call("POST", f"/api/resumes/{rid}/save-to-tracker")
+        self.assertEqual((s, r["error"]["code"]), (502, "drive_upload_failed"))
+        save.assert_not_called()                                                     # no row, no fake Drive claim
+        self.assertTrue(resume_store.version_path(rid, 1, "md").exists())
+        self.assertIsNone(self.call("GET", f"/api/resumes/{rid}")[2]["tracker"])
+
+    def test_sheet_failure_after_upload_then_retry_reuses_the_drive_file(self):
+        from tracker_service import TrackerError
+        rid = self.make_resume()
+        with self.fake_drive() as drive:
+            with mock.patch.object(srv.tracker, "save_job", side_effect=TrackerError("sheets down")):
+                self.assertEqual(self.call("POST", f"/api/resumes/{rid}/save-to-tracker")[0], 502)
+            with mock.patch.object(srv.tracker, "save_job", return_value={"result": "added", "row": None}) as save:
+                self.assertEqual(self.call("POST", f"/api/resumes/{rid}/save-to-tracker")[0], 200)
+        self.assertEqual(len(drive.resume_files()), 1)                               # one Drive file across both attempts
+        self.assertEqual(save.call_args.kwargs["resume_path"], drive.resume_files()[0]["webViewLink"])
+
+    def test_manual_blank_company_and_scraped_company_both_upload(self):
+        manual = self.make_resume()
+        resume_store.update_meta(manual, job={"title": "JAVA DEVELOPER", "company": "Company Not Specified",
+                                              "link": "manual:abcdef123456", "description": JD_TEXT})
+        scraped = self.make_resume(source="scraped", link=LINK)
+        resume_store.update_meta(scraped, job={"title": "Java Developer", "company": "ABC Technologies", "link": LINK,
+                                               "description": JD_TEXT, "pipeline_score": 9})
+        with self.fake_drive() as drive, mock.patch.object(srv.tracker, "save_job", return_value={"result": "added", "row": None}) as save:
+            for rid in (manual, scraped):
+                self.assertEqual(self.call("POST", f"/api/resumes/{rid}/save-to-tracker")[0], 200)
+        self.assertEqual(sorted(f["name"] for f in drive.folders()),
+                         ["ABC Technologies-java-developer", "Company Not Specified-java-developer"])
+        self.assertEqual([c.kwargs["company"] for c in save.call_args_list], ["Company Not Specified", "ABC Technologies"])
+        self.assertTrue(all(c.kwargs["resume_path"].startswith("https://drive.google.com/") for c in save.call_args_list))
 
 
 class TrackerAndJobActions(ServerCase):

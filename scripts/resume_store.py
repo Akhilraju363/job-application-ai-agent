@@ -115,6 +115,16 @@ def mark_export(rid, n, fmt):
         _write_meta(rid, meta)
 
 
+def mark_drive(rid, n, fmt, info):
+    """Record a version's Google Drive outcome for one format: {status: uploaded|failed, ...}."""
+    with _lock:
+        meta = get(rid, with_markdown=False)
+        for v in meta["versions"]:
+            if v["n"] == int(n):
+                v.setdefault("drive", {})[fmt] = info
+        _write_meta(rid, meta)
+
+
 def list_all():
     out = []
     root = _root()

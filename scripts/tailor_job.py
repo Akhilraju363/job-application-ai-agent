@@ -94,7 +94,7 @@ def tailor_text(job, resume_text, feedback=""):
         TAILOR_PROMPT
         .replace("__RESUME__", resume_text)
         .replace("__TITLE__", str(job.get("title")))
-        .replace("__COMPANY__", str(job.get("company")))
+        .replace("__COMPANY__", str(job.get("company") or "(not specified)"))
         .replace("__MATCHED__", ", ".join(job.get("matched_must_haves", [])))
         .replace("__MISSING__", ", ".join(job.get("missing_must_haves", [])))
         .replace("__DESCRIPTION__", str(job.get("description")))

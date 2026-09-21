@@ -28,13 +28,35 @@ class Sanitizing(unittest.TestCase):
             with self.assertRaises(ja.InputError, msg=bad):
                 ja.sanitize_url(bad)
 
-    def test_title_and_company_required_single_line(self):
-        with self.assertRaises(ja.InputError):
-            ja.normalize_job("", "Acme", "", JD_TEXT)
-        with self.assertRaises(ja.InputError):
-            ja.normalize_job("Dev", "  ", "", JD_TEXT)
+    def test_title_required_and_single_line(self):
+        for blank in ("", "   ", None):
+            with self.assertRaises(ja.InputError, msg=repr(blank)) as cm:
+                ja.normalize_job(blank, "Acme", "", JD_TEXT)
+            self.assertEqual(str(cm.exception), "Job title is required.")
+            with self.assertRaises(ja.InputError) as cm:
+                ja.normalize_job(blank, "", "", JD_TEXT)
+            self.assertEqual(str(cm.exception), "Job title is required.")
         job = ja.normalize_job("Dev\nEngineer", "Acme\x00 Corp", "", JD_TEXT)
         self.assertEqual((job["title"], job["company"]), ("Dev Engineer", "Acme Corp"))
+
+    def test_job_title_accepts_any_capitalisation_and_is_preserved(self):
+        for title in ("java developer", "Java Developer", "JAVA DEVELOPER", "JaVa DeVeLoPeR"):
+            self.assertEqual(ja.normalize_job(title, "Acme", "", JD_TEXT)["title"], title)
+
+    def test_company_is_optional_and_falls_back_deterministically(self):
+        for blank in ("", "   ", None, "\x00 \n"):
+            job = ja.normalize_job("JAVA DEVELOPER", blank, "", JD_TEXT)
+            self.assertEqual(job["company"], "Company Not Specified", repr(blank))
+        self.assertEqual(ja.normalize_job("Dev", " Acme Corp ", "", JD_TEXT)["company"], "Acme Corp")
+
+    def test_fallback_is_never_shown_to_a_model_as_an_employer(self):
+        self.assertEqual(ja.real_company({"company": ja.COMPANY_NOT_SPECIFIED}), "")
+        self.assertEqual(ja.real_company({"company": "Acme"}), "Acme")
+        job = ja.normalize_job("Dev", "", "", JD_TEXT)
+        with mock.patch("llm.call_llm", return_value=json.dumps(ANALYSIS)) as m:
+            ja.analyze_jd(job)
+        self.assertNotIn("Company Not Specified", m.call_args.args[0])
+        self.assertNotIn("Company Not Specified", ja.ANALYSIS_PROMPT)
 
 
 class Extraction(unittest.TestCase):

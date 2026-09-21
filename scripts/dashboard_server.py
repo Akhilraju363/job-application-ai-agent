@@ -45,6 +45,7 @@ if os.environ.get("llm_base_url", "").strip() or os.environ.get("LOCAL_MODE", ""
 import activity  # noqa: E402
 import dashboard_data as dd  # noqa: E402
 import dashboard_tasks as tasks  # noqa: E402
+import drive_resumes  # noqa: E402
 import jd_analysis  # noqa: E402
 import no_fabrication as nf  # noqa: E402
 import resume_store  # noqa: E402
@@ -375,21 +376,33 @@ def resume_export(req):
     rid, n = meta["id"], v["n"]
 
     def work(task):
-        import tailor_job  # gws + Docs export shared with the Drive pipeline
-
         task.set_stage("export")
-        try:
-            tailor_job.export_doc_file(resume_store.version_path(rid, n, "md"),
-                                       resume_store.version_path(rid, n, fmt), EXPORT_FORMATS[fmt])
-        except Exception as e:  # noqa: BLE001 -- gws missing / not signed in / Docs API error
-            detail = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
-            raise RuntimeError(f"{'PDF' if fmt == 'pdf' else 'DOCX'} generation failed: {detail}. "
-                               "Check that the Google Workspace CLI (gws) is signed in, or download the Markdown.") from e
-        resume_store.mark_export(rid, n, fmt)
+        _export_local(rid, n, fmt)
         task.result = {"resume_id": rid, "version": n, "format": fmt}
+        task.set_stage("upload")
+        try:  # Drive is the persistent copy; the local export above already succeeded and stays downloadable
+            up = drive_resumes.upload_and_record(rid, n, fmt)
+            task.result["drive"] = {"status": "uploaded", "url": up["url"], "reused": up["reused"]}
+        except drive_resumes.DriveUploadError as e:
+            task.result["drive"] = {"status": "failed", "error": str(e)}
 
     label = "PDF" if fmt == "pdf" else "Word document"
-    return {"task_id": tasks.start("export", [("export", f"Building {label} via Google Docs")], work).id}
+    return {"task_id": tasks.start("export", [("export", f"Building {label} via Google Docs"),
+                                              ("upload", "Saving to Google Drive")], work).id}
+
+
+def _export_local(rid, n, fmt):
+    """Markdown -> Google Doc -> local v<n>.<fmt> (the dashboard download + the file Drive gets)."""
+    import tailor_job  # gws + Docs export shared with the Drive pipeline
+
+    try:
+        tailor_job.export_doc_file(resume_store.version_path(rid, n, "md"),
+                                   resume_store.version_path(rid, n, fmt), EXPORT_FORMATS[fmt])
+    except Exception as e:  # noqa: BLE001 -- gws missing / not signed in / Docs API error
+        detail = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+        raise RuntimeError(f"{'PDF' if fmt == 'pdf' else 'DOCX'} generation failed: {detail}. "
+                           "Check that the Google Workspace CLI (gws) is signed in, or download the Markdown.") from e
+    resume_store.mark_export(rid, n, fmt)
 
 
 def _safe_filename(meta, ext):
@@ -418,23 +431,30 @@ def resume_save(req):
     meta = _get_resume(req.params["id"])
     v = _version(meta, req)
     _require_ok(v)
-    rel = resume_store.version_path(meta["id"], v["n"], "pdf" if v["exports"].get("pdf") else "md")
+    rid, n = meta["id"], v["n"]
+    # The tracker links to the PDF in Google Drive, never to a local path. Make sure the PDF exists
+    # locally, then upload it -- idempotent, so a retry after a Sheet failure reuses the Drive file.
+    if not resume_store.version_path(rid, n, "pdf").exists():
+        try:
+            _export_local(rid, n, "pdf")
+        except RuntimeError as e:
+            raise ApiError(502, str(e), "export_failed") from None
     try:
-        rel = rel.relative_to(paths.ROOT).as_posix()
-    except ValueError:
-        rel = str(rel)
+        drive_url = drive_resumes.upload_and_record(rid, n, "pdf")["url"]
+    except drive_resumes.DriveUploadError as e:
+        raise ApiError(502, str(e), "drive_upload_failed") from None
     label = meta["job"].get("source") or ("Manual JD" if meta["source"] == "manual" else "LinkedIn")
     try:
         out = tracker.save_job(title=meta["job"]["title"], company=meta["job"]["company"],
                                link=meta["job"]["link"],
                                score=meta["job"].get("pipeline_score") or meta["match"]["fit_score"],
-                               resume_path=rel, source=label, resume_id=f"{meta['id']}-v{v['n']}",
+                               resume_path=drive_url, source=label, resume_id=f"{rid}-v{n}",
                                match_pct=meta["match"]["overall"])
     except TrackerError as e:
         raise ApiError(502, f"Tracker unavailable: {e}", "tracker_unavailable") from None
-    resume_store.update_meta(meta["id"], tracker={"saved_at": resume_store.now_iso(), "result": out["result"],
-                                                 "version": v["n"], "resume_path": rel})
-    return {"result": out["result"], "resume_path": rel}
+    resume_store.update_meta(rid, tracker={"saved_at": resume_store.now_iso(), "result": out["result"],
+                                          "version": n, "resume_path": drive_url, "drive_url": drive_url})
+    return {"result": out["result"], "resume_path": drive_url, "drive_url": drive_url}
 
 
 # ---------------------------------------------------------------------------

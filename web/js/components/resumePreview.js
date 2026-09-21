@@ -6,6 +6,7 @@ import { icon } from '../icons.js';
 import { badge, toast, withBusy } from '../ui.js';
 import { groupBullets, parseResume } from '../lib/resumeMarkdown.js';
 import { atsValidation } from './atsValidation.js';
+import { safeHref } from '../lib/format.js';
 
 const KIND_LABEL = { generated: 'Generated', regenerated: 'Regenerated', edited: 'Edited', conservative: 'Reorder-only' };
 
@@ -61,9 +62,10 @@ export function resumePreview(initialRec, { onRegenerate, onRecord }) {
           const { task_id } = await api.post(`/api/resumes/${s.rec.id}/export`, { format: fmt, version: v.n });
           s.note = 'Building the document via Google Docs…';
           render();
-          await pollTask(task_id).promise;
+          const done = await pollTask(task_id).promise;
           s.rec = await api.get(`/api/resumes/${s.rec.id}`);
           s.note = '';
+          if (done.result?.drive?.status === 'failed') toast(`Saved locally, but not to Google Drive. ${done.result.drive.error}`, 'error', 9000);
         }
         await download(`/api/resumes/${s.rec.id}/download?format=${fmt}&version=${v.n}`, `resume.${fmt}`);
       });
@@ -94,6 +96,9 @@ export function resumePreview(initialRec, { onRegenerate, onRecord }) {
     const pipelineScore = rec.job.pipeline_score;
     const score = pipelineScore ?? rec.match.fit_score;
     const trackerNote = rec.tracker && `Saved to the tracker (v${rec.tracker.version})`;
+    const drive = v.drive || {};
+    const driveHref = safeHref(drive.pdf?.url || drive.docx?.url);   // PDF first: the primary artifact
+    const driveFailure = ['pdf', 'docx'].map((f) => drive[f]).find((d) => d?.status === 'failed');
 
     mount(host,
       h('div', { class: 'preview-head' },
@@ -109,6 +114,9 @@ export function resumePreview(initialRec, { onRegenerate, onRecord }) {
         : resumePaper(v.markdown),
       s.note && h('p', { class: 'muted', role: 'status' }, s.note),
       trackerNote && h('p', { class: 'muted' }, icon('check', 14), ' ', trackerNote),
+      driveHref && h('p', { class: 'muted' }, icon('check', 14), ' ',
+        h('a', { class: 'link', href: driveHref, target: '_blank', rel: 'noopener noreferrer' }, 'Open in Google Drive')),
+      !driveHref && driveFailure && h('p', { class: 'notice notice-warn', role: 'note' }, `Not saved to Google Drive: ${driveFailure.error}`),
       h('div', { class: 'preview-actions' },
         s.editing
           ? [h('button', { class: 'btn btn-primary', onClick: (e) => saveEdit(e.currentTarget) }, icon('check', 16), 'Save changes'),

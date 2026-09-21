@@ -28,10 +28,21 @@ class InputError(ValueError):
     """User-supplied JD/title/company/URL failed validation (surfaced as HTTP 400)."""
 
 
+# Storage/display metadata only, used when a manual JD names no employer. It is never passed to
+# the model as an employer (see real_company) and never belongs in resume content.
+COMPANY_NOT_SPECIFIED = "Company Not Specified"
+
+
+def real_company(job):
+    """The employer name to show a model: "" when only the fallback placeholder is present."""
+    company = (job.get("company") or "").strip()
+    return "" if company == COMPANY_NOT_SPECIFIED else company
+
+
 def _one_line(value, label, required=False):
     s = nf.norm_ws(_CTRL.sub(" ", str(value or "")))
     if required and not s:
-        raise InputError(f"{label} is required")
+        raise InputError(f"{label} is required.")
     if len(s) > MAX_FIELD_CHARS:
         raise InputError(f"{label} is too long (max {MAX_FIELD_CHARS} characters)")
     return s
@@ -64,7 +75,7 @@ def sanitize_url(url):
 def normalize_job(title, company, url, description):
     return {
         "title": _one_line(title, "Job title", required=True),
-        "company": _one_line(company, "Company", required=True),
+        "company": _one_line(company, "Company") or COMPANY_NOT_SPECIFIED,  # optional; never guessed
         "link": sanitize_url(url),
         "description": sanitize_jd(description),
     }
@@ -154,7 +165,7 @@ def analyze_jd(job):
     """One LLM call through the existing provider chain. Raises on provider failure."""
     from llm import call_llm  # imported lazily: keeps this module importable without keys
 
-    prompt = (ANALYSIS_PROMPT.replace("__TITLE__", job["title"]).replace("__COMPANY__", job["company"])
+    prompt = (ANALYSIS_PROMPT.replace("__TITLE__", job["title"]).replace("__COMPANY__", real_company(job) or "(not specified)")
               .replace("__DESCRIPTION__", job["description"]))
     analysis = parse_analysis(json.loads(call_llm(prompt, f"jd-analysis:{job['title']}", json_mode=True)))
     if not (analysis["required_skills"] or analysis["technologies"] or analysis["keywords"]):
