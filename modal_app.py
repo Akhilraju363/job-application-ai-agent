@@ -13,7 +13,14 @@ from pathlib import Path
 
 import modal
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
+# Where the image below copies scripts/. Locally scripts/ sits next to this file, but in the
+# Modal container this file is auto-mounted alone at /root/, so <this file>/scripts does not
+# exist there -- only the image copy does. Put both on sys.path or `import modal_app` fails
+# at container startup (ModuleNotFoundError: job_links) and run_pipeline crash-loops.
+SCRIPTS_REMOTE_PATH = "/app/scripts"
+for _scripts_dir in (Path(__file__).resolve().parent / "scripts", Path(SCRIPTS_REMOTE_PATH)):
+    if _scripts_dir.is_dir():
+        sys.path.insert(0, str(_scripts_dir))
 from job_links import canonical_link  # noqa: E402
 
 app = modal.App("job-apply-agent")
@@ -55,7 +62,7 @@ image = (
         "chmod +x /usr/local/bin/gws",
         "rm /tmp/gws.tar.gz",
     )
-    .add_local_dir("scripts", remote_path="/app/scripts")
+    .add_local_dir("scripts", remote_path=SCRIPTS_REMOTE_PATH)
     .add_local_dir("resume", remote_path="/app/resume")
 )
 
