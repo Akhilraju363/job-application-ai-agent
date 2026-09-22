@@ -18,13 +18,71 @@ export async function saveJob(job, onChange) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+// Shared by the inline status dropdown and (for back-compat) any other status-change caller.
+// A job not yet in the tracker is saved first (as "Not Applied") -- same two-step flow the
+// backend already expects -- then PATCH /api/tracker/status makes the actual change, which
+// tracker_service.py writes straight to the Google Sheet (the source of truth).
+async function persistStatus(job, status) {
+  if (!job.tracker_status) await api.post(`/api/jobs/${job.key}/save`, {});
+  await api.patch('/api/tracker/status', { link: job.link, status });
+  job.tracker_status = status;
+}
+
 export async function setJobStatus(job, status, onChange) {
   try {
-    if (!job.tracker_status) await api.post(`/api/jobs/${job.key}/save`, {});
-    await api.patch('/api/tracker/status', { link: job.link, status });
+    await persistStatus(job, status);
     toast(`Marked ${status}`, 'success');
     onChange?.();
   } catch (e) { toast(e.message, 'error'); }
+}
+
+// Pipeline (qualification) states that stand in for "no application status yet" when the
+// dropdown has nothing real to show. Deliberately NOT part of TRACKER_STATUSES/STATUS_OPTIONS
+// -- it's never sent to the backend, only ever the dropdown's initial display value.
+const QUALIFICATION_PLACEHOLDER_STATES = new Set(['Below cutoff']);
+
+// Inline, editable Status cell for the jobs table. Safe update, not optimistic: the dropdown
+// is disabled and shows "Saving…" while the request is in flight; on failure the previous
+// value is restored and nothing is left showing a status that was never persisted.
+function statusCell(job, onChange) {
+  // A job that's never been saved to the tracker has no application status yet. Most such jobs
+  // just default to "Not Applied" -- but a job scored below the 8+ cutoff shouldn't silently
+  // read as "Not Applied" (that implies it qualified and simply hasn't been touched); instead
+  // the dropdown itself shows "Below cutoff" until a real status is chosen, with no separate
+  // "Not Applied" text alongside it. The moment any real status is set, that persisted value
+  // takes over (job.tracker_status, and the pipeline `state` itself, both follow the tracker row).
+  const showPlaceholder = !job.tracker_status && QUALIFICATION_PLACEHOLDER_STATES.has(job.state);
+  const current = job.tracker_status || (showPlaceholder ? job.state : 'Not Applied');
+  const note = h('span', { class: 'muted small status-note', hidden: true }, 'Saving…');
+  const sel = h('select', {
+    class: 'input input-sm status-select',
+    'aria-label': `Application status for ${job.title || 'this job'}`,
+    onChange: async (e) => {
+      const chosen = e.target.value;
+      if (!TRACKER_STATUSES.includes(chosen)) return; // the placeholder option itself -- nothing to persist
+      sel.disabled = true;
+      note.hidden = false;
+      try {
+        await persistStatus(job, chosen);
+        toast(`Marked ${chosen}`, 'success');
+        onChange?.();
+      } catch (err) {
+        sel.value = current;
+        toast(err.message, 'error');
+      } finally {
+        sel.disabled = false;
+        note.hidden = true;
+      }
+    },
+  },
+  showPlaceholder && h('option', { value: job.state, selected: true }, job.state),
+  ...TRACKER_STATUSES.map((s) => h('option', { value: s, selected: !showPlaceholder && s === current }, s)));
+  // Other pipeline states ("Qualified", "Tailored", "Unscored") aren't an application status
+  // either, but -- unlike "Below cutoff" -- reading them as "Not Applied" isn't misleading, so
+  // they stay a small hint next to the (correct) "Not Applied" default instead of a placeholder.
+  const hint = !job.tracker_status && job.state && !showPlaceholder && !TRACKER_STATUSES.includes(job.state)
+    ? h('span', { class: 'muted small status-hint' }, job.state) : null;
+  return h('div', { class: 'status-cell' }, sel, note, hint);
 }
 
 export function openJob(job) {
@@ -68,20 +126,23 @@ export function jobActions(job, onChange) {
     h('button', { class: 'btn btn-outline btn-sm', title: 'Generate a JD-specific resume for this job', onClick: () => navigate(`/tailor-resume?job=${job.key}`) }, 'Tailor'),
     menu(`More actions for ${job.title}`, [
       { label: 'Open job posting', icon: 'ext', href },
+      // Status itself is changed via the inline dropdown in the table (see statusCell) --
+      // this only covers adding an untracked job with no status change.
       { label: job.tracker_status ? 'In tracker' : 'Save to tracker', icon: 'bookmark', disabled: !!job.tracker_status, onClick: () => saveJob(job, onChange) },
-      { divider: true }, { heading: 'Update status' },
-      ...TRACKER_STATUSES.map((s) => ({ label: s + (job.tracker_status === s ? ' ✓' : ''), onClick: () => setJobStatus(job, s, onChange) })),
     ].filter((i) => i.href !== null)));
 }
 
-export function jobsTable(jobs, onChange) {
+// `scroll: true` caps the table body's height and makes it scroll internally with a sticky
+// header, instead of letting the page grow indefinitely -- used for the dashboard's "Latest
+// Job Matches" card; the full Find Jobs page keeps its normal page-level scrolling.
+export function jobsTable(jobs, onChange, { scroll = false } = {}) {
   const th = (t) => h('th', { scope: 'col' }, t);
-  return h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+  return h('div', { class: scroll ? 'table-wrap table-wrap-scroll' : 'table-wrap' }, h('table', { class: 'table' },
     h('thead', {}, h('tr', {}, ...['Job Title', 'Company', 'Match', 'Location', 'Posted', 'Source', 'Status', 'Action'].map(th))),
     h('tbody', {}, ...jobs.map((j) => h('tr', {},
       h('td', { class: 'cell-title' }, h('button', { class: 'link-btn', onClick: () => openJob(j) }, j.title || 'Untitled')),
       h('td', {}, j.company || '—'), h('td', {}, matchBadge(j.match_pct)), h('td', {}, j.location || '—'),
       h('td', { class: 'nowrap' }, relDay(j.posted_date || j.found_at) || '—'), h('td', {}, j.source),
-      h('td', {}, badge(j.state, statusTone(j.state))), h('td', {}, jobActions(j, onChange)))))));
+      h('td', {}, statusCell(j, onChange)), h('td', {}, jobActions(j, onChange)))))));
 }
 

@@ -66,7 +66,7 @@ export function dashboardPage(root, { profile }) {
     load: () => api.get('/api/dashboard/jobs?limit=6'),
     isEmpty: (d) => d.jobs.length === 0,
     empty: { title: 'No jobs found yet', text: 'Use Find New Jobs to scrape and score the latest listings.', iconName: 'search' },
-    render: (d) => jobsTable(d.jobs, refreshAll),
+    render: (d) => jobsTable(d.jobs, refreshAll, { scroll: true }),
   });
   const activity = loadable(activityHost, {
     load: () => api.get('/api/dashboard/activity?limit=8'),
