@@ -29,6 +29,7 @@ export class FakeElement extends FakeBase {
   set hidden(v) { if (v) this.attributes.hidden = ''; else delete this.attributes.hidden; }
 
   append(...nodes) { for (const n of nodes) this.children.push(n); }
+  remove() { /* no-op: this stand-in doesn't track parents; toast()'s auto-dismiss just needs not to throw */ }
   replaceChildren(...nodes) { this.children = [...nodes]; }
   get textContent() { return this.children.map((c) => c.textContent).join(''); }
   set textContent(v) { this.children = [new FakeText(v)]; }
@@ -54,10 +55,22 @@ export class FakeElement extends FakeBase {
 
 export function installFakeDom() {
   globalThis.Node = FakeBase;
+  const listeners = {};
   globalThis.document = {
     createElement: (tag) => new FakeElement(tag),
     createElementNS: (_ns, tag) => new FakeElement(tag),
     createTextNode: (text) => new FakeText(text),
+    // ui.js registers a document-level click listener (for the dropdown menu) at import time,
+    // and toast()/openDrawer() append to document.body -- both need a minimal stand-in here.
+    body: new FakeElement('body'),
+    addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn); },
+    removeEventListener(type, fn) {
+      const l = listeners[type];
+      if (!l) return;
+      const i = l.indexOf(fn);
+      if (i >= 0) l.splice(i, 1);
+    },
+    activeElement: null,
   };
 }
 
