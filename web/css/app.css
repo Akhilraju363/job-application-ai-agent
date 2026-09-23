@@ -182,7 +182,6 @@ select.input { appearance: auto; }
 .status-select { min-width: 118px; }
 .status-cell { display: flex; flex-direction: column; gap: 2px; }
 .status-note { font-style: italic; }
-.status-hint { white-space: nowrap; }
 
 /* Latest Job Matches (dashboard): the row list scrolls in place, with a sticky header, instead
    of letting the card -- and the page -- grow without limit as more jobs are added. */
