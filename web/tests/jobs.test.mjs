@@ -79,11 +79,11 @@ test('a qualified job with no application status yet displays "Not Applied" (not
   assert.deepEqual(optionValues(sel), TRACKER_STATUSES, 'no placeholder option for a job that is not below cutoff');
 });
 
-test('other pipeline states ("Tailored", "Unscored") still show their small hint next to the Not Applied default', () => {
-  for (const state of ['Tailored', 'Unscored']) {
+test('other pipeline states ("Qualified", "Tailored", "Unscored") default to Not Applied with no separate hint', () => {
+  for (const state of ['Qualified', 'Tailored', 'Unscored']) {
     const table = jobsTable([baseJob({ tracker_status: null, state })], () => {});
     assert.equal(selectedValue(selectIn(table)), 'Not Applied');
-    assert.equal(hintIn(table).textContent, state);
+    assert.equal(hintIn(table), null, `no "${state}" text rendered below the dropdown`);
   }
 });
 

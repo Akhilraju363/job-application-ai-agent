@@ -79,10 +79,8 @@ function statusCell(job, onChange) {
   ...TRACKER_STATUSES.map((s) => h('option', { value: s, selected: !showPlaceholder && s === current }, s)));
   // Other pipeline states ("Qualified", "Tailored", "Unscored") aren't an application status
   // either, but -- unlike "Below cutoff" -- reading them as "Not Applied" isn't misleading, so
-  // they stay a small hint next to the (correct) "Not Applied" default instead of a placeholder.
-  const hint = !job.tracker_status && job.state && !showPlaceholder && !TRACKER_STATUSES.includes(job.state)
-    ? h('span', { class: 'muted small status-hint' }, job.state) : null;
-  return h('div', { class: 'status-cell' }, sel, note, hint);
+  // the dropdown just shows "Not Applied" with no separate hint.
+  return h('div', { class: 'status-cell' }, sel, note);
 }
 
 export function openJob(job) {
