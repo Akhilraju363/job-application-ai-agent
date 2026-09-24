@@ -39,7 +39,11 @@ Config (.env / Modal secret), all optional:
 
   llm_provider_order        default "groq,openrouter,gemini"
   llm_request_delay_seconds default 5 (cloud) / 0 (local) -- spacing before each request
-  llm_max_retries           default 2  -- attempts per provider before moving on
+  llm_max_retries           default 2  -- attempts per provider on 5xx/timeout/bad JSON
+  llm_max_rate_limit_retries default 5 -- attempts per provider on 429, a separate budget:
+                            free-tier 429s are per-minute token/request windows that clear
+                            in seconds (Groq sends Retry-After), so giving up after one
+                            backoff fails jobs that a short wait would have saved
   llm_request_deadline      default 120 -- hard wall-clock cap per attempt (seconds); the
                             free chat models here answer in ~5-40s, so a longer wait means
                             a hung connection -- cut it and fail over rather than sit on it
@@ -62,6 +66,7 @@ log = lc.get_logger("llm")
 
 REQUEST_DEADLINE = int(os.environ.get("llm_request_deadline", "120"))
 MAX_RETRIES = max(1, int(os.environ.get("llm_max_retries", "2")))
+MAX_RATE_LIMIT_RETRIES = max(1, int(os.environ.get("llm_max_rate_limit_retries", "5")))
 
 # Explicit local high-volume switch. Distinct from (but compatible with) the older
 # recovery convention of just setting llm_base_url directly -- see "Recovering a failed
@@ -215,7 +220,7 @@ def _extract(resp, json_mode):
     return json.dumps(_parse_json(content))  # normalized, guaranteed-valid JSON string
 
 
-def _backoff_429(resp, attempt):
+def _backoff_429(resp, attempt, provider):
     retry_after = None
     if resp is not None:
         raw = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
@@ -227,7 +232,9 @@ def _backoff_429(resp, attempt):
     if retry_after is None:
         retry_after = 5.0 * (2 ** (attempt - 1))  # 5, 10, 20, ...
     wait = min(retry_after + random.uniform(0, 3), 90.0)
-    log.warning("LLM rate limited (429), backing off", extra={"wait_seconds": round(wait, 1), "attempt": attempt})
+    log.warning("LLM rate limited (429), backing off", extra={
+        "provider": provider["name"], "wait_seconds": round(wait, 1), "attempt": attempt,
+        "max_attempts": MAX_RATE_LIMIT_RETRIES})
     time.sleep(wait)
 
 
@@ -241,7 +248,9 @@ def _call_provider(provider, prompt, label, json_mode):
         payload["response_format"] = {"type": "json_object"}
 
     last = "unknown"
-    for attempt in range(1, MAX_RETRIES + 1):
+    attempt = 0        # 5xx / timeout / bad-JSON failures, capped by MAX_RETRIES
+    rate_limited = 0   # 429s, capped separately by MAX_RATE_LIMIT_RETRIES
+    while True:
         if provider["delay"]:
             time.sleep(provider["delay"])
 
@@ -270,21 +279,23 @@ def _call_provider(provider, prompt, label, json_mode):
             if status == 400:
                 raise _SkipProvider(f"bad request ({last})") from e
 
-            if attempt == MAX_RETRIES:
-                raise _SkipProvider(f"exhausted {MAX_RETRIES} attempts ({last})") from e
-
             if status == 429:
-                _backoff_429(resp, attempt)
-            else:
-                wait = min(30.0, 2.0 * (2 ** attempt)) + random.uniform(0, 2)
-                log.warning("LLM request failed, retrying", extra={
-                    "provider": provider["name"], "model": provider["model"], "attempt": attempt,
-                    "max_retries": MAX_RETRIES, "reason": last, "wait_seconds": round(wait, 1)})
-                time.sleep(wait)
+                rate_limited += 1
+                if rate_limited >= MAX_RATE_LIMIT_RETRIES:
+                    raise _SkipProvider(f"still rate limited after {rate_limited} attempts ({last})") from e
+                _backoff_429(resp, rate_limited, provider)
+                continue
+
+            attempt += 1
+            if attempt >= MAX_RETRIES:
+                raise _SkipProvider(f"exhausted {MAX_RETRIES} attempts ({last})") from e
+            wait = min(30.0, 2.0 * (2 ** attempt)) + random.uniform(0, 2)
+            log.warning("LLM request failed, retrying", extra={
+                "provider": provider["name"], "model": provider["model"], "attempt": attempt,
+                "max_retries": MAX_RETRIES, "reason": last, "wait_seconds": round(wait, 1)})
+            time.sleep(wait)
         finally:
             ex.shutdown(wait=False)
-
-    raise _SkipProvider(f"fell through retry loop ({last})")
 
 
 def call_llm(prompt, label, json_mode=False):

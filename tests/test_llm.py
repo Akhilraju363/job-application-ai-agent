@@ -78,7 +78,8 @@ class ProviderResolution(unittest.TestCase):
 class Failover(unittest.TestCase):
     def setUp(self):
         self.llm = load_llm(GROQ_API_KEY="g", OPENROUTER_API_KEY="o", GEMINI_API_KEY="x",
-                            llm_request_delay_seconds="0", llm_max_retries="2")
+                            llm_request_delay_seconds="0", llm_max_retries="2",
+                            llm_max_rate_limit_retries="2")
         # make backoff instant
         self._sleep = mock.patch.object(time, "sleep").start()
         self.addCleanup(mock.patch.stopall)
@@ -120,6 +121,36 @@ class Failover(unittest.TestCase):
         self.assertEqual(json.loads(out)["score"], 5)
         self.assertEqual([c[0] for c in calls], ["groq", "groq", "openrouter"])
         self.assertTrue(self._sleep.called)  # honored Retry-After / backoff
+
+    def test_429_has_own_budget_separate_from_max_retries(self):
+        # 2026-09-24: groq 429'd twice in a row on one tailoring call; with 429s sharing
+        # llm_max_retries=2 it gave up after a single backoff and the job was lost.
+        llm = load_llm(GROQ_API_KEY="g", OPENROUTER_API_KEY="o",
+                       llm_request_delay_seconds="0", llm_max_retries="2",
+                       llm_max_rate_limit_retries="4")
+        self.llm = llm
+        calls, llm = self._run([
+            FakeResp(429, headers={"Retry-After": "3"}),
+            FakeResp(429, headers={"Retry-After": "3"}),
+            FakeResp(429),
+            FakeResp(text='{"score": 9}'),    # groq recovers on the 4th attempt
+        ])
+        out = llm.call_llm("p", "job", json_mode=True)
+        self.assertEqual(json.loads(out)["score"], 9)
+        self.assertEqual([c[0] for c in calls], ["groq"] * 4)
+
+    def test_429s_do_not_consume_5xx_budget(self):
+        llm = load_llm(GROQ_API_KEY="g", OPENROUTER_API_KEY="o",
+                       llm_request_delay_seconds="0", llm_max_retries="2",
+                       llm_max_rate_limit_retries="4")
+        self.llm = llm
+        calls, llm = self._run([
+            FakeResp(429), FakeResp(503), FakeResp(429),
+            FakeResp(text='{"ok": true}'),    # groq: one 5xx + two 429s still in budget
+        ])
+        out = llm.call_llm("p", "job", json_mode=True)
+        self.assertTrue(json.loads(out)["ok"])
+        self.assertEqual([c[0] for c in calls], ["groq"] * 4)
 
     def test_404_skips_provider_immediately_no_retry(self):
         calls, llm = self._run([

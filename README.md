@@ -94,9 +94,10 @@ default `groq,openrouter,gemini`), building the chain from whichever keys are se
 | **OpenRouter** | `google/gemma-4-26b-a4b-it:free` | no card · ~50 req/day | `:free` only; burst-throttled |
 | **Gemini** | `gemini-2.5-flash` | no card · ~10-15 RPM | ⚠️ Google may train on free-tier data — optional, omit `GEMINI_API_KEY` to skip |
 
-On a `429` it backs off (honoring `Retry-After`) then moves to the next provider; on a `404`
+On a `429` it backs off (honoring `Retry-After`) up to `llm_max_rate_limit_retries` times
+(default 5, separate from the 5xx/timeout budget) then moves to the next provider; on a `404`
 (model delisted) it skips that provider immediately. When every provider fails, the run fails
-loudly and Telegram fires. Tune with `llm_request_delay_seconds`, `llm_max_retries`,
+loudly and Telegram fires. Tune with `llm_request_delay_seconds`, `llm_max_retries`, `llm_max_rate_limit_retries`,
 `llm_<provider>_model` (see [`.env.example`](.env.example)).
 
 **Local recovery with [Ollama](https://ollama.com)** — set `llm_base_url` and the whole
