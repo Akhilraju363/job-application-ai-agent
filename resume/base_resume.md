@@ -1,7 +1,7 @@
 # Akhil Dalali
 Software Engineer | Java | Spring Boot | Angular | AWS
 
-akhildalali07@gmail.com | linkedin.com/in/akhildalali-320204233 | Bengaluru, Karnataka, India
+linkedin.com/in/akhil-dalali-320204233
 
 ## Summary
 Results-driven Software Engineer with 4+ years of experience in full-stack development, specializing in Java, Spring Boot, Angular, and AWS. Proven track record in building scalable backend microservices, optimizing application performance, and delivering high-quality solutions in Agile environments. Experienced in healthcare and enterprise domains with strong expertise in RESTful API design, cloud deployments, and frontend development.
