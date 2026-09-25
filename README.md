@@ -68,6 +68,11 @@ the per-job resume folders and the `pipeline-artifacts/` sync folder.
 spreadsheet. This is recommended for both local and Modal runs so every execution
 uses the same spreadsheet deterministically.
 
+`RESUME_CONTACT_LINE` — your email and location, e.g. `name@example.com | Bengaluru, India`.
+`resume/base_resume.md` is public, so it has no contact details. `scripts/contact.py` adds this
+line to every exported PDF/DOCX/Markdown download, after the no-fabrication check, joined onto the
+LinkedIn line. Put it in `job-apply-agent-secrets` too so the cron and hosted dashboard get it.
+
 For Modal, `google_sheet_id` must be provided through the
 `job-apply-agent-secrets` secret because the Modal container does not have a
 persistent `.env`.
@@ -192,6 +197,7 @@ modal secret create job-apply-agent-secrets \
   apify_api_key=... GROQ_API_KEY=... \
   OPENROUTER_API_KEY=... GEMINI_API_KEY=... \
   google_drive_folder_id=... google_sheet_id=... \
+  RESUME_CONTACT_LINE="name@example.com | Bengaluru, India" \
   TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=...
 
 modal secret create gws-credentials \
@@ -378,6 +384,28 @@ pulls the newest copy before starting and pushes its progress back, so Modal and
 share the same state. Jobs are identified by their URL throughout, so nothing is scored, tailored,
 researched, or logged twice — every recovery run converges on the same Sheet. Set `artifact_sync=0`
 to turn the Drive mirror off (pure-local development without Google auth still works).
+
+### Local startup
+
+Run from the repository root (Windows PowerShell):
+
+```powershell
+.\start_local.ps1
+```
+
+This starts, as two separate processes sharing your console:
+- the local pipeline with `LOCAL_MODE=true` (`scripts/run_pipeline.py`)
+- the dashboard server (`scripts/dashboard_server.py`, http://127.0.0.1:8765/)
+
+It uses your active virtual environment, else the repo's `.venv`, else `python` on PATH
+(`-Python <path>` overrides; nothing is installed or created). The pipeline is a one-shot run:
+when it finishes or fails the script says so and the dashboard keeps running. Options:
+`-NoPipeline` (dashboard only), `-Port <n>`, `-DryRun` (print the resolved commands, start nothing).
+If port 8765 is taken (often an older dashboard still running), it stops with the PID to close.
+
+**To stop:** press `Ctrl+C` in that window. Both processes, and anything they started, are
+stopped; other Python processes are left alone. If the dashboard exits on its own, the script
+reports it, stops the pipeline and exits.
 
 ## Local High-Volume Mode
 

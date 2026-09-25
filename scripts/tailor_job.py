@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,8 @@ load_dotenv(ROOT / ".env")
 import sys
 sys.path.insert(0, str(ROOT / "scripts"))
 from validate_resume import validate
+from contact import contact_line, with_contact  # noqa: E402
+from resume_role import apply_role, resume_filename, target_role  # noqa: E402
 from llm import call_llm, validate_local_setup  # noqa: E402 -- LLM endpoint/model/retry config, .env-driven
 from job_links import canonical_link  # noqa: E402
 from activity import log_event  # noqa: E402
@@ -121,10 +124,21 @@ def create_job_folder(company, slug, parent_folder_id):
 def export_doc_file(markdown_path, out_path, mime_type="application/pdf"):
     """Markdown -> formatted Google Doc -> exported file at out_path (PDF by default; pass the
     DOCX mime type for Word). The intermediate Doc is always deleted. Shared by the Drive
-    pipeline below and the dashboard's Download PDF/DOCX."""
+    pipeline below and the dashboard's Download PDF/DOCX. The private contact line
+    (scripts/contact.py) is added here, so it reaches every export but never the stored markdown."""
+    if not contact_line():
+        log.warning("Exporting a resume without a contact line: RESUME_CONTACT_LINE is not set",
+                    extra={"file": Path(out_path).name})
     doc = gws("docs", "documents", "create", "--json",
               json.dumps({"title": "Akhil Dalali Resume"}))
     doc_id = doc["documentId"]
+    with tempfile.TemporaryDirectory() as tmp:
+        render_path = Path(tmp) / "resume.md"
+        render_path.write_text(with_contact(Path(markdown_path).read_text(encoding="utf-8")), encoding="utf-8")
+        _export_doc(render_path, doc_id, out_path, mime_type)
+
+
+def _export_doc(markdown_path, doc_id, out_path, mime_type):
     try:
         subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "format_resume_doc.py"), str(markdown_path), doc_id],
@@ -158,7 +172,7 @@ def build_and_upload_resume(markdown_path, folder_id, tmp_pdf_path):
 
     uploaded = gws("drive", "files", "create", "--params", json.dumps({"fields": "id,webViewLink"}),
                     "--json", json.dumps({
-                        "name": "Akhil Dalali Resume.pdf",
+                        "name": tmp_pdf_path.name,
                         "parents": [folder_id],
                     }),
                     "--upload", tmp_pdf_path.name,
@@ -213,7 +227,8 @@ if __name__ == "__main__":
             continue
 
         try:
-            text = tailor_text(job, resume_text)
+            role = target_role(job["title"], resume_text, job.get("missing_must_haves") or [])
+            text = apply_role(tailor_text(job, resume_text), role)
             ok, reason = validate(text)
             if not ok:
                 by_link[key] = {**job, "status": "flagged_validation_failed", "reason": reason}
@@ -223,7 +238,7 @@ if __name__ == "__main__":
                 md_path.write_text(text, encoding="utf-8")
 
                 folder_id, folder_link = create_job_folder(job["company"], slug, parent_folder_id)
-                tmp_pdf_path = tmp_dir / folder_name / "Akhil Dalali Resume.pdf"
+                tmp_pdf_path = tmp_dir / folder_name / resume_filename(text, "pdf")
                 resume_link = build_and_upload_resume(md_path, folder_id, tmp_pdf_path)
 
                 by_link[key] = {

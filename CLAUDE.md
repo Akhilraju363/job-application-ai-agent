@@ -80,6 +80,8 @@ job-apply-agent/
     format_resume_doc.py     # markdown -> real Google Docs formatting
     validate_resume.py       # shared validation logic
     llm.py                    # provider-aware chat client: free cloud chain (Groq->OpenRouter->Gemini) or local Ollama
+    resume_role.py            # tailored headline = normalized job title (no unsupported tech/seniority); export filename
+    contact.py                # RESUME_CONTACT_LINE (email/location) added at export only -- base resume is public
     artifacts.py              # best-effort Drive mirror of stage JSON, for cross-machine resume
     run_pipeline.py            # LOCAL_MODE=true entrypoint: same 5 scripts in order, local high-volume runs
     tailoring_service.py     # ONE shared tailor path (manual JD + scraped job): analyze -> match -> tailor_job.tailor_text -> verify

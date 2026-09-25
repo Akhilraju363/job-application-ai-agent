@@ -17,33 +17,33 @@ Results-driven Software Engineer with 4+ years of experience in full-stack devel
 
 ## Experience
 
-### Software Engineer | Python | Angular | Healthcare — Zyter Technologies India Private Limited
+### Software Engineer — Zyter Technologies India Private Limited
 Jan 2026 - Present | Bengaluru, India
-- Working on the TruCare healthcare platform, developing and maintaining enterprise web applications using Angular, TypeScript, RxJS and Angular Material.
-- Developed Python-based backend services and RESTful APIs using FastAPI to support healthcare workflows, data processing and application integrations.
-- Built reusable Angular components and implemented end-to-end features by integrating frontend applications with Python backend APIs.
-- Worked with Nx Monorepo architecture to build modular, scalable and maintainable frontend applications.
-- Worked with PostgreSQL databases and implemented API-driven data processing for healthcare application workflows.
-- Performed debugging, issue analysis, API testing and performance optimization while collaborating with Agile development teams.
+- Develop and maintain enterprise web applications on the TruCare healthcare platform using Angular, TypeScript, RxJS and Angular Material.
+- Build RESTful APIs and backend services with Python and FastAPI to support healthcare workflows, data processing and application integrations.
+- Integrate reusable Angular components with Python backend APIs to deliver end-to-end features.
+- Structure frontend applications in an Nx Monorepo architecture for modular, scalable and maintainable code.
+- Implement API-driven data processing on PostgreSQL databases for healthcare application workflows.
+- Resolve issues through debugging, API testing and performance optimization within Agile development teams.
 
-### Software Engineer | Java | Angular | Spring Boot — Infinite Computer Solutions
+### Software Engineer — Infinite Computer Solutions
 Feb 2025 - Dec 2025 | Bengaluru, India
-- Worked on the TruCare healthcare platform, developing enterprise web applications using Angular, TypeScript, RxJS and Angular Material.
-- Developed and integrated Java-based backend services and RESTful APIs using Spring Boot to support application workflows and business requirements.
-- Implemented reusable Angular components and integrated frontend features with Java backend APIs for end-to-end functionality.
-- Worked with microservices architecture and REST API integration for scalable application development.
-- Performed debugging, defect resolution, code optimization and API integration across frontend and backend components.
-- Collaborated with cross-functional Agile teams to deliver healthcare application features and production fixes.
+- Developed enterprise web applications on the TruCare healthcare platform using Angular, TypeScript, RxJS and Angular Material.
+- Developed and integrated Java backend services and RESTful APIs with Spring Boot to support application workflows and business requirements.
+- Connected reusable Angular components to Java backend APIs to deliver end-to-end functionality.
+- Contributed to a microservices architecture, integrating REST APIs across services for scalable application development.
+- Resolved defects and optimized code across frontend and backend components.
+- Delivered healthcare application features and production fixes with cross-functional Agile teams.
 
-### Software Engineer | Java | Spring Boot | Microservices — LTIMindtree
+### Software Engineer — LTIMindtree
 Jan 2022 - Jun 2024 | Chennai, India
 - Designed and developed RESTful APIs and backend microservices using Java, Spring Boot, Hibernate and JPA for enterprise applications.
-- Developed scalable backend services and integrated APIs with frontend applications and third-party systems.
+- Built scalable backend services and integrated APIs with frontend applications and third-party systems.
 - Optimized database performance through indexing, query optimization and server-side pagination.
-- Worked with MySQL and Oracle databases for data management, SQL optimization and schema maintenance.
-- Performed debugging, performance analysis and code optimization to improve application reliability and performance.
+- Managed data, optimized SQL and maintained schemas across MySQL and Oracle databases.
+- Improved application reliability through performance analysis, debugging and code optimization.
 - Contributed to CI/CD and cloud deployment workflows using Docker, Kubernetes and AWS.
-- Participated in Agile development, code reviews, defect resolution and production support.
+- Took part in Agile development, code reviews, defect resolution and production support.
 
 ### Credit Control Assistant — Overture Rede
 Mar 2020 - May 2020 | Bengaluru, India
@@ -56,4 +56,4 @@ Bachelor of Commerce in Computer Applications — Sri Venkateswara University, 2
 ## Certifications
 - AWS Certifications
 - Analyzing and Visualizing Data with Microsoft Power BI
-- Oracle Database For Developer
+- Oracle Database for Developers

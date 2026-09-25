@@ -47,6 +47,7 @@ if os.environ.get("llm_base_url", "").strip() or os.environ.get("LOCAL_MODE", ""
     os.environ.setdefault("llm_request_deadline", "600")
 
 import activity  # noqa: E402
+import contact  # noqa: E402
 import dashboard_auth as da  # noqa: E402
 import dashboard_data as dd  # noqa: E402
 import dashboard_tasks as tasks  # noqa: E402
@@ -55,6 +56,7 @@ import jd_analysis  # noqa: E402
 import log_reader  # noqa: E402
 import logging_config as lc  # noqa: E402
 import no_fabrication as nf  # noqa: E402
+import resume_role  # noqa: E402
 import resume_store  # noqa: E402
 import scrape_jobs  # noqa: E402
 import tailoring_service  # noqa: E402
@@ -462,6 +464,11 @@ def _export_local(rid, n, fmt):
 
     ctx = {"resume_id": rid, "version": n, "format": fmt}
     try:
+        contact.require_contact_line()
+    except contact.ContactConfigError:
+        tailoring_log.error("Resume export blocked: RESUME_CONTACT_LINE not configured", extra=ctx)
+        raise
+    try:
         tailor_job.export_doc_file(resume_store.version_path(rid, n, "md"),
                                    resume_store.version_path(rid, n, fmt), EXPORT_FORMATS[fmt])
     except Exception as e:  # noqa: BLE001 -- gws missing / not signed in / Docs API error
@@ -473,9 +480,12 @@ def _export_local(rid, n, fmt):
     tailoring_log.info(f"{fmt.upper()} export completed", extra=ctx)
 
 
-def _safe_filename(meta, ext):
-    base = f"{dd.profile()['name'] or 'Resume'} - {meta['job']['company']} - {meta['job']['title']}"
-    return re.sub(r"[^\w .()&-]+", "", base).strip()[:120] + f".{ext}"
+def _safe_filename(meta, v, ext):
+    """Name + target role of the version being downloaded, e.g. Akhil_Dalali_Java_Developer.pdf.
+    Never the company: a manual JD's "Company Not Specified" is tracker metadata, not a filename."""
+    md_path = resume_store.version_path(meta["id"], v["n"], "md")
+    md = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+    return resume_role.export_filename(md, ext, meta["job"].get("title", ""), dd.profile()["name"] or "Resume")
 
 
 @route("GET", "/api/resumes/(?P<id>[0-9a-f]{12})/download")
@@ -491,7 +501,15 @@ def resume_download(req):
     if not path.exists():
         raise ApiError(404, "That file hasn't been exported yet", "not_exported")
     ctype = {"md": "text/markdown; charset=utf-8", **EXPORT_FORMATS}[fmt]
-    return FileResponse(path.read_bytes(), ctype, _safe_filename(meta, fmt))
+    if fmt == "md":
+        try:
+            contact.require_contact_line()
+        except contact.ContactConfigError as e:
+            tailoring_log.error("Markdown download blocked: RESUME_CONTACT_LINE not configured",
+                                extra={"resume_id": meta["id"], "version": v["n"]})
+            raise ApiError(503, str(e), "contact_not_configured") from None
+    body = contact.with_contact(path.read_text(encoding="utf-8")).encode("utf-8") if fmt == "md" else path.read_bytes()
+    return FileResponse(body, ctype, _safe_filename(meta, v, fmt))
 
 
 @route("POST", "/api/resumes/(?P<id>[0-9a-f]{12})/save-to-tracker")
@@ -854,6 +872,9 @@ def main():
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
     logger.info("Dashboard server starting", extra={"host": args.host, "port": server.server_address[1],
                                                     "auth": da.configured()})
+    if not contact.contact_line():
+        logger.warning("Resume exports are blocked until RESUME_CONTACT_LINE is set")
+        print(f"WARNING: {contact.MISSING_MESSAGE}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
