@@ -20,10 +20,12 @@ import hashlib
 import re
 
 import activity
+import contact
 import jd_analysis
 import logging_config as lc
 import no_fabrication as nf
 import paths
+import resume_role
 import resume_store
 from job_links import canonical_link
 from validate_resume import validate
@@ -66,7 +68,7 @@ def ats_checks(markdown, analysis=None, match=None):
         "pass" if ok else "fail", reason or "")
     lower = markdown.lower()
     add("Education section present", "pass" if "## education" in lower else "warn")
-    add("Contact email present", "pass" if re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", markdown) else "warn")
+    add("Contact email present", "pass" if contact.has_email(markdown) else "warn")
     add("Plain single-column text (no tables, images, HTML, code fences)",
         "fail" if re.search(r"^\s*\|.*\|\s*$|!\[|</?\w+[^>]*>|^```", markdown, re.M) else "pass")
     words = len(markdown.split())
@@ -111,7 +113,7 @@ def ats_validation(markdown, base_md, analysis, match, title="", checks=None, un
     title_pct, title_missing = _title_relevance(title, markdown)
 
     sections = [f"## {n}" in markdown for n in ("Summary", "Skills", "Experience", "Education")]
-    email = bool(re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", markdown))
+    email = contact.has_email(markdown)
     structure = round(100 * (sum(sections) + email) / 5)
     formatting = 100
     if re.search(r"^\s*\|.*\|\s*$|!\[|</?\w+[^>]*>|^```", markdown, re.M):
@@ -264,13 +266,20 @@ def _tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key
                     "matched_must_haves": match["skills"]["required_matched"] + match["skills"]["technologies_matched"],
                     "missing_must_haves": match["missing_skills"]}
 
+    # The headline is the job's role, normalized and limited to what the master resume supports;
+    # it replaces the master's generic headline on every version (model rewrite or fallback).
+    # Only technologies (and the terms verify() checks) can make a role word a claim -- not generic
+    # JD keywords like "Developer" or "Experience".
+    role = resume_role.target_role(job["title"], base_md, analysis["technologies"] + match["missing_skills"])
+
     def check(md, m):
         return verify(md, base_md, jd_terms=m["missing_skills"], analysis=analysis, match=m, title=job["title"])
 
     feedback, markdown, verdict, llm_problems, kind_override = "", "", None, [], None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         stage("generate")
-        markdown = _strip_fences(tailor_job.tailor_text(tailor_input, base_md, feedback=feedback))
+        markdown = resume_role.apply_role(
+            _strip_fences(tailor_job.tailor_text(tailor_input, base_md, feedback=feedback)), role)
         log.info("Resume generation completed", extra={"attempt": attempt, "chars": len(markdown)})
         stage("validate")
         match = jd_analysis.compute_match(analysis, base_md, markdown)
@@ -290,7 +299,7 @@ def _tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key
         # Both model rewrites failed fact-checking. Fall back to a reorder-only version of the
         # master resume rather than leaving the user with nothing (or an unverified rewrite).
         log.info("Using reorder-only fallback", extra={"attempts": attempt})
-        markdown = conservative_resume(base_md, analysis, match)
+        markdown = resume_role.apply_role(conservative_resume(base_md, analysis, match), role)
         match = jd_analysis.compute_match(analysis, base_md, markdown)
         verdict = check(markdown, match)
         kind_override = "conservative"

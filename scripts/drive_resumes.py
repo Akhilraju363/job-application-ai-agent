@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timezone
 
 import logging_config as lc
+import resume_role
 import resume_store
 import write_sheet  # reuses its gws resolution (Windows .cmd-shim workaround)
 
@@ -70,8 +71,12 @@ def resume_key(rid, n, fmt):
     return f"{rid}-v{int(n)}-{fmt}"
 
 
-def drive_file_name(rid, n, fmt):
-    return f"{rid}-v{int(n)}.{fmt}"
+def drive_file_name(rid, n, fmt, job=None):
+    """Same name the dashboard download uses (Akhil_Dalali_Java_Developer.pdf) -- no version or
+    company. Idempotency never depends on the name: it's keyed by resume_key in appProperties."""
+    md_path = resume_store.version_path(rid, n, "md")
+    md = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+    return resume_role.export_filename(md, fmt, (job or {}).get("title", ""))
 
 
 def folder_name(job):
@@ -121,7 +126,7 @@ def upload_resume(rid, n, fmt, job=None):
         log.error("Drive upload rejected: local file not generated yet", extra=ctx)
         raise DriveUploadError(f"Google Drive upload failed: the {fmt.upper()} hasn't been generated locally yet.")
     job = job or resume_store.get(rid, with_markdown=False)["job"]
-    key, name = resume_key(rid, n, fmt), drive_file_name(rid, n, fmt)
+    key, name = resume_key(rid, n, fmt), drive_file_name(rid, n, fmt, job)
 
     log.info("Drive upload started", extra=ctx)
     with _lock:

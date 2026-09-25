@@ -93,7 +93,10 @@ def _register(task):
 def friendly_error(exc):
     """User-facing message; never the raw exception text of an unknown failure."""
     from llm import AllProvidersFailed
+    import contact
 
+    if isinstance(exc, contact.ContactConfigError):
+        return str(exc), "contact_not_configured"
     if isinstance(exc, paths.MasterResumeError):
         return str(exc), "no_master_resume"
     if isinstance(exc, jd_analysis.InputError):

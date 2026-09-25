@@ -28,6 +28,9 @@ SECRETS = {"apify_api_key": "apify-SECRET-123456", "GROQ_API_KEY": "gsk_SECRET_a
            "google_sheet_id": "SHEETID_SECRET_1"}
 
 
+CONTACT = "jane@example.com | Bengaluru, India"
+
+
 def tracker_state(rows=(), available=True, error=None):
     return {"rows": list(rows), "available": available, "error": error, "stale": False, "configured": True}
 
@@ -43,7 +46,8 @@ class ServerCase(unittest.TestCase):
         base_file.write_text(BASE, encoding="utf-8")
         cls.patches = [
             mock.patch.object(paths, "BASE_RESUME", base_file),
-            mock.patch.dict(os.environ, {**SECRETS, "DASHBOARD_USERNAME": "", "DASHBOARD_PASSWORD_HASH": "", "google_drive_folder_id": "PARENT_FOLDER"}),
+            mock.patch.dict(os.environ, {**SECRETS, "DASHBOARD_USERNAME": "", "DASHBOARD_PASSWORD_HASH": "", "google_drive_folder_id": "PARENT_FOLDER",
+                                         "RESUME_CONTACT_LINE": CONTACT}),
             mock.patch.object(srv.tracker, "snapshot", side_effect=lambda force=False: tracker_state(cls.tracker_rows)),
             # tests never reach real Google Drive: any un-mocked upload fails fast (see ResumeActions.fake_drive)
             mock.patch.object(drive_resumes, "_gws", side_effect=RuntimeError("no real Google Drive in tests")),
@@ -388,6 +392,17 @@ class ResumeActions(ServerCase):
         self.assertEqual(self.call("GET", f"/api/resumes/{rid}/download?format=docx", raw=True)[2], b"PK-fake-docx")
         self.assertEqual(self.call("POST", f"/api/resumes/{rid}/export", {"format": "exe"})[0], 400)
 
+    def test_download_filename_is_name_plus_target_role_never_the_company(self):
+        rid = resume_store.create(source="manual", job={"title": "Senior Java Developer", "company": "Company Not Specified",
+                                                        "link": "manual:abcdef999999", "description": JD_TEXT},
+                                  analysis=ANALYSIS, match=__import__("jd_analysis").compute_match(ANALYSIS, BASE), provider="test")
+        md = __import__("resume_role").apply_role(reorder_bullets(BASE), "Java Developer")
+        resume_store.add_version(rid, md, "generated", {"ok": True, "problems": [], "warnings": [],
+                                                        "ats": {"ok": True, "checks": []}, "attempts": 1})
+        _, h, _ = self.call("GET", f"/api/resumes/{rid}/download?format=md", raw=True)
+        self.assertIn('filename="Jane_Roe_Java_Developer.md"', h["Content-Disposition"])
+        self.assertNotIn("Company", h["Content-Disposition"])
+
     def test_blocked_versions_cannot_be_exported_or_saved(self):
         rid = self.make_resume(ok=False)
         self.assertEqual(self.call("POST", f"/api/resumes/{rid}/export", {"format": "pdf"})[0], 409)
@@ -444,7 +459,7 @@ class ResumeActions(ServerCase):
         self.assertEqual((pdf["status"], docx["status"]), ("done", "done"))
         self.assertEqual([s["key"] for s in pdf["stages"]], ["export", "upload"])
         self.assertEqual(pdf["result"]["drive"]["status"], "uploaded")
-        self.assertEqual(sorted(f["name"] for f in drive.resume_files()), [f"{rid}-v1.docx", f"{rid}-v1.pdf"])
+        self.assertEqual(sorted(f["name"] for f in drive.resume_files()), ["Jane_Roe_Java_Developer.docx", "Jane_Roe_Java_Developer.pdf"])
         res = self.call("GET", f"/api/resumes/{rid}/result")[2]["resume"]
         self.assertEqual(res["drive_url"], pdf["result"]["drive"]["url"])           # PDF is the primary link
         self.assertIsNone(res["drive_error"])
@@ -478,7 +493,7 @@ class ResumeActions(ServerCase):
             s, _, r = self.call("POST", f"/api/resumes/{rid}/save-to-tracker")
         self.assertEqual(s, 200)
         (f,) = drive.resume_files()
-        self.assertEqual(f["name"], f"{rid}-v1.pdf")                                 # the PDF was exported, then uploaded
+        self.assertEqual(f["name"], "Jane_Roe_Java_Developer.pdf")                                 # the PDF was exported, then uploaded
         url = save.call_args.kwargs["resume_path"]
         self.assertEqual((url, r["resume_path"], r["drive_url"]), (f["webViewLink"],) * 3)
         self.assertNotIn(local, [url, r["resume_path"]])
@@ -627,6 +642,153 @@ class PipelineActionsAndPreferences(ServerCase):
         self.assertEqual((prefs["keywords"], prefs["location"], prefs["date_posted"]),
                          ("Full Stack Java Spring Boot Angular AWS Developer", "India", "past24Hours"))
         self.assertEqual(prefs["limit"], scrape_jobs.effective_job_limit())
+
+
+PY_JD = ("We are hiring a Java Developer to build Python and FastAPI services alongside Java APIs. You will "
+         "work with PostgreSQL and REST APIs in an Agile team, and integrate Angular frontends. " * 2)
+PY_ANALYSIS = {**ANALYSIS, "required_skills": ["Java", "Python", "FastAPI", "PostgreSQL"], "preferred_skills": [],
+               "programming_languages": ["Java", "Python"], "frameworks": ["FastAPI"], "databases": ["PostgreSQL"],
+               "tools": [], "technologies": ["Java", "Python", "FastAPI", "PostgreSQL"]}
+
+
+def skills_first(md, item):
+    """A faithful tailoring: `item` moved to the front of its Skills line, bullets reordered."""
+    out = []
+    for line in reorder_bullets(md).split("\n"):
+        if line.startswith("- Frameworks:") and item in line:
+            head, items = line.split(": ", 1)
+            rest = [i for i in items.split(", ") if i != item]
+            line = f"{head}: {', '.join([item] + rest)}"
+        out.append(line)
+    return "\n".join(out)
+
+
+class ManualTailorExportFlow(ServerCase):
+    """The real dashboard path: POST /api/tailor -> tailoring_service -> resume_role -> resume_store ->
+    POST /export (tailor_job.export_doc_file + contact.py) -> Drive upload -> GET /download.
+    Only the LLMs, the Google Docs conversion and Drive are faked."""
+
+    def tailor(self, description, analysis, output, title="Java Developer", company=""):
+        with mock.patch("llm.call_llm", return_value=json.dumps(analysis)), \
+                mock.patch("tailor_job.call_llm", return_value=output):
+            _, _, t = self.call("POST", "/api/tailor", {"title": title, "company": company, "description": description})
+            t = self.wait_task(t["task_id"])
+        self.assertEqual(t["status"], "done", t.get("error"))
+        return t["result"]["resume_id"]
+
+    @contextmanager
+    def docs_and_drive(self):
+        """Fake only the Google Docs step inside export_doc_file (its markdown input is recorded) and Drive."""
+        import tailor_job
+        rendered, drive = [], FakeDrive()
+
+        def fake_export(md_path, doc_id, out_path, mime_type):
+            rendered.append(Path(md_path).read_text(encoding="utf-8"))
+            Path(out_path).write_bytes(b"%PDF-fake" if mime_type == "application/pdf" else b"PK-fake-docx")
+
+        with mock.patch.object(tailor_job, "gws", return_value={"documentId": "DOC1"}), \
+                mock.patch.object(tailor_job, "_export_doc", side_effect=fake_export), \
+                mock.patch.object(drive_resumes, "_gws", side_effect=drive):
+            yield rendered, drive
+
+    def export(self, rid, fmt):
+        _, _, t = self.call("POST", f"/api/resumes/{rid}/export", {"format": fmt})
+        return self.wait_task(t["task_id"])
+
+    def filename(self, rid, fmt):
+        s, h, _ = self.call("GET", f"/api/resumes/{rid}/download?format={fmt}", raw=True)
+        self.assertEqual(s, 200)
+        return h["Content-Disposition"].split('filename="')[1].split('"')[0]
+
+    def test_java_developer_jd_end_to_end(self):
+        rid = self.tailor(JD_TEXT, ANALYSIS, skills_first(BASE, "Spring Boot"))
+        saved = resume_store.version_path(rid, 1, "md").read_text(encoding="utf-8")
+        self.assertTrue(saved.startswith("# Jane Roe\nJava Developer\n\njane@example.com | Bengaluru, India"), saved[:80])
+        self.assertNotIn("Software Engineer | Java | Spring Boot | Angular", saved)
+
+        with self.docs_and_drive() as (rendered, drive):
+            pdf, docx = self.export(rid, "pdf"), self.export(rid, "docx")
+        self.assertEqual((pdf["status"], docx["status"]), ("done", "done"), (pdf.get("error"), docx.get("error")))
+        for md in rendered:   # what Google Docs was given for the PDF and the DOCX
+            self.assertTrue(md.startswith("# Jane Roe\nJava Developer\n\n"), md[:80])
+            self.assertEqual(md.count(CONTACT), 1)
+        self.assertEqual(len(rendered), 2)
+        self.assertEqual(sorted(f["name"] for f in drive.resume_files()),
+                         ["Jane_Roe_Java_Developer.docx", "Jane_Roe_Java_Developer.pdf"])
+
+        names = {fmt: self.filename(rid, fmt) for fmt in ("pdf", "docx", "md")}
+        self.assertEqual(names, {"pdf": "Jane_Roe_Java_Developer.pdf", "docx": "Jane_Roe_Java_Developer.docx",
+                                 "md": "Jane_Roe_Java_Developer.md"})
+        for n in names.values():
+            self.assertNotIn("Company", n)
+            self.assertNotRegex(n, r"(?i)[_ -]v\d")
+        body = self.call("GET", f"/api/resumes/{rid}/download?format=md", raw=True)[2].decode("utf-8")
+        self.assertTrue(body.startswith("# Jane Roe\nJava Developer\n\n"), body[:80])
+
+    def test_contact_line_is_added_when_the_resume_has_none(self):
+        no_contact = BASE.replace("jane@example.com | Bengaluru, India\n\n", "")
+        with mock.patch.object(paths, "BASE_RESUME", self.dir / "base_no_contact.md"):
+            (self.dir / "base_no_contact.md").write_text(no_contact, encoding="utf-8")
+            rid = self.tailor(JD_TEXT, ANALYSIS, reorder_bullets(no_contact))
+        with mock.patch.dict(os.environ, {"RESUME_CONTACT_LINE": "jane.private@example.com | Bengaluru, India"}), \
+                self.docs_and_drive() as (rendered, _):
+            self.assertEqual(self.export(rid, "pdf")["status"], "done")
+            md = self.call("GET", f"/api/resumes/{rid}/download?format=md", raw=True)[2].decode("utf-8")
+        self.assertIn("\njane.private@example.com | Bengaluru, India\n", rendered[0])
+        self.assertIn("\njane.private@example.com | Bengaluru, India\n", md)
+        self.assertNotIn("jane.private", resume_store.version_path(rid, 1, "md").read_text(encoding="utf-8"))
+
+    def test_different_java_developer_jds_are_separate_resumes_with_their_own_skills(self):
+        spring = self.tailor(JD_TEXT, ANALYSIS, skills_first(BASE, "Spring Boot"))
+        python = self.tailor(PY_JD, PY_ANALYSIS, skills_first(BASE, "FastAPI"))
+        self.assertNotEqual(spring, python)
+        a, b = resume_store.get(spring), resume_store.get(python)
+        self.assertEqual((a["job"]["title"], b["job"]["title"]), ("Java Developer", "Java Developer"))
+        self.assertIn("Kafka", a["match"]["missing_skills"])
+        self.assertNotIn("Kafka", b["match"]["missing_skills"])
+        self.assertIn("FastAPI", b["analysis"]["required_skills"])
+        md_a, md_b = a["versions"][-1]["markdown"], b["versions"][-1]["markdown"]
+        self.assertIn("- Frameworks: Spring Boot,", md_a)
+        self.assertIn("- Frameworks: FastAPI,", md_b)
+        self.assertEqual((resume_role_of(md_a), resume_role_of(md_b)), ("Java Developer", "Java Developer"))
+        self.assertEqual(self.filename(spring, "md"), self.filename(python, "md"))  # same role -> same name, not same resume
+
+    def test_missing_contact_line_blocks_exports_with_a_clear_error(self):
+        rid = self.tailor(JD_TEXT, ANALYSIS, reorder_bullets(BASE))
+        with mock.patch.dict(os.environ, {"RESUME_CONTACT_LINE": ""}), self.docs_and_drive() as (rendered, drive):
+            t = self.export(rid, "pdf")
+            s, _, body = self.call("GET", f"/api/resumes/{rid}/download?format=md")
+        self.assertEqual((t["status"], t["error"]["code"]), ("error", "contact_not_configured"))
+        self.assertIn("RESUME_CONTACT_LINE", t["error"]["message"])
+        self.assertEqual((s, body["error"]["code"]), (503, "contact_not_configured"))
+        self.assertEqual((rendered, drive.resume_files()), ([], []))    # nothing half-exported
+
+    def test_existing_saved_resume_is_not_rewritten(self):
+        old = self.make_resume()   # saved before role headlines: master's "A | B | C" headline
+        md_path = resume_store.version_path(old, 1, "md")
+        before, versions = md_path.read_bytes(), resume_store.get(old)["versions"]
+        self.tailor(JD_TEXT, ANALYSIS, reorder_bullets(BASE))
+        with self.docs_and_drive() as (rendered, _):
+            self.assertEqual(self.export(old, "pdf")["status"], "done")
+        self.assertEqual(md_path.read_bytes(), before)
+        self.assertEqual([(v["n"], v["kind"]) for v in resume_store.get(old)["versions"]],
+                         [(v["n"], v["kind"]) for v in versions])
+        self.assertIn("Software Engineer | Java | Spring Boot | Angular", rendered[0])   # exported as saved
+        self.assertEqual(self.filename(old, "pdf"), "Jane_Roe_Java_Developer.pdf")     # only the name is role-based
+
+    def test_manual_headline_edit_is_kept(self):
+        rid = self.tailor(JD_TEXT, ANALYSIS, reorder_bullets(BASE))
+        edited = resume_store.version_path(rid, 1, "md").read_text(encoding="utf-8").replace(
+            "\nJava Developer\n", "\nJava Engineer\n", 1)
+        s, _, r = self.call("PUT", f"/api/resumes/{rid}", {"markdown": edited})
+        self.assertEqual((s, r["versions"][-1]["kind"]), (200, "edited"))
+        self.assertIn("\nJava Engineer\n", r["versions"][-1]["markdown"])
+        self.assertEqual(self.filename(rid, "md"), "Jane_Roe_Java_Engineer.md")
+
+
+def resume_role_of(md):
+    import resume_role
+    return resume_role.role_of(md)
 
 
 if __name__ == "__main__":

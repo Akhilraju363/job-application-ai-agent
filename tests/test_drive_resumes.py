@@ -53,7 +53,7 @@ class Upload(DriveCase):
         r = dr.upload_resume(rid, 1, "pdf")
         (f,) = self.drive.resume_files()
         (folder,) = self.drive.folders()
-        self.assertEqual((f["name"], f["appProperties"]), (f"{rid}-v1.pdf", {"resume_key": f"{rid}-v1-pdf"}))
+        self.assertEqual((f["name"], f["appProperties"]), ("Jane_Roe_Java_Developer.pdf", {"resume_key": f"{rid}-v1-pdf"}))
         self.assertEqual((folder["name"], folder["parents"], f["parents"]), ("Acme-java-dev", ["PARENT"], [folder["id"]]))
         self.assertEqual(r["url"], f["webViewLink"])                       # Google's own link, used as given
         self.assertTrue(r["url"].startswith("https://drive.google.com/file/d/"))
@@ -71,8 +71,8 @@ class Upload(DriveCase):
         pdf, docx = dr.upload_resume(rid, 1, "pdf"), dr.upload_resume(rid, 1, "docx")
         self.assertNotEqual(pdf["file_id"], docx["file_id"])
         self.assertEqual([(u["name"], u["content_type"]) for u in self.drive.uploads],
-                         [(f"{rid}-v1.pdf", "application/pdf"),
-                          (f"{rid}-v1.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")])
+                         [("Jane_Roe_Java_Developer.pdf", "application/pdf"),
+                          ("Jane_Roe_Java_Developer.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")])
         self.assertEqual(len(self.drive.folders()), 1)                    # one job folder for both
 
     def test_blank_company_manual_jd_uploads_under_company_not_specified(self):
@@ -105,7 +105,7 @@ class Idempotency(DriveCase):
         rid = make_resume(versions=2)
         v1, v2 = dr.upload_resume(rid, 1, "pdf"), dr.upload_resume(rid, 2, "pdf")
         self.assertNotEqual(v1["file_id"], v2["file_id"])
-        self.assertEqual(sorted(f["name"] for f in self.drive.resume_files()), [f"{rid}-v1.pdf", f"{rid}-v2.pdf"])
+        self.assertEqual(sorted(f["name"] for f in self.drive.resume_files()), ["Jane_Roe_Java_Developer.pdf"] * 2)   # no version in the name; keyed by appProperties
 
     def test_identity_is_independent_of_the_folder(self):
         rid = make_resume(company="Acme")
