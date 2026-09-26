@@ -407,6 +407,23 @@ If port 8765 is taken (often an older dashboard still running), it stops with th
 stopped; other Python processes are left alone. If the dashboard exits on its own, the script
 reports it, stops the pipeline and exits.
 
+### Windows double-click startup
+
+Double-click `start_local.bat` in the repository root (from Explorer).
+
+Alternatively, from PowerShell:
+
+```powershell
+.\start_local.ps1
+```
+
+`start_local.bat` is only a launcher for `start_local.ps1`: it runs that script (next to itself,
+whatever the current directory) with `-ExecutionPolicy Bypass` and passes any flags through
+(`start_local.bat -NoPipeline`). All startup logic stays in `start_local.ps1`. The console window
+stays open with the dashboard and pipeline output; stop with `Ctrl+C` (answer `Y` if Windows asks
+"Terminate batch job"). When opened by double-click, the window waits for a key after the script
+ends so any final error stays readable.
+
 ## Local High-Volume Mode
 
 Two ways to run this pipeline:
