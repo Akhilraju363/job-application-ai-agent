@@ -47,5 +47,34 @@ class StartLocalDryRun(unittest.TestCase):
         self.assertIn("could not be run", r.stderr + r.stdout)
 
 
+BAT = ROOT / "start_local.bat"
+
+
+class StartLocalBat(unittest.TestCase):
+    """start_local.bat is only a double-click launcher for start_local.ps1."""
+
+    def test_launches_the_root_ps1_relative_to_itself(self):
+        text = BAT.read_text(encoding="ascii")
+        self.assertIn('-File "%~dp0start_local.ps1"', text)   # the bat's own folder, not the current directory
+        self.assertIn("-ExecutionPolicy Bypass", text)
+        self.assertIn("%*", text)                             # flags pass through to the ps1
+
+    def test_does_not_duplicate_startup_logic(self):
+        code = "\n".join(l for l in BAT.read_text(encoding="ascii").lower().splitlines()
+                         if not l.lstrip().startswith("rem") and not l.lstrip().startswith("@rem"))
+        for duplicated in ("local_mode", "run_pipeline", "dashboard_server", "python", "taskkill", "8765"):
+            self.assertNotIn(duplicated, code, duplicated)
+
+    @unittest.skipUnless(os.name == "nt", "needs Windows cmd")
+    def test_runs_from_any_directory_and_passes_flags(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            r = subprocess.run(["cmd.exe", "/c", str(BAT), "-DryRun", "-NoPipeline", "-Port", "8799"], cwd=cwd,
+                               input="\n", capture_output=True, text=True, timeout=60)   # input answers the double-click pause
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"RepoRoot:  {ROOT}", r.stdout)
+        self.assertIn(str(ROOT / "scripts" / "dashboard_server.py") + '" --port 8799', r.stdout)
+        self.assertNotIn("Pipeline:", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
