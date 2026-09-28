@@ -1,4 +1,4 @@
-# Akhil Dalali
+# AKHIL DALALI
 Software Engineer | Java | Spring Boot | Angular | AWS
 
 linkedin.com/in/akhil-dalali-320204233

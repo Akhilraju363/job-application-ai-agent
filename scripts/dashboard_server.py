@@ -508,7 +508,11 @@ def resume_download(req):
             tailoring_log.error("Markdown download blocked: RESUME_CONTACT_LINE not configured",
                                 extra={"resume_id": meta["id"], "version": v["n"]})
             raise ApiError(503, str(e), "contact_not_configured") from None
-    body = contact.with_contact(path.read_text(encoding="utf-8")).encode("utf-8") if fmt == "md" else path.read_bytes()
+    if fmt == "md":
+        import tailor_job  # same fixed header + contact line as the PDF/DOCX exports
+        body = tailor_job.render_markdown(path.read_text(encoding="utf-8")).encode("utf-8")
+    else:
+        body = path.read_bytes()
     return FileResponse(body, ctype, _safe_filename(meta, v, fmt))
 
 

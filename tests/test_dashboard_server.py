@@ -23,6 +23,7 @@ import paths
 import resume_store
 
 LINK = "https://in.linkedin.com/jobs/view/java-dev-123?trackingId=abc"
+FIXED_HEADER = "# Jane Roe\nSoftware Engineer | Java | Spring Boot | Angular\n\n"   # the fixture master's, whatever the job
 KEY = dd.job_key(LINK)
 SECRETS = {"apify_api_key": "apify-SECRET-123456", "GROQ_API_KEY": "gsk_SECRET_abcdef", "TELEGRAM_BOT_TOKEN": "123456:TG-SECRET",
            "google_sheet_id": "SHEETID_SECRET_1"}
@@ -396,7 +397,7 @@ class ResumeActions(ServerCase):
         rid = resume_store.create(source="manual", job={"title": "Senior Java Developer", "company": "Company Not Specified",
                                                         "link": "manual:abcdef999999", "description": JD_TEXT},
                                   analysis=ANALYSIS, match=__import__("jd_analysis").compute_match(ANALYSIS, BASE), provider="test")
-        md = __import__("resume_role").apply_role(reorder_bullets(BASE), "Java Developer")
+        md = __import__("resume_role").fixed_header(reorder_bullets(BASE), BASE)
         resume_store.add_version(rid, md, "generated", {"ok": True, "problems": [], "warnings": [],
                                                         "ats": {"ok": True, "checks": []}, "attempts": 1})
         _, h, _ = self.call("GET", f"/api/resumes/{rid}/download?format=md", raw=True)
@@ -703,14 +704,14 @@ class ManualTailorExportFlow(ServerCase):
     def test_java_developer_jd_end_to_end(self):
         rid = self.tailor(JD_TEXT, ANALYSIS, skills_first(BASE, "Spring Boot"))
         saved = resume_store.version_path(rid, 1, "md").read_text(encoding="utf-8")
-        self.assertTrue(saved.startswith("# Jane Roe\nJava Developer\n\njane@example.com | Bengaluru, India"), saved[:80])
-        self.assertNotIn("Software Engineer | Java | Spring Boot | Angular", saved)
+        self.assertTrue(saved.startswith(FIXED_HEADER + "jane@example.com | Bengaluru, India"), saved[:80])
+        self.assertNotIn("\nJava Developer\n", saved)   # the job role never becomes the headline
 
         with self.docs_and_drive() as (rendered, drive):
             pdf, docx = self.export(rid, "pdf"), self.export(rid, "docx")
         self.assertEqual((pdf["status"], docx["status"]), ("done", "done"), (pdf.get("error"), docx.get("error")))
         for md in rendered:   # what Google Docs was given for the PDF and the DOCX
-            self.assertTrue(md.startswith("# Jane Roe\nJava Developer\n\n"), md[:80])
+            self.assertTrue(md.startswith(FIXED_HEADER), md[:80])
             self.assertEqual(md.count(CONTACT), 1)
         self.assertEqual(len(rendered), 2)
         self.assertEqual(sorted(f["name"] for f in drive.resume_files()),
@@ -723,7 +724,7 @@ class ManualTailorExportFlow(ServerCase):
             self.assertNotIn("Company", n)
             self.assertNotRegex(n, r"(?i)[_ -]v\d")
         body = self.call("GET", f"/api/resumes/{rid}/download?format=md", raw=True)[2].decode("utf-8")
-        self.assertTrue(body.startswith("# Jane Roe\nJava Developer\n\n"), body[:80])
+        self.assertTrue(body.startswith(FIXED_HEADER), body[:80])
 
     def test_contact_line_is_added_when_the_resume_has_none(self):
         no_contact = BASE.replace("jane@example.com | Bengaluru, India\n\n", "")
@@ -738,6 +739,20 @@ class ManualTailorExportFlow(ServerCase):
         self.assertIn("\njane.private@example.com | Bengaluru, India\n", md)
         self.assertNotIn("jane.private", resume_store.version_path(rid, 1, "md").read_text(encoding="utf-8"))
 
+    def test_pdf_and_docx_get_one_contact_line_with_one_linkedin(self):
+        with_li = BASE.replace("jane@example.com | Bengaluru, India\n", "linkedin.com/in/jane-roe\n")
+        with mock.patch.object(paths, "BASE_RESUME", self.dir / "base_li.md"):
+            (self.dir / "base_li.md").write_text(with_li, encoding="utf-8")
+            rid = self.tailor(JD_TEXT, ANALYSIS, reorder_bullets(with_li))
+        line = "+91 90000 00000 | jane.private@example.com | Bengaluru, India | linkedin.com/in/jane-roe"
+        with mock.patch.dict(os.environ, {"RESUME_CONTACT_LINE": line}), self.docs_and_drive() as (rendered, drive):
+            self.assertEqual([self.export(rid, f)["status"] for f in ("pdf", "docx")], ["done", "done"])
+        self.assertEqual(len(rendered), 2)
+        for md in rendered:   # the exact markdown the PDF and the DOCX were built from
+            self.assertEqual(md.count(line), 1)
+            self.assertEqual(md.count("linkedin.com/in/"), 1)
+        self.assertEqual(len(drive.resume_files()), 2)   # Drive gets those same exported files
+
     def test_different_java_developer_jds_are_separate_resumes_with_their_own_skills(self):
         spring = self.tailor(JD_TEXT, ANALYSIS, skills_first(BASE, "Spring Boot"))
         python = self.tailor(PY_JD, PY_ANALYSIS, skills_first(BASE, "FastAPI"))
@@ -750,7 +765,7 @@ class ManualTailorExportFlow(ServerCase):
         md_a, md_b = a["versions"][-1]["markdown"], b["versions"][-1]["markdown"]
         self.assertIn("- Frameworks: Spring Boot,", md_a)
         self.assertIn("- Frameworks: FastAPI,", md_b)
-        self.assertEqual((resume_role_of(md_a), resume_role_of(md_b)), ("Java Developer", "Java Developer"))
+        self.assertEqual((md_a.split("\n\n")[0], md_b.split("\n\n")[0]), (FIXED_HEADER.strip(),) * 2)
         self.assertEqual(self.filename(spring, "md"), self.filename(python, "md"))  # same role -> same name, not same resume
 
     def test_missing_contact_line_blocks_exports_with_a_clear_error(self):
@@ -776,19 +791,15 @@ class ManualTailorExportFlow(ServerCase):
         self.assertIn("Software Engineer | Java | Spring Boot | Angular", rendered[0])   # exported as saved
         self.assertEqual(self.filename(old, "pdf"), "Jane_Roe_Java_Developer.pdf")     # only the name is role-based
 
-    def test_manual_headline_edit_is_kept(self):
+    def test_manual_headline_edit_does_not_change_the_exported_header(self):
         rid = self.tailor(JD_TEXT, ANALYSIS, reorder_bullets(BASE))
         edited = resume_store.version_path(rid, 1, "md").read_text(encoding="utf-8").replace(
-            "\nJava Developer\n", "\nJava Engineer\n", 1)
+            "\nSoftware Engineer | Java | Spring Boot | Angular\n", "\nJava Engineer\n", 1)
         s, _, r = self.call("PUT", f"/api/resumes/{rid}", {"markdown": edited})
         self.assertEqual((s, r["versions"][-1]["kind"]), (200, "edited"))
-        self.assertIn("\nJava Engineer\n", r["versions"][-1]["markdown"])
-        self.assertEqual(self.filename(rid, "md"), "Jane_Roe_Java_Engineer.md")
-
-
-def resume_role_of(md):
-    import resume_role
-    return resume_role.role_of(md)
+        body = self.call("GET", f"/api/resumes/{rid}/download?format=md", raw=True)[2].decode("utf-8")
+        self.assertTrue(body.startswith(FIXED_HEADER), body[:80])
+        self.assertEqual(self.filename(rid, "md"), "Jane_Roe_Java_Developer.md")   # the job's role, not the edit
 
 
 if __name__ == "__main__":
