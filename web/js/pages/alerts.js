@@ -3,7 +3,7 @@
 import { h, mount } from '../dom.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
-import { loadable, toast, withBusy } from '../ui.js';
+import { loadable, pageHeader, toast, withBusy } from '../ui.js';
 import { runPipelineFlow } from '../components/pipelineRunner.js';
 
 const POSTED = { past24Hours: 'Past 24 hours', pastWeek: 'Past week', pastMonth: 'Past month' };
@@ -32,7 +32,7 @@ export function alertsPage(root) {
             reload();
           } catch (ex) { err.textContent = ex.message; err.hidden = false; }
         } },
-        h('h3', {}, 'Job search preferences'),
+        h('h3', {}, 'Search preferences'),
         field('pref-kw', 'Keywords', kw, `Default: ${d.defaults.keywords}`), field('pref-loc', 'Location', loc, `Default: ${d.defaults.location}`),
         h('div', { class: 'field-row' }, field('pref-posted', 'Posted within', posted), field('pref-limit', 'Jobs per run', limit, `Max ${d.limit_cap} in the current mode`)),
         err, h('div', { class: 'form-actions' }, save,
@@ -45,5 +45,5 @@ export function alertsPage(root) {
             h('li', {}, 'The daily failure alert (Telegram) is configured through environment settings, not here.'))));
     },
   });
-  mount(root, h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Job Alerts'), h('p', { class: 'muted' }, 'Set your job search preferences.'))), host);
+  mount(root, pageHeader({ title: 'Job Alerts', subtitle: 'The search Find New Jobs runs. This project doesn’t send job notifications — these preferences decide what gets scraped and scored.' }), host);
 }

@@ -1,7 +1,7 @@
 import { h, mount } from '../dom.js';
 import { api, qs } from '../api.js';
 import { icon } from '../icons.js';
-import { loadable } from '../ui.js';
+import { loadable, pageHeader } from '../ui.js';
 import { navigate } from '../router.js';
 import { metricCard } from '../components/metricCard.js';
 import { overviewChart, statusChart } from '../components/charts.js';
@@ -9,6 +9,7 @@ import { quickActions } from '../components/quickActions.js';
 import { jobsTable } from '../components/jobs.js';
 import { recentActivity } from '../components/activity.js';
 import { configuredSources } from '../components/sources.js';
+import { runPipelineFlow } from '../components/pipelineRunner.js';
 import { todayISO } from '../lib/format.js';
 
 const KPIS = [
@@ -20,12 +21,14 @@ const KPIS = [
 const RANGES = [['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['90d', 'Last 90 days'], ['custom', 'Custom range']];
 
 const card = (title, ...kids) => h('section', { class: 'card' }, h('div', { class: 'card-head' }, title), ...kids);
+const greeting = (hour = new Date().getHours()) => (hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening');
 
 export function dashboardPage(root, { profile }) {
   const range = { key: '7d', from: '', to: '' };
   const rq = () => qs({ range: range.key, from: range.from, to: range.to });
 
-  const first = (profile.name || 'there').split(' ')[0];
+  const raw = (profile.name || 'there').split(' ')[0];
+  const first = raw === raw.toUpperCase() ? raw.charAt(0) + raw.slice(1).toLowerCase() : raw;
   const kpiHost = h('div', { class: 'kpi-host' });
   const chartHost = h('div', { class: 'chart-host' });
   const statusHost = h('div', {});
@@ -90,18 +93,21 @@ export function dashboardPage(root, { profile }) {
   } }, ...RANGES.map(([v, l]) => h('option', { value: v }, l)));
 
   mount(root,
-    h('div', { class: 'page-head dash-head' },
-      h('div', {}, h('h1', {}, `Hello, ${first}! 👋`), h('p', { class: 'muted' }, 'Your AI-powered job search assistant is working for you.')),
-      h('aside', { class: 'card info-card' }, icon('quote', 22),
-        h('div', {}, h('strong', {}, '“Discipline today creates opportunities tomorrow.”'),
-          h('p', { class: 'muted' }, 'The agent prepares. You decide where to apply.')))),
+    pageHeader({
+      title: `${greeting()}, ${first}`, className: 'dash-head',
+      subtitle: 'Here’s where your job search stands. The agent prepares — you decide where to apply.',
+      actions: [
+        h('a', { class: 'btn btn-outline', href: '/tailor-resume', 'data-link': true }, icon('wand', 16), 'Tailor Resume'),
+        h('button', { class: 'btn btn-primary', onClick: () => runPipelineFlow('find', refreshAll) }, icon('search', 16), 'Find New Jobs'),
+      ],
+    }),
     kpiHost,
     h('div', { class: 'grid-mid' },
-      card(h('div', { class: 'card-head-row' }, 'Applications Overview', h('div', { class: 'range-controls' }, select, customFields)), chartHost),
+      card(h('div', { class: 'card-head-row' }, 'Pipeline Overview', h('div', { class: 'range-controls' }, select, customFields)), chartHost),
       card('Application Status', statusHost),
       card('Quick Actions', quickActions({ onJobsChanged: refreshAll }))),
     h('div', { class: 'grid-bottom' },
-      card(h('div', { class: 'card-head-row' }, 'Latest Job Matches', h('a', { class: 'link', href: '/find-jobs', 'data-link': true }, 'View All →')), jobsHost),
+      card(h('div', { class: 'card-head-row' }, 'Latest Job Matches', h('a', { class: 'link', href: '/find-jobs', 'data-link': true }, 'View all')), jobsHost),
       h('div', { class: 'stack' },
         card(h('div', { class: 'card-head-row' }, 'Recent Activity'), activityHost),
         card(h('div', { class: 'card-head-row' }, 'Configured Sources', h('a', { class: 'link', href: '/job-alerts', 'data-link': true }, 'Edit')), sourcesHost))));

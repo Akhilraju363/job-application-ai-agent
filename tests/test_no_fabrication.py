@@ -112,5 +112,79 @@ class Parsing(unittest.TestCase):
         self.assertTrue(nf.has_term("C# and .NET", "c#"))
 
 
+# The master resume's role layout: "### Employer", a job-title line, then "dates | location".
+MASTER = """# JANE ROE
+Software Engineer | Java
+
+## Summary
+Engineer with Java experience.
+
+## Skills
+- Languages: Java, Python
+
+## Experience
+
+### Acme Corp
+Software Engineer — Backend Development
+Jan 2022 – Jun 2024 | Chennai, India
+- Built REST APIs in Java for enterprise applications.
+- Tuned database queries for faster data access.
+
+## Education
+### B.Sc. Computer Science
+State University | 2015 – 2018
+"""
+
+
+class MasterLayout(unittest.TestCase):
+    def test_title_and_date_lines_are_parsed_separately(self):
+        role = nf.parse_resume(MASTER)["roles"][0]
+        self.assertEqual(role["heading"], "Acme Corp")
+        self.assertEqual(role["title"], "Software Engineer — Backend Development")
+        self.assertEqual(role["date"], "Jan 2022 – Jun 2024 | Chennai, India")
+        self.assertEqual(role["label"], "Software Engineer — Backend Development — Acme Corp")
+
+    def test_faithful_copy_and_dash_variants_are_clean(self):
+        self.assertEqual(nf.check_no_fabrication(MASTER, MASTER), [])
+        hyphens = MASTER.replace("—", "-").replace("–", "-")
+        self.assertEqual(nf.check_no_fabrication(MASTER, hyphens), [])
+
+    def test_job_title_line_is_locked(self):
+        v = nf.check_no_fabrication(MASTER, MASTER.replace("Software Engineer — Backend", "Senior Engineer — Backend"))
+        self.assertTrue(any("job title changed" in x for x in v), v)
+
+    def test_dates_still_checked_with_a_title_line(self):
+        v = nf.check_no_fabrication(MASTER, MASTER.replace("Jan 2022", "Jan 2021"))
+        self.assertTrue(any("dates changed" in x for x in v), v)
+
+    def test_old_layout_without_title_line_still_parses(self):
+        role = nf.parse_resume("## Experience\n### Engineer — Acme\nJan 2022 - Present\n- x")["roles"][0]
+        self.assertEqual((role["title"], role["date"]), (None, "Jan 2022 - Present"))
+
+
+class ExportLayout(unittest.TestCase):
+    def test_master_layout_blocks(self):
+        import format_resume_doc as frd
+        blocks = frd.parse(MASTER)
+        kinds = [k for k, _ in blocks]
+        self.assertEqual(kinds[:2], ["NAME", "HEADLINE"])
+        self.assertIn(("SECTION", "PROFESSIONAL SUMMARY"), blocks)
+        self.assertIn(("SECTION", "TECHNICAL SKILLS"), blocks)
+        self.assertIn(("SECTION", "PROFESSIONAL EXPERIENCE"), blocks)
+        self.assertIn(("SKILL", "Languages: Java, Python"), blocks)
+        self.assertIn(("POSITION", "Software Engineer — Backend Development"), blocks)
+        self.assertIn(("DATE", "Jan 2022 – Jun 2024 | Chennai, India"), blocks)
+        self.assertIn(("DATE", "State University | 2015 – 2018"), blocks)
+
+    def test_header_centered_and_sections_ruled(self):
+        import format_resume_doc as frd
+        reqs = frd.build_requests(frd.parse(MASTER))
+        paras = [r["updateParagraphStyle"]["paragraphStyle"] for r in reqs if "updateParagraphStyle" in r]
+        self.assertEqual(sum(1 for p in paras if p.get("alignment") == "CENTER"), 2)
+        self.assertEqual(sum(1 for p in paras if "borderBottom" in p), 4)
+        bullets = [r for r in reqs if "createParagraphBullets" in r]
+        self.assertEqual(len(bullets), 1)  # skills are labelled lines, not bullets
+
+
 if __name__ == "__main__":
     unittest.main()

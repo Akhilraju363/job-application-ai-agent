@@ -6,8 +6,10 @@ false positive costs one regenerate, a false negative puts an invented claim in 
 a recruiter. Pure functions, no I/O, no LLM.
 
 What is verified (each returns human-readable violations, empty list == clean):
-  * header: name + contact line unchanged
-  * experience: same role headings, same date lines, same order; no extra bullets; every
+  * header: name, headline + contact line unchanged
+  * structure: exactly the master's sections, in the master's order
+  * experience: same employer headings, job-title lines and "dates | location" lines, same
+    order (dash/whitespace differences ignored); no extra bullets; every
     bullet must be a rewording of a bullet under the *same* employer
   * technologies: nothing from a broad tech vocabulary (or the JD's missing skills) may
     appear unless the master resume already has it; nothing from the Skills list may move
@@ -70,6 +72,15 @@ def norm_ws(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
+_YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
+_DASHES = dict.fromkeys(map(ord, "‐‑‒–—―−"), "-")
+
+
+def _dashless(s):
+    """Compare dates/titles without caring which dash the model typed ('2026 – Present' == '2026 - Present')."""
+    return None if s is None else norm_ws(s.translate(_DASHES))
+
+
 @lru_cache(maxsize=4096)
 def _term_re(term):
     return re.compile(r"(?<![a-z0-9+#.])" + re.escape(term.lower()) + r"(?![a-z0-9+#])")
@@ -116,19 +127,25 @@ def parse_resume(md):
         else:
             sections[cur].append(ln)
 
+    # A role is "### Employer", an optional job-title line, then the "dates | location" line
+    # (the first line with a year). Older "### Title — Employer" resumes have no title line.
     roles, role = [], None
     for ln in sections.get("experience", []):
         if ln.startswith("### "):
-            role = {"heading": norm_ws(ln[4:]), "date": None, "bullets": [], "lines": [ln]}
+            role = {"heading": norm_ws(ln[4:]), "title": None, "date": None, "bullets": [], "lines": [ln]}
             roles.append(role)
         elif role is not None:
             role["lines"].append(ln)
             if ln.startswith("- "):
                 role["bullets"].append(ln[2:].strip())
             elif ln.strip() and role["date"] is None:
-                role["date"] = norm_ws(ln)
+                if _YEAR.search(ln) or role["title"] is not None:
+                    role["date"] = norm_ws(ln)
+                else:
+                    role["title"] = norm_ws(ln)
     for r in roles:
         r["text"] = "\n".join(r["lines"])
+        r["label"] = f"{r['title']} — {r['heading']}" if r["title"] else r["heading"]
 
     skill_items = []
     for ln in sections.get("skills", []):
@@ -168,12 +185,20 @@ def check_no_fabrication(base_md, tailored_md, jd_terms=()):
     base, tail = parse_resume(base_md), parse_resume(tailored_md)
     v = []
 
-    # header: name and contact line must be verbatim
+    # header: name, headline and contact line must be verbatim (the job role never replaces
+    # the headline -- it only names the exported file)
     base_head = [norm_ws(l) for l in base["header"] if l.strip()]
     tail_head = {norm_ws(l) for l in tail["header"] if l.strip()}
-    for line in base_head[:1] + [l for l in base_head if "@" in l]:
+    headline = [l for l in base_head[1:2] if "@" not in l and "linkedin.com" not in l.lower()]
+    for line in base_head[:1] + headline + [l for l in base_head if "@" in l]:
         if line not in tail_head:
             v.append(f"header line changed or removed: {line[:60]!r}")
+
+    # structure: the master's sections, in the master's order -- no added (Projects,
+    # Achievements, ...), dropped or reordered sections
+    if list(tail["sections"]) != list(base["sections"]):
+        v.append(f"resume sections must match the master resume exactly: {list(tail['sections'])} "
+                 f"!= {list(base['sections'])}")
 
     # experience structure: no added/changed role headings, original order kept. Omitting a
     # role is not fabrication (tailoring may drop an irrelevant one) -- verify() surfaces it
@@ -190,7 +215,9 @@ def check_no_fabrication(base_md, tailored_md, jd_terms=()):
         b = base_by_head.get(r["heading"])
         if b is None:
             continue
-        if r["date"] != b["date"]:
+        if _dashless(r["title"]) != _dashless(b["title"]):
+            v.append(f"job title changed for {r['heading'][:50]!r}: {r['title']!r} != {b['title']!r}")
+        if _dashless(r["date"]) != _dashless(b["date"]):
             v.append(f"dates changed for {r['heading'][:50]!r}: {r['date']!r} != {b['date']!r}")
         if len(r["bullets"]) > len(b["bullets"]):
             v.append(f"extra bullets added under {r['heading'][:50]!r}")
@@ -204,7 +231,8 @@ def check_no_fabrication(base_md, tailored_md, jd_terms=()):
 
     # education / certifications carried over unchanged
     for name in ("education", "certifications"):
-        if _lines_of(base["sections"].get(name, [])) != _lines_of(tail["sections"].get(name, [])):
+        if ([_dashless(l) for l in _lines_of(base["sections"].get(name, []))]
+                != [_dashless(l) for l in _lines_of(tail["sections"].get(name, []))]):
             v.append(f"{name} section differs from master resume")
 
     # skills subset

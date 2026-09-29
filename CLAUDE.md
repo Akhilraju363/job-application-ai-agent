@@ -1,241 +1,67 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Automated job-hunting pipeline for Full-Stack Java / Spring Boot / Angular roles in India (candidate: Akhil Dalali).
+Scrape (Apify LinkedIn) → LLM-score vs the master resume (keep 8+/10) → tailor + verify a resume per strong match →
+company research → log to Google Sheets; runs on Modal (07:00 IST, Mon–Fri) with Telegram alerts, plus a dashboard.
 
-## Project State
+## Session workflow
+- **Start:** read `docs/TASKS.md` and `docs/MEMORY.md`.
+- **End:** update `docs/TASKS.md`; add to `docs/MEMORY.md` if a decision was made; add a line to `docs/CHANGELOG.md`.
+- `PRD.md` is the source of truth for scope. This is a Claude Code Masterclass capstone — treat the hard rules as binding.
 
-Built. The full pipeline (scrape, score, tailor, validate, research, log) is implemented in
-`scripts/`, gated by `.claude/hooks/resume_hook.py` and `.claude/skills/tailor-resume/SKILL.md`,
-and deployable via `modal_app.py`. `PRD.md` is still the source of truth for scope and hard rules —
-read it before changing pipeline behavior. This is a Claude Code Masterclass capstone demo project;
-treat the PRD's hard rules as binding, not suggestions to redesign.
+## Where things are documented (don't duplicate them here)
+| Topic | File |
+|---|---|
+| Pipeline diagram, stage ownership, job dict schema, subsystem notes (LLM chain, recovery, dashboard, auth, logging) | `docs/ARCHITECTURE.md` |
+| Env keys (names only), Modal schedule/secrets, Apify actors + input, Sheet columns | `docs/CONFIG.md` |
+| Run a stage, read logs, Telegram alerts, re-run a failed day, Apify credit exhausted | `docs/RUNBOOK.md` |
+| LLM prompts (verbatim) | `docs/prompts/scoring.md`, `tailoring.md`, `research.md` |
+| Decisions / tasks / changes | `docs/MEMORY.md`, `docs/TASKS.md`, `docs/CHANGELOG.md` |
+| Dashboard UI specs (design system, pages, a11y, how to change UI) | `docs/ui/` (start with `UI_IMPLEMENTATION.md`) |
+| Setup, local run, deploy | `README.md`, `GWS_SETUP.md` |
 
-## What This Builds
+## Hard rules
+- **Never commit secrets.** No keys, tokens, hashes, passwords, sheet ids or contact details in code, docs or logs.
+  `.env` is gitignored; cloud values live in Modal secrets. Document key *names* only.
+- **8+/10 cutoff is non-negotiable** — `QUALIFY_CUTOFF` in `scripts/score_jobs.py`, applied in code. Nothing below it
+  reaches automated tailoring, the Sheet or Drive. Don't change the cutoff or the scoring prompt without updating
+  `docs/prompts/scoring.md` in the same change.
+- **No fabrication.** Tailoring reorders/rewords master-resume content only; `scripts/no_fabrication.py` gates every
+  export and tracker save; failures retry once, then fall back to reorder-only. Never loosen the checker to pass output.
+- **Master resume is the single source of career facts** — `resume/base_resume.md` (transcribes the master ATS PDF).
+  Every resume starts from it; header, section order, employer/title/date/location lines, education and certifications
+  stay unchanged; the job role only names the exported file. Contact info comes only from `RESUME_CONTACT_LINE` at export.
+- **No auto-submitting applications** — the agent prepares; a human applies.
+- **Single niche** — Full-Stack Java/Spring Boot/Angular Engineer.
+- **Free LLMs only** — Groq → OpenRouter `:free` → Gemini via `scripts/llm.py`; no paid models or credit. Modal never
+  sets `llm_base_url`/`LOCAL_MODE`; local mode never falls back to the cloud.
+- **No silent failures** — the Modal run is wrapped in try/except; any failure sends `JOB-APPLY-AGENT — WHAT BROKE`
+  to Telegram, then re-raises. Post-run reconciliation fails the run if a qualified job has no saved resume.
+- **Test new scrape sources with `limit=2`** and check the field mapping before a full run (Apify credit is limited).
+- Keep the cloud job limit at `JOB_LIMIT` (default 10); `LOCAL_JOB_LIMIT` (50) is local-only.
+- Don't commit, push or deploy without explicit approval.
 
-A job-application agent: scrapes Full-Stack Software Engineer (Java/Spring Boot/Angular) postings,
-scores each against the base resume, tailors a resume for every job scoring 8+/10, logs qualifying
-jobs to a Google Sheet, saves tailored resumes to per-job folders on Desktop, and runs unattended
-once daily on Modal.
+## Coding conventions
+- Python 3.12, stdlib first; runtime deps are only `requests` and `python-dotenv` (`requirements.txt`). Each pipeline
+  stage is a standalone script in `scripts/` that reads/writes `output/*.json`.
+- Stages are **resume-safe**, keyed by `job_links.canonical_link`: skip work already done; never duplicate Sheet rows or
+  Drive folders. Mirror artifacts with `artifacts.pull/push`.
+- All LLM calls go through `llm.call_llm` (use `json_mode=True` for JSON). Prompts are module constants with `__PLACEHOLDER__` fills.
+- Logging: `logging_config.get_logger("<component>")`, never `print()` for diagnostics. Never log prompts, JDs, resumes,
+  request bodies or credentials.
+- Google Workspace goes through the `gws` CLI (`drive files …` is under `drive`; export `--output` must be a relative
+  path from the target dir). Never `gws docs +write` raw markdown — use `scripts/format_resume_doc.py`.
+- Dashboard: `scripts/dashboard_server.py` (stdlib HTTP, default-deny auth) + `web/` (vanilla ES modules, `h()` only,
+  no build step). Relative `/api/...` URLs only.
+- Tests: `python -m unittest discover -s tests` (tests import `tests/fixtures.py` first; it disables `.env`) and
+  `node --test web/tests/*.test.mjs`. Known pre-existing failure:
+  `test_tracker_outage_degrades_sections_instead_of_failing`. Add tests with every behaviour change.
 
-## Pipeline (build in this order — each step's output feeds the next)
-
-1. **Scrape** — Apify actor (free tier) for LinkedIn Full-Stack Software Engineer / Java Developer
-   postings, remote/hybrid, full-time. Output: `{title, company, link, description, posted_date}`.
-2. **Score + Filter** — score each job 1-10 against `resume/base_resume.md`, extracting
-   `matched_must_haves`/`missing_must_haves` as part of the same call (no separate parse step).
-   **Hard cutoff: only 8+ continues.** Log reject count alongside qualified count (e.g. "10
-   scraped, 3 qualified") — this is the on-camera proof the filter works.
-3. **Tailor Resume** (Skill: `.claude/skills/tailor-resume/SKILL.md`) — reorder/reword the base
-   resume to mirror the job's language and keywords. **Never invent experience, employers, tools,
-   or metrics.** Reorder and reword only.
-4. **Validate** (Hook) — before a tailored resume is saved or logged, check required sections exist
-   (Summary, Skills, Experience) and no placeholder text remains. On failure, do not write the row —
-   flag it instead.
-5. **Company Research** (`scripts/company_research.py`) — per qualifying job, one OpenRouter call
-   returns 3-5 talking points about the company/role. This is a plain script, not a Claude Code
-   subagent — a real subagent needs a live interactive session, which the Modal headless cron can't
-   provide. Used for human context only, never written verbatim into the resume.
-6. **Outputs**:
-   - Google Sheet row per qualifying job: title, company, job link, fit score, resume path, status,
-     timestamp.
-   - Desktop folder (interactive path) or Drive folder (Modal path) per qualifying job:
-     `Job Applications/{company}-{job-title-slug}/` on Desktop (all per-job folders nest under one
-     `Job Applications` parent), containing the tailored resume. The Sheet row references this
-     exact folder/file.
-7. **Headless + Hosting** — the automated path (`scripts/tailor_job.py`, `scripts/company_research.py`)
-   uses OpenRouter instead of live Claude reasoning, so it can run unattended without an Anthropic
-   API key. Deployed as a Modal scheduled function (`@app.function(schedule=modal.Cron(...))`),
-   once daily. Secrets (Apify key, OpenRouter key, Google creds, Telegram bot token) via Modal
-   secrets — never committed.
-
-## Hard Rules
-
-- **8+/10 cutoff is non-negotiable** — nothing below it reaches tailoring, Sheet, or Desktop/Drive.
-- **No fabrication** in tailored resumes — reorder/reword existing content only.
-- **No auto-submitting applications** — the agent prepares; a human clicks apply.
-- **Real candidate data** — `resume/base_resume.md` is Akhil Dalali's actual resume; never fabricate
-  additions to it, only reorder/reword existing content per job.
-- **Single niche** — Full-Stack Java/Spring Boot/Angular Engineer only.
-- Wrap the scheduled Modal run in try/except; on any failure, send a Telegram alert named
-  `JOB-APPLY-AGENT — WHAT BROKE`, then re-raise. No silent failures.
-
-## Folder Structure (as built)
-
+## Quick commands
+```bash
+python3 scripts/scrape_jobs.py && python3 scripts/score_jobs.py && python3 scripts/tailor_job.py \
+  && python3 scripts/company_research.py && python3 scripts/write_sheet.py   # pipeline, stage by stage
+python3 scripts/run_pipeline.py        # local (LOCAL_MODE=true, Ollama)
+python scripts/dashboard_server.py     # dashboard on http://127.0.0.1:8765
+modal run modal_app.py                 # one cloud run;  modal deploy modal_app.py  = cron + hosted dashboard
 ```
-job-apply-agent/
-  CLAUDE.md
-  PRD.md
-  README.md
-  GWS_SETUP.md
-  .env.example
-  .claude/skills/tailor-resume/SKILL.md
-  .claude/hooks/resume_hook.py
-  resume/base_resume.md
-  scripts/
-    scrape_jobs.py         # Apify
-    score_jobs.py           # scores + extracts matched/missing requirements
-    tailor_job.py            # automated tailoring path (free provider chain, for Modal)
-    company_research.py
-    write_sheet.py          # Google Sheets
-    format_resume_doc.py     # markdown -> real Google Docs formatting
-    validate_resume.py       # shared validation logic
-    llm.py                    # provider-aware chat client: free cloud chain (Groq->OpenRouter->Gemini) or local Ollama
-    resume_role.py            # fixed header (master's name + headline, same for every job); normalized job title -> export filename only
-    contact.py                # RESUME_CONTACT_LINE (email/location) added at export only -- base resume is public
-    artifacts.py              # best-effort Drive mirror of stage JSON, for cross-machine resume
-    run_pipeline.py            # LOCAL_MODE=true entrypoint: same 5 scripts in order, local high-volume runs
-    tailoring_service.py     # ONE shared tailor path (manual JD + scraped job): analyze -> match -> tailor_job.tailor_text -> verify
-    jd_analysis.py           # JD sanitising, LLM requirement extraction, code-verified match vs base resume
-    no_fabrication.py        # verifier: rejects invented tech/employers/dates/numbers; reorder-only fallback lives in tailoring_service
-    resume_store.py          # output/generated_resumes/<id>/ (versions, exports)
-    tracker_service.py       # cached, failure-tolerant wrapper over write_sheet.py
-    dashboard_data.py / dashboard_tasks.py / dashboard_server.py   # dashboard read models, background tasks, stdlib HTTP server
-    activity.py / paths.py   # activity log (output/activity_log.jsonl), shared paths
-    dashboard_auth.py         # username/password sign-in: PBKDF2 hashes, server-side sessions, login rate limiter; create_/reset_dashboard_password.py are the setup utilities
-    logging_config.py / log_reader.py   # ONE logging setup (console->Modal logs + rotating files in output/logs) and the bounded /api/logs reader; never log secrets/JDs/resumes
-  web/                       # dashboard SPA (plain ES modules, no build); web/tests = node --test
-  tests/test_llm.py           # stdlib unittest: provider failover, 429/404/timeout/JSON handling, reconciliation
-  output/                    # gitignored — raw/scored/tailored job data + .artifact_sync.json sidecar
-  modal_app.py                # scheduled entrypoint
-  .env                        # gitignored — Apify key, provider API keys, Google creds, Telegram bot token
-```
-
-## Scoring (built)
-
-`scripts/score_jobs.py` scores each job in `output/raw_jobs.json` 1-10 against
-`resume/base_resume.md` via one LLM call per job (through `scripts/llm.py`'s free-provider
-chain — see "LLM provider + failure recovery" below), using an explicit
-rubric (must-have skills weighted heaviest, then years-of-experience/seniority fit, then
-nice-to-haves as a tiebreaker — see the `RUBRIC_PROMPT` constant in the script for exact wording).
-The script applies the `score >= 8` cutoff in code, not via a model-declared verdict. Output is
-`output/scored_jobs.json` — **both qualified and rejected jobs are kept**, with a `qualified` bool,
-so reject counts stay auditable per the PRD's "log the reject count too" requirement.
-
-## Tailoring + Sheet tracking (built)
-
-`.claude/skills/tailor-resume/SKILL.md` tailors the resume per qualifying job (reorder/reword
-only, no fabrication), gated by `.claude/hooks/resume_hook.py` (a `PreToolUse` hook that blocks
-the write if required sections are missing or placeholder text remains), then builds a Google Doc
-via `gws`, formats it with `scripts/format_resume_doc.py` (converts the markdown structure into
-real bold headers/bullets/italics — **never use `gws docs +write`** with raw markdown text, it
-inserts `#`/`##`/`-` as literal characters instead of formatting), exports to PDF into
-`~/Desktop/{company}-{slug}/Akhil Dalali Resume.pdf`, and deletes the intermediate Doc.
-`scripts/write_sheet.py` then logs each `status: "saved"` entry from `output/tailored_jobs.json` to
-the "Job Application Tracker" Google Sheet (id cached in `.env` as `google_sheet_id`), deduped by
-job link, with `Status` starting at `"Not Applied"` for manual tracking.
-
-Two `gws` gotchas worth knowing: `files` is a sub-resource of `drive`, not top-level
-(`gws drive files export/delete`, not `gws files ...`), and `--output` for `gws drive files export`
-is sandboxed to the current directory — `cd` into the target folder and export with a relative
-filename, an absolute path is rejected.
-
-## LLM provider + failure recovery (built)
-
-**Free only — no paid models, no OpenRouter credit, no billing-enabled fallback, ever.**
-`scripts/llm.py` is a provider-aware client with two modes:
-
-- **Cloud (Modal cron)** — a failover chain over independent free tiers, tried in
-  `llm_provider_order` (default `groq,openrouter,gemini`), built from whichever API keys are
-  present:
-  1. **Groq** `openai/gpt-oss-120b` — primary. No credit card, no training on inputs,
-     commercial use permitted, ~30 RPM / ~1K RPD.
-  2. **OpenRouter** `google/gemma-4-26b-a4b-it:free` — `:free` only. Burst-throttled.
-  3. **Gemini** `gemini-2.5-flash` — no card. *Google may train on free-tier data* → last
-     resort, optional (omit `GEMINI_API_KEY` to skip).
-
-  Per provider: 429 → backoff honoring `Retry-After` → retry → next provider; 404 (model
-  delisted, e.g. the old `minimax/minimax-m2.7:free`) → skip immediately, no retries; 5xx /
-  timeout / malformed-JSON → retry then next. All providers exhausted → `call_llm` raises →
-  the step fails → Telegram alert. JSON mode is validated inside the client (tolerates
-  fenced/prose-wrapped JSON) so a bad response fails over instead of corrupting an artifact.
-  `llm_request_delay_seconds` (default 5s) spaces calls to avoid burst 429s.
-
-- **Local (recovery / high-volume)** — set `llm_base_url` directly (older recovery convention),
-  or `LOCAL_MODE=true` (defaults `llm_base_url` to `http://localhost:11434/v1` if unset). Single
-  provider, no chain, **no cloud calls ever** — `validate_local_setup()` checks Ollama is
-  reachable and the model is pulled at startup and fails loudly (naming the `ollama serve` /
-  `ollama pull <model>` fix) rather than silently falling back to Groq/OpenRouter/Gemini. This is
-  the Ollama path, run via `python3 scripts/run_pipeline.py` (or the individual scripts) with
-  `LOCAL_MODE=true`. **Modal must never set `llm_base_url` or `LOCAL_MODE`** — `modal_app.py`
-  refuses to run if `llm_base_url` is present, and also refuses if no provider key is configured
-  (fail fast, before spending an Apify scrape).
-
-Job count is also mode-dependent (`scripts/scrape_jobs.py`): cloud uses `JOB_LIMIT` (default 10,
-sized to OpenRouter's shared ~50-req/day free-tier cap); local uses `LOCAL_JOB_LIMIT` (default
-50 — no such cap applies to Ollama, the ceiling is local compute time). Never change the global
-scrape default to 50; the two limits are independent and the Modal cron must keep processing 10.
-
-Modal secret needs at least `GROQ_API_KEY` (plus optionally `GEMINI_API_KEY`);
-`open_router_apikey` is still read for back-compat.
-
-The pipeline is **resume-safe**, keyed by job link at every stage — identically whether driven by
-`modal_app.py` (cloud) or `scripts/run_pipeline.py` (local): same artifacts, same Drive mirror,
-same Sheet, so a job that fails on one path can be finished by the other without duplicating
-Sheet rows or Drive folders:
-- `score_jobs.py` skips links already in `output/scored_jobs.json` (incremental write).
-- `tailor_job.py` skips jobs already `status:"saved"` in `output/tailored_jobs.json` — it does
-  **not** re-tailor or re-create Drive folders for finished jobs.
-- `company_research.py` skips jobs that already have `company_notes`.
-- `write_sheet.py` dedupes by job link against the live Sheet, so it's safe to re-run.
-
-`scripts/artifacts.py` mirrors the three stage JSON artifacts to a `pipeline-artifacts` Drive
-subfolder (date-stamped, under `google_drive_folder_id`), best-effort. This is what lets a local
-Ollama run pick up a failed Modal run's state. `PIPELINE_DATE=YYYY-MM-DD` targets an earlier day;
-`artifact_sync=0` disables the mirror. `write_sheet.py` sheet-id priority: configured
-`google_sheet_id` → Drive lookup by name → create. For Modal, `google_sheet_id` goes in the
-`job-apply-agent-secrets` secret (no persistent `.env` in the container).
-
-## Verification Per Step
-
-- Scrape: returns N jobs with title, company, link, description.
-- Score: every job has a numeric score; jobs below 8 are excluded from all downstream steps.
-- Tailor: output resume has no placeholder text and passes the validation hook.
-- Sheet: row count matches qualifying-job count; every row has a working job link and resume
-  reference.
-- Desktop: folder count matches qualifying-job count; each folder has exactly one resume file.
-- Headless run: `claude -p` completes with the same output as the interactive run, restricted to
-  the allowed tools.
-- Modal: scheduled function deploys, manual trigger runs end to end, forced failure produces the
-  named Telegram alert.
-
-## Dashboard (built)
-
-`python scripts/dashboard_server.py` serves `web/` plus a JSON API over the existing artifacts and
-the tracker Sheet. Manual-JD and scraped-job tailoring both go through `tailoring_service.tailor_resume()` (-> `tailor()`)
-(reusing `tailor_job.tailor_text`, `validate_resume.validate`, `llm.call_llm`). Hard rules still
-apply: `no_fabrication.check_no_fabrication` gates every export and tracker save; the automated
-pipeline's 8+ cutoff is untouched (human-initiated dashboard actions may go below it, with a UI
-warning). Tests import `tests/fixtures.py` first, which disables `.env` loading.
-
-**Resumes live in Google Drive, not local paths.** `scripts/drive_resumes.py` uploads each exported
-PDF/DOCX (`{resume_id}-v{n}.{ext}`) to `google_drive_folder_id/{company}-{title-slug}/` through the
-existing `gws` auth, idempotently (keyed by resume_id + version + format in the file's `appProperties`,
-so retries reuse the file). The tracker's Resume column always gets the PDF's Drive URL;
-`tracker_service.save_job` refuses a local path, and a failed upload blocks the row instead of falling
-back. `output/generated_resumes/` stays as the local cache/download source.
-
-## Hosted dashboard, authentication and logging (built)
-
-**Hosting.** `modal_app.py` has a second Modal function, `dashboard`, that runs the same
-`scripts/dashboard_server.py` (UI from `web/` + `/api/*`) behind one HTTPS origin —
-`https://akhildalali07--job-apply-agent-dashboard.modal.run`. No CORS, no separate API host; the frontend
-only calls relative `/api/...`. It mounts the `job-apply-agent-dashboard` Volume at `/app/output`,
-runs a single container (`max_containers=1`, scale-to-zero) and keeps background tasks in memory, so a
-restart mid-task loses that task. **The daily cron (`run_pipeline`) is independent**: it never mounts that
-Volume, never reads the dashboard secret and never needs a dashboard login — don't couple them.
-
-**Authentication** (`scripts/dashboard_auth.py`). Username/password only; the old `DASHBOARD_TOKEN` is gone.
-`DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD_HASH` (PBKDF2-SHA256, 600k rounds) and `DASHBOARD_ALLOWED_HOSTS`
-live in the Modal secret `job-apply-agent-dashboard-secrets`; the dashboard refuses to start without them.
-Sessions are opaque server-side ids in an HttpOnly/SameSite=Strict (Secure on HTTPS) cookie, mirrored to the
-Volume. Every `/api/*` route except `/api/auth`, `/api/auth/login` and `/api/auth/logout` is default-deny;
-login is rate limited (in-memory, single container). No credentials configured == open on loopback only
-(local dev). Never write a password, hash, session id or token into code, docs, logs or the frontend. Set or
-change the password with `scripts/create_dashboard_password_hash.py` / `scripts/reset_dashboard_password.py`
-(README: "Dashboard authentication").
-
-**Logging** (`scripts/logging_config.py`). One setup for everything: stderr (Modal runtime logs) plus rotating
-JSON files in `output/logs/`, with request/task/resume/job ids and secret redaction. Use
-`get_logger("<component>")`, never `print()` for diagnostics, and never log prompts, JDs, resumes, request
-bodies or credentials. `/api/logs` + the Logs page (`scripts/log_reader.py`) are authenticated, validated and
-bounded. `scripts/activity.py` (the user-facing Recent Activity feed) is separate and unchanged.

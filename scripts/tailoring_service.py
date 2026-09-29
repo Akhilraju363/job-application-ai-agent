@@ -353,6 +353,15 @@ def tailor_resume(job_description, job_title=None, company=None, job_url=None, s
     return to_result(rec)
 
 
+def is_current_master(rec):
+    """True if this resume was built from today's master resume, False if base_resume.md has
+    changed since (regenerate it -- a new tailor() call won't reuse it), None if unknown."""
+    try:
+        return rec.get("master_version") == paths.master_resume_version()
+    except OSError:  # master missing/unreadable -- can't tell
+        return None
+
+
 def to_result(rec, version=None):
     """The structured response shape (job / jd_analysis / match_analysis / resume /
     ats_validation) built from a stored record -- the UI never has to parse generated text."""
@@ -394,6 +403,7 @@ def to_result(rec, version=None):
             "notes": [n for n in (m.get("projects_note"), m.get("achievements_note")) if n]},
         "resume": {"id": rec["id"], "version": v["n"], "versions": len(versions), "kind": v["kind"],
                    "content": v.get("markdown", ""), "master_resume_version": rec.get("master_version"),
+                   "master_resume_current": is_current_master(rec),
                    "pdf_url": url("pdf"), "docx_url": url("docx"),
                    "drive_url": uploaded[0]["url"] if uploaded else None,   # PDF first: the primary artifact
                    "drive_error": failed[0]["error"] if failed else None},

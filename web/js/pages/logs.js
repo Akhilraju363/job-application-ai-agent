@@ -3,7 +3,7 @@
 import { h, mount } from '../dom.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
-import { badge, errorState, emptyState, skeleton, openDrawer } from '../ui.js';
+import { badge, errorState, emptyState, pageHeader, skeleton, openDrawer } from '../ui.js';
 import { LEVEL_FILTERS, ID_FIELDS, buildLogQuery, levelTone, formatLogTime, logIds, extraFields, pageLabel } from '../lib/logs.js';
 
 const PAGE = 50;
@@ -57,7 +57,7 @@ export function logsPage(root) {
     onChange: (e) => { state[key] = e.target.value.trim(); state.offset = 0; load(); },
   }));
 
-  const refreshSel = h('select', { class: 'input', 'aria-label': 'Auto refresh', onChange: (e) => {
+  const refreshSel = h('select', { class: 'input input-sm', 'aria-label': 'Auto refresh', onChange: (e) => {
     stopTimer();
     const s = Number(e.target.value);
     if (s) timer = setInterval(() => { if (document.body.contains(results)) load(); else stopTimer(); }, s * 1000);
@@ -98,8 +98,8 @@ export function logsPage(root) {
 
   const refresh = h('button', { class: 'btn btn-outline', onClick: load }, icon('refresh', 16), 'Refresh');
   mount(root,
-    h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Logs'), h('p', { class: 'muted' }, 'Application logs from the dashboard and pipeline. Secrets are never recorded.')),
-      h('div', { class: 'row-actions' }, refreshSel, refresh)),
+    pageHeader({ title: 'Logs', subtitle: 'Application logs from the dashboard and pipeline. Secrets are never recorded.',
+      actions: [refreshSel, refresh] }),
     h('div', { class: 'card logs-filters' }, levelTabs, h('div', { class: 'logs-filter-grid' }, component, date, ...idInputs)),
     results, pager);
   load();

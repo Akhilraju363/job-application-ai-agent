@@ -319,7 +319,7 @@ def compute_match(analysis, base_md, tailored_md=None):
         hit = sorted({t for t in all_terms if term_present(t, role["text"], strict=True)},
                      key=str.lower)
         if hit:
-            relevant.append({"role": role["heading"], "dates": role["date"], "matched_terms": hit})
+            relevant.append({"role": role["label"], "dates": role["date"], "matched_terms": hit})
     relevant.sort(key=lambda r: -len(r["matched_terms"]))
 
     projects = []
@@ -332,9 +332,9 @@ def compute_match(analysis, base_md, tailored_md=None):
         for bullet in role["bullets"]:
             hits = sum(1 for t in all_terms if term_present(t, bullet, strict=True))
             if hits:
-                responsibilities.append((hits, {"role": role["heading"], "text": bullet}))
+                responsibilities.append((hits, {"role": role["label"], "text": bullet}))
             if re.search(r"\d+\s*%|\$\s*\d|\b\d+x\b|\b\d{2,}\+?\s+(users|clients|requests|services)", bullet, re.I):
-                achievements.append({"role": role["heading"], "text": bullet})
+                achievements.append({"role": role["label"], "text": bullet})
     responsibilities = [r for _, r in sorted(responsibilities, key=lambda x: -x[0])][:8]
 
     return {

@@ -192,7 +192,7 @@ class TailoredOutput(unittest.TestCase):
         infinite = next(t for h, t in roles.items() if "Infinite" in h)
         ltim = next(t for h, t in roles.items() if "LTIMindtree" in h)
         self.assertFalse(nf.has_term(infinite, "python") or nf.has_term(ltim, "python"))
-        self.assertTrue(nf.has_term(next(t for h, t in roles.items() if "Zyter" in h), "fastapi"))
+        self.assertTrue(nf.has_term(next(t for h, t in roles.items() if "Zyter" in h), "python"))
 
     def test_fixture_resume_with_contact_row_keeps_it(self):
         with TempOutput():

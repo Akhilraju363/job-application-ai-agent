@@ -1,9 +1,11 @@
 """Tailor the resume for each qualifying job and deliver it as a PDF in Google Drive.
 
 Automated-path equivalent of .claude/skills/tailor-resume/SKILL.md — same hard rule
-(reorder/reword only, never fabricate) and same validation gate, but driven by a
-single OpenRouter call per job instead of live Claude Code reasoning, so it can run
-unattended (Modal cron) without an Anthropic API key.
+(reorder/reword only, never fabricate) and same validation gate, but driven by the free
+LLM chain instead of live Claude Code reasoning, so it can run unattended (Modal cron)
+without an Anthropic API key. Each job goes through tailoring_service.tailor() -- the same
+path as the dashboard: JD analysis, tailoring, no-fabrication check, retry, reorder-only
+fallback -- so only verified resumes are exported (verified_resume below).
 
 Reads output/scored_jobs.json (qualified == true), writes output/tailored_jobs.json.
 Requires: google_drive_folder_id (the "Job Applications" parent Drive folder, created
@@ -32,7 +34,6 @@ from resume_role import export_filename, fixed_header  # noqa: E402
 import paths  # noqa: E402
 from llm import call_llm, validate_local_setup  # noqa: E402 -- LLM endpoint/model/retry config, .env-driven
 from job_links import canonical_link  # noqa: E402
-from activity import log_event  # noqa: E402
 import logging_config as lc  # noqa: E402
 
 log = lc.get_logger("tailoring")
@@ -51,7 +52,11 @@ Preserve the section headers exactly: ## Summary, ## Skills, ## Experience, ## E
   dates, employers, titles, or the substance of any bullet -- only reorder bullets and lightly
   reword phrasing, never metrics. Never add or remove bullets, and never move a technology from
   one employer's section to another (e.g. a language used at one job must not appear under a
-  different job). Keep every "###" role heading and its date line exactly as written.
+  different job). Keep every "###" employer heading, the job-title line under it and its
+  date line exactly as written, in the same order.
+- Keep the header (name, headline, LinkedIn line) exactly as written.
+- Keep exactly the base resume's sections in the same order. Never add a section (no Projects,
+  Achievements, Technical Highlights) and never remove or rename one.
 - Skills: only items already in the base resume's Skills section may appear.
 - Education and Certifications: carry over unchanged.
 
@@ -110,6 +115,26 @@ def tailor_text(job, resume_text, feedback=""):
         prompt += ("\nYOUR PREVIOUS ATTEMPT WAS REJECTED for these reasons -- fix every one, keeping "
                    "to the hard rule:\n" + feedback + "\n")
     return call_llm(prompt, job.get("title"))
+
+
+def verified_resume(job, base_md):
+    """A scraped job's resume through the same path as the dashboard: tailoring_service.tailor()
+    (JD analysis -> tailor a fresh copy of the master -> no-fabrication check -> one retry ->
+    reorder-only fallback). Returns (markdown, None), or (None, reason) when even the fallback
+    fails verification -- an unverified rewrite never reaches Drive."""
+    import jd_analysis
+    import tailoring_service  # lazy: it imports this module lazily too
+
+    norm = jd_analysis.normalize_job(job.get("title"), job.get("company"), job.get("link"), job.get("description"))
+    norm["source"] = "LinkedIn"
+    if job.get("score") is not None:
+        norm["pipeline_score"] = job["score"]
+    rec = tailoring_service.tailor(norm, source="scraped", base_md=base_md, job_key=canonical_link(job.get("link")))
+    version = rec["versions"][-1]
+    if not version["validation"]["ok"]:
+        return None, "failed no-fabrication verification: " + "; ".join(version["validation"]["problems"])[:500]
+    ok, reason = validate(version["markdown"])
+    return (version["markdown"], None) if ok else (None, reason)
 
 
 def create_job_folder(company, slug, parent_folder_id):
@@ -195,7 +220,7 @@ if __name__ == "__main__":
 
     validate_local_setup()  # no-op unless LOCAL_MODE=true; fails loudly, never falls back to cloud
     parent_folder_id = os.environ["google_drive_folder_id"]
-    resume_text = (ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8")
+    resume_text = paths.read_base_resume()  # the master: every job starts from a fresh copy of it
 
     # Recovery: reuse the scores and any resumes an earlier run already finished.
     artifacts.pull("scored_jobs.json")
@@ -235,9 +260,8 @@ if __name__ == "__main__":
             continue
 
         try:
-            text = fixed_header(tailor_text(job, resume_text), resume_text)
-            ok, reason = validate(text)
-            if not ok:
+            text, reason = verified_resume(job, resume_text)
+            if text is None:
                 by_link[key] = {**job, "status": "flagged_validation_failed", "reason": reason}
                 log.warning("Tailored resume flagged by validation", extra={"folder": folder_name, "reason": str(reason)[:200]})
             else:
@@ -255,8 +279,7 @@ if __name__ == "__main__":
                     "tailored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 }
                 log.info("Tailored resume saved", extra={"folder": folder_name, "company": job["company"]})
-                log_event("resume_tailored", f"Resume tailored for {job['company']} - {job['title']}",
-                          company=job["company"], title=job["title"], link=link, source="pipeline")
+                # (the "resume_tailored" activity event is logged by tailoring_service)
         except Exception as e:
             by_link[key] = {**job, "status": "flagged_error", "reason": str(e)}
             log.error("Tailoring failed for job", exc_info=True, extra={"folder": folder_name})
