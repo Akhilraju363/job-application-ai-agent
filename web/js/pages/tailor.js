@@ -5,9 +5,9 @@
 // task's real stages and then the stored result.
 import { h, mount } from '../dom.js';
 import { api, pollTask } from '../api.js';
-import { badge, emptyState, errorState, loadable, toast } from '../ui.js';
+import { badge, emptyState, errorState, loadable, pageHeader, toast } from '../ui.js';
 import { relDay } from '../lib/format.js';
-import { stageList } from '../components/progress.js';
+import { TAILOR_STEPS, stageList, stepFromStages, workflowSteps } from '../components/progress.js';
 import { tailorForm } from '../components/tailorForm.js';
 import { jdAnalysisPanel } from '../components/jdAnalysis.js';
 import { resumePreview } from '../components/resumePreview.js';
@@ -18,6 +18,9 @@ export function tailorPage(root, { query }) {
   const analysisHost = h('div', { class: 'card analysis-card', 'aria-live': 'polite' });
   const previewHost = h('section', { class: 'card preview-card' });
   const historyHost = h('div', {});
+  const stepsHost = h('div', {});
+  const setStep = (current, opts) => mount(stepsHost, workflowSteps(TAILOR_STEPS, current, opts));
+  const exported = (rec) => rec.versions.some((v) => v.exports?.pdf || v.exports?.docx);
   const state = { jobKey: null, jobDescription: null, lastSubmit: null };
 
   const form = tailorForm({ onSubmit: (v) => generate(v) });
@@ -28,15 +31,17 @@ export function tailorPage(root, { query }) {
     emptyState({ title: 'No resume generated yet', text: 'Only skills, employers and experience already in your master resume are used — nothing is invented.', iconName: 'file' }));
 
   function showProgress(stages) {
+    setStep(stepFromStages(stages));
     mount(analysisHost, h('h3', {}, 'Processing'), stageList(stages),
       h('p', { class: 'muted small' }, 'Steps reflect what the server is actually doing. A local model can take a few minutes.'));
   }
 
   function showRecord(rec) {
+    setStep(5, { complete: exported(rec) });
     mount(analysisHost, jdAnalysisPanel(rec));
     mount(previewHost, resumePreview(rec, {
       onRegenerate: () => regenerate(rec.id),
-      onRecord: (r) => mount(analysisHost, jdAnalysisPanel(r)),
+      onRecord: (r) => { mount(analysisHost, jdAnalysisPanel(r)); setStep(5, { complete: exported(r) }); },
     }));
     history.replaceState({}, '', `/tailor-resume?resume=${rec.id}`);
     historyList.reload();
@@ -56,6 +61,7 @@ export function tailorPage(root, { query }) {
       }
       toast(v.validation.ok ? 'Tailored resume ready' : 'Generated, but blocked by verification — see details', v.validation.ok ? 'success' : 'error');
     } catch (e) {
+      setStep(0);
       mount(analysisHost, h('h3', {}, 'JD analysis'), errorState(e.message, state.lastSubmit ? () => state.lastSubmit() : null));
     }
   }
@@ -104,13 +110,13 @@ export function tailorPage(root, { query }) {
   }
 
   mount(root,
-    h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Tailor Resume'),
-      h('p', { class: 'muted' }, 'Paste any job description and get a resume tailored to it — built only from your master resume.'))),
+    pageHeader({ title: 'Tailor Resume', subtitle: 'Paste any job description and get a resume tailored to it — built only from your master resume, then verified for fabrication.' }),
+    stepsHost,
     h('div', { class: 'tailor-grid' }, form.el, analysisHost),
     previewHost,
     h('section', { class: 'card' }, h('div', { class: 'card-head' }, 'Recent resumes'), historyHost));
 
-  idle(); idlePreview();
+  idle(); idlePreview(); setStep(0);
 
   const jobKey = query.get('job');
   const resumeId = query.get('resume');

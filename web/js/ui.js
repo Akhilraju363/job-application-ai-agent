@@ -2,6 +2,7 @@
 // toasts, dialogs, drawer, dropdown menu, badges.
 import { h, mount } from './dom.js';
 import { icon } from './icons.js';
+import { matchTone, statusTone } from './lib/format.js';
 
 export const spinner = (cls = '') => h('span', { class: `spinner ${cls}`.trim(), role: 'status', 'aria-label': 'Loading' });
 
@@ -55,6 +56,33 @@ export function loadable(host, { load, render, isEmpty, empty, skeleton: sk = 'l
 
 export function badge(text, tone = 'neutral', extra = '') {
   return h('span', { class: `badge badge-${tone} ${extra}`.trim() }, text);
+}
+
+// Tracker / pipeline status: dot + text, never colour alone (docs/ui/UI_DESIGN_SYSTEM.md).
+export function statusBadge(status) {
+  return badge(status, statusTone(status), 'badge-dot');
+}
+
+// Pipeline fit score (1-10) -> "9/10" with the match tone.
+export function scoreBadge(score) {
+  const n = Number(score);
+  return score == null || score === '' || Number.isNaN(n) ? h('span', { class: 'muted' }, '—') : badge(`${score}/10`, matchTone(n * 10));
+}
+
+// PageHeader: the page's single h1, a one-line purpose, optional meta row and actions (<= 1 primary).
+export function pageHeader({ title, subtitle, actions = [], meta = null, className = '' }) {
+  const acts = [actions].flat().filter(Boolean);
+  return h('div', { class: `page-head ${className}`.trim() },
+    h('div', {}, h('h1', {}, title), subtitle && h('p', {}, subtitle), meta),
+    acts.length > 0 && h('div', { class: 'head-actions' }, ...acts));
+}
+
+// SearchInput: labelled search box with a debounced callback.
+export function searchInput({ label, placeholder = label, onSearch, delay = 300, value = '' }) {
+  let timer;
+  const input = h('input', { class: 'input', type: 'search', placeholder, 'aria-label': label, value, autocomplete: 'off',
+    onInput: (e) => { clearTimeout(timer); const v = e.target.value; timer = setTimeout(() => onSearch(v.trim()), delay); } });
+  return h('div', { class: 'search', role: 'search' }, icon('search', 16), input);
 }
 
 // -- toasts ------------------------------------------------------------------

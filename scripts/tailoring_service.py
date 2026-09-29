@@ -266,11 +266,8 @@ def _tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key
                     "matched_must_haves": match["skills"]["required_matched"] + match["skills"]["technologies_matched"],
                     "missing_must_haves": match["missing_skills"]}
 
-    # The headline is the job's role, normalized and limited to what the master resume supports;
-    # it replaces the master's generic headline on every version (model rewrite or fallback).
-    # Only technologies (and the terms verify() checks) can make a role word a claim -- not generic
-    # JD keywords like "Developer" or "Experience".
-    role = resume_role.target_role(job["title"], base_md, analysis["technologies"] + match["missing_skills"])
+    # The header (name + headline) is the master resume's on every version, model rewrite or
+    # fallback -- the job's role only names the exported file (resume_role.export_filename).
 
     def check(md, m):
         return verify(md, base_md, jd_terms=m["missing_skills"], analysis=analysis, match=m, title=job["title"])
@@ -278,8 +275,8 @@ def _tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key
     feedback, markdown, verdict, llm_problems, kind_override = "", "", None, [], None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         stage("generate")
-        markdown = resume_role.apply_role(
-            _strip_fences(tailor_job.tailor_text(tailor_input, base_md, feedback=feedback)), role)
+        markdown = resume_role.fixed_header(
+            _strip_fences(tailor_job.tailor_text(tailor_input, base_md, feedback=feedback)), base_md)
         log.info("Resume generation completed", extra={"attempt": attempt, "chars": len(markdown)})
         stage("validate")
         match = jd_analysis.compute_match(analysis, base_md, markdown)
@@ -299,7 +296,7 @@ def _tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key
         # Both model rewrites failed fact-checking. Fall back to a reorder-only version of the
         # master resume rather than leaving the user with nothing (or an unverified rewrite).
         log.info("Using reorder-only fallback", extra={"attempts": attempt})
-        markdown = resume_role.apply_role(conservative_resume(base_md, analysis, match), role)
+        markdown = resume_role.fixed_header(conservative_resume(base_md, analysis, match), base_md)
         match = jd_analysis.compute_match(analysis, base_md, markdown)
         verdict = check(markdown, match)
         kind_override = "conservative"
@@ -356,6 +353,15 @@ def tailor_resume(job_description, job_title=None, company=None, job_url=None, s
     return to_result(rec)
 
 
+def is_current_master(rec):
+    """True if this resume was built from today's master resume, False if base_resume.md has
+    changed since (regenerate it -- a new tailor() call won't reuse it), None if unknown."""
+    try:
+        return rec.get("master_version") == paths.master_resume_version()
+    except OSError:  # master missing/unreadable -- can't tell
+        return None
+
+
 def to_result(rec, version=None):
     """The structured response shape (job / jd_analysis / match_analysis / resume /
     ats_validation) built from a stored record -- the UI never has to parse generated text."""
@@ -397,6 +403,7 @@ def to_result(rec, version=None):
             "notes": [n for n in (m.get("projects_note"), m.get("achievements_note")) if n]},
         "resume": {"id": rec["id"], "version": v["n"], "versions": len(versions), "kind": v["kind"],
                    "content": v.get("markdown", ""), "master_resume_version": rec.get("master_version"),
+                   "master_resume_current": is_current_master(rec),
                    "pdf_url": url("pdf"), "docx_url": url("docx"),
                    "drive_url": uploaded[0]["url"] if uploaded else None,   # PDF first: the primary artifact
                    "drive_error": failed[0]["error"] if failed else None},

@@ -1,16 +1,16 @@
-"""The target-role headline: the line under the name on a tailored resume.
+"""The target role of a tailored resume -- used ONLY for its filename.
 
-The master resume's headline ("Software Engineer | Java | Spring Boot | ...") is generic. A
-tailored resume is positioned for one job instead, so its headline is the job's title,
-normalized (seniority and level stripped, spelling unified), e.g.
+The job's title is normalized (seniority and level stripped, spelling unified), e.g.
 
     "Senior Java Developer"        -> "Java Developer"
     "Full-Stack Developer II"      -> "Full Stack Developer"
     "We're Hiring: Java Developer | 4+ Years" -> "Java Developer"
 
-The headline is positioning only: it never changes which employer used which technology.
-It also never adds a claim -- a technology the master resume doesn't have, or a
-seniority/leadership word it doesn't use, is dropped from the role. If no role noun is left
+and becomes the export name, Akhil_Dalali_Java_Developer.pdf. The resume's header never
+changes with the job: fixed_header() puts the master resume's name and generic
+headline ("Software Engineer | Java | Spring Boot | ...") on every tailored resume.
+The role never adds a claim -- a technology the master resume doesn't have, or a
+seniority/leadership word it doesn't use, is dropped from it. If no role noun is left
 the role falls back to "Software Engineer", the candidate's actual title.
 Pure functions, no I/O.
 """
@@ -116,18 +116,25 @@ def _headline_index(lines):
     return name, None
 
 
-def apply_role(markdown, role):
-    """Set the resume's headline to `role`, replacing the generic one. Idempotent."""
-    if not role:
+def fixed_header(markdown, base_md):
+    """Give `markdown` the master resume's header: its name line and its headline, the
+    same on every tailored resume whatever the job (the job role only names the file). Replaces
+    whatever name/headline the markdown has -- a model rewrite or an older role headline. Idempotent."""
+    base = base_md.replace("\r\n", "\n").split("\n")
+    b_name, b_head = _headline_index(base)
+    if b_name is None:
         return markdown
+    name_line = base[b_name].strip()
+    headline = base[b_head].strip() if b_head is not None else None
     lines = markdown.split("\n")
     name, head = _headline_index(lines)
     if name is None:
-        return markdown
-    if head is not None:
-        lines[head] = role
-    else:
-        lines.insert(name + 1, role)
+        return "\n".join([name_line] + ([headline] if headline else []) + [""] + lines)
+    if headline and head is not None:
+        lines[head] = headline
+    elif headline:
+        lines.insert(name + 1, headline)
+    lines[name] = name_line
     return "\n".join(lines)
 
 
@@ -137,15 +144,16 @@ def role_of(markdown):
     return lines[head].strip() if head is not None else ""
 
 
-def resume_filename(markdown, ext, fallback_name="Resume", fallback_role=""):
+def resume_filename(markdown, ext, fallback_name="Resume", role=""):
     """'Akhil_Dalali_Java_Developer.pdf' -- the name + target role of the resume being exported.
-    Never a company or a version number. A resume saved before role headlines existed still
-    has the master's "A | B | C" headline; its filename uses `fallback_role` instead (the file
-    itself is not rewritten)."""
+    Never a company or a version number. The header is fixed, so the role comes from the job
+    (`role`); without one, a resume saved when headlines were roles still names its file by that
+    headline, and a generic "A | B | C" headline adds nothing."""
     name = next((ln[2:].strip() for ln in (markdown or "").splitlines() if ln.startswith("# ")), "") or fallback_name
-    role = role_of(markdown)
-    if not role or "|" in role:
-        role = fallback_role
+    name = name.title() if name.isupper() else name   # "AKHIL DALALI" header -> Akhil_Dalali file
+    if not role:
+        head = role_of(markdown)
+        role = head if "|" not in head else ""
     stem = re.sub(r"[^\w+#]+", "_", f"{name} {role}").strip("_")[:120]
     return f"{stem or 'Resume'}.{ext}"
 

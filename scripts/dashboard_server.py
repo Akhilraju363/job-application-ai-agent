@@ -54,6 +54,7 @@ import dashboard_tasks as tasks  # noqa: E402
 import drive_resumes  # noqa: E402
 import jd_analysis  # noqa: E402
 import log_reader  # noqa: E402
+import master_resume  # noqa: E402
 import logging_config as lc  # noqa: E402
 import no_fabrication as nf  # noqa: E402
 import resume_role  # noqa: E402
@@ -79,9 +80,9 @@ CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inlin
 
 
 class ApiError(Exception):
-    def __init__(self, status, message, code="error"):
+    def __init__(self, status, message, code="error", details=None):
         super().__init__(message)
-        self.status, self.message, self.code = status, message, code
+        self.status, self.message, self.code, self.details = status, message, code, details
 
 
 ROUTES = []
@@ -508,7 +509,11 @@ def resume_download(req):
             tailoring_log.error("Markdown download blocked: RESUME_CONTACT_LINE not configured",
                                 extra={"resume_id": meta["id"], "version": v["n"]})
             raise ApiError(503, str(e), "contact_not_configured") from None
-    body = contact.with_contact(path.read_text(encoding="utf-8")).encode("utf-8") if fmt == "md" else path.read_bytes()
+    if fmt == "md":
+        import tailor_job  # same fixed header + contact line as the PDF/DOCX exports
+        body = tailor_job.render_markdown(path.read_text(encoding="utf-8")).encode("utf-8")
+    else:
+        body = path.read_bytes()
     return FileResponse(body, ctype, _safe_filename(meta, v, fmt))
 
 
@@ -624,13 +629,74 @@ def prefs_put(req):
     return _prefs_payload()
 
 
+# ---------------------------------------------------------------------------
+# master resume (resume/base_resume.md -- the single source of truth)
+# ---------------------------------------------------------------------------
+
+master_log = lc.get_logger("master_resume")
+
+
+def _master_payload():
+    try:
+        m = master_resume.load()
+    except master_resume.MasterFormatError as e:
+        master_log.warning("Master resume not editable: unsupported format", extra={"reason": str(e)[:200]})
+        raise ApiError(409, f"The master resume isn't in the format this editor supports: {e}",
+                       "unsupported_format") from None
+    except OSError as e:  # MasterResumeError: missing / empty / missing sections
+        raise ApiError(409, str(e), "master_unavailable") from None
+    reason = master_resume.read_only_reason()
+    line = contact.contact_line()
+    return {"resume": m["resume"], "version": m["version"],
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(m["updated_at"])),
+            "editable": reason is None, "read_only_reason": reason,
+            # shown in the preview only; it is never part of the master and never accepted on save
+            "contact": {"configured": bool(line), "line": line or None}}
+
+
+@route("GET", "/api/master-resume")
+def master_resume_get(req):
+    return _master_payload()
+
+
+@route("PUT", "/api/master-resume")
+def master_resume_put(req):
+    """Save an edited master. The body is {resume: {...sections}, expected_version} -- never a path or
+    filename: the only file written is paths.BASE_RESUME."""
+    body = req.body
+    unexpected = sorted(set(body) - {"resume", "expected_version"})
+    if unexpected:
+        raise ApiError(400, f"Unexpected field(s): {', '.join(unexpected)}", "invalid_input")
+    expected = body.get("expected_version")
+    if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{12}", expected):
+        raise ApiError(400, "expected_version is required", "invalid_input")
+    try:
+        out = master_resume.save(body.get("resume"), expected)
+    except master_resume.ReadOnlyMaster as e:
+        raise ApiError(409, str(e), "read_only") from None
+    except master_resume.MasterConflict as e:
+        raise ApiError(409, str(e), "conflict") from None
+    except master_resume.InvalidMaster as e:
+        master_log.info("Master resume save rejected by validation", extra={"error_count": len(e.errors)})
+        raise ApiError(422, "Fix the highlighted fields and save again.", "validation_failed", e.errors) from None
+    except master_resume.MasterFormatError as e:
+        raise ApiError(409, f"The master resume isn't in the format this editor supports: {e}", "unsupported_format") from None
+    except ValueError as e:
+        raise ApiError(400, f"Invalid master resume structure: {e}", "invalid_input") from None
+    if out["changed"]:
+        master_log.info("Master resume updated", extra={"version": out["version"], "previous_version": out["previous_version"]})
+        activity.log_event("master_resume_updated", "Master resume updated",
+                           version=out["version"], previous_version=out["previous_version"])
+    return {**_master_payload(), "changed": out["changed"], "previous_version": out["previous_version"]}
+
+
 @route("GET", "/api/settings")
 def settings(req):
     md = paths.read_base_resume()
     parsed = nf.parse_resume(md)
     return {**dd.sources(), "profile": dd.profile(),
             "master_resume": {"path": "resume/base_resume.md", "sections": list(parsed["sections"]),
-                              "roles": [r["heading"] for r in parsed["roles"]],
+                              "roles": [r["label"] for r in parsed["roles"]],
                               "skills": len(parsed["skill_items"]), "years": jd_analysis.resume_years(md)},
             "auth": {"password_required": da.configured()}}
 
@@ -693,9 +759,9 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, status, payload):
         self._send(status, json.dumps(payload).encode("utf-8"), "application/json; charset=utf-8")
 
-    def _error(self, status, message, code="error"):
+    def _error(self, status, message, code="error", details=None):
         self.error_code = code
-        self._json(status, {"error": {"code": code, "message": message}})
+        self._json(status, {"error": {"code": code, "message": message, **({"details": details} if details else {})}})
 
     def current_session(self):
         """The signed-in session ({username, expires}), or None. Auth unconfigured == open (loopback dev)."""
@@ -775,7 +841,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(url.path)
         except ApiError as e:
             self._drain()
-            self._error(e.status, e.message, e.code)
+            self._error(e.status, e.message, e.code, e.details)
         except ConnectionError:  # BrokenPipe / Reset / Aborted (Windows): the browser navigated away mid-response
             self.client_gone = True
         except Exception:  # noqa: BLE001

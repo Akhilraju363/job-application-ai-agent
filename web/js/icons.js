@@ -33,6 +33,9 @@ const P = {
   wand: 'M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8L19 13M17.8 6.2L19 5M12.2 6.2L11 5M3 21l9-9M12.2 11.8L11 13',
   zap: 'M13 2L3 14h9l-1 8 10-12h-9z',
   terminal: 'M4 17l6-6-6-6M12 19h8',
+  user: 'M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z',
+  up: 'M18 15l-6-6-6 6',
+  plus: 'M12 5v14M5 12h14',
 };
 
 export function icon(name, size = 18, cls = '') {

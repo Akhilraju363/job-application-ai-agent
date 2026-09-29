@@ -10,6 +10,7 @@ from unittest import mock
 
 import contact
 import no_fabrication as nf
+import paths
 import tailoring_service
 
 LINE = "jane@example.com | Bengaluru, India"
@@ -44,6 +45,37 @@ class WithContact(unittest.TestCase):
         with mock.patch.dict(os.environ, {"RESUME_CONTACT_LINE": LINE}):
             out = contact.with_contact(md)
         self.assertLess(out.index(LINE), out.index("## Summary"))
+
+    def test_linkedin_in_the_contact_line_is_not_repeated(self):
+        # RESUME_CONTACT_LINE often carries the LinkedIn URL too; the header must still show it once.
+        full = f"+91 90000 00000 | {LINE} | linkedin.com/in/jane-roe"
+        with mock.patch.dict(os.environ, {"RESUME_CONTACT_LINE": full}):
+            out = contact.with_contact(MD)
+            self.assertEqual(contact.with_contact(out), out)
+        self.assertIn(f"\n{full}\n", out)
+        for part in ("+91 90000 00000", "jane@example.com", "Bengaluru, India", "linkedin.com/in/jane-roe"):
+            self.assertEqual(out.count(part), 1, part)
+
+    def test_malformed_linkedin_in_the_contact_line_never_reaches_the_resume(self):
+        bad = f"{LINE} | linkedin.com/in/jane‑roe"   # non-breaking hyphen pasted from a doc
+        with mock.patch.dict(os.environ, {"RESUME_CONTACT_LINE": bad}):
+            out = contact.with_contact(MD)
+            no_li = contact.with_contact(MD.replace("linkedin.com/in/jane-roe\n\n", ""))
+        self.assertEqual((out.count("linkedin.com/in/"), out.count("linkedin.com/in/jane-roe")), (1, 1))
+        self.assertIn(f"\n{LINE} | linkedin.com/in/jane-roe\n", no_li)   # kept, cleaned, when it's the only one
+        self.assertNotIn("‑", out + no_li)
+
+    def test_real_base_resume_gets_exactly_one_canonical_linkedin(self):
+        base = (paths.ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8")
+        canonical = "linkedin.com/in/akhil-dalali-320204233"
+        full = f"+91 90000 00000 | name@example.com | Bengaluru, India | {canonical}"
+        with mock.patch.dict(os.environ, {"RESUME_CONTACT_LINE": full}):
+            out = contact.with_contact(base)
+        self.assertIn(f"\n{full}", out)
+        self.assertEqual(out.count("linkedin.com/in/"), 1)
+        self.assertEqual(out.count(full), 1)
+        self.assertNotIn("�", out)
+        self.assertNotIn("name@example.com", base)   # the base resume itself is never modified
 
     def test_configured_email_counts_for_ats_checks(self):
         with mock.patch.dict(os.environ, {"RESUME_CONTACT_LINE": LINE}):

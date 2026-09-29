@@ -3,10 +3,11 @@
 import { fileNameFromDisposition } from './lib/format.js';
 
 export class ApiError extends Error {
-  constructor(message, status, code) {
+  constructor(message, status, code, details) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details || null;   // e.g. field-level validation errors
   }
 }
 
@@ -25,12 +26,13 @@ function headers(json) {
 async function fail(res) {
   let msg = `Request failed (${res.status})`;
   let code = 'error';
+  let details = null;
   try {
     const body = await res.json();
-    if (body.error) { msg = body.error.message || msg; code = body.error.code || code; }
+    if (body.error) { msg = body.error.message || msg; code = body.error.code || code; details = body.error.details || null; }
   } catch { /* non-JSON error body */ }
   if (res.status === 401) auth.onUnauthorized();
-  throw new ApiError(msg, res.status, code);
+  throw new ApiError(msg, res.status, code, details);
 }
 
 async function request(method, path, body) {

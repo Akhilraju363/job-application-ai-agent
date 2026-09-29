@@ -14,6 +14,13 @@ Desktop, using Google Docs (via the `gws` CLI) as the intermediate build step.
 that already exists in `resume/base_resume.md`. If a job wants something the resume doesn't have,
 leave it out — do not fabricate it to look like a better fit.
 
+`resume/base_resume.md` is the Master Resume (a transcription of Akhil's master ATS PDF). It is
+never modified by tailoring. Every tailored resume keeps its header, section order, employer
+headings, job-title lines, dates, education and certifications unchanged; only the summary
+wording, skill order and bullet order/wording may shift toward the job. The exported PDF/DOCX
+layout (centered header, ruled section headings, bold skill labels) comes from
+`scripts/format_resume_doc.py`, so every resume looks the same.
+
 ## Prerequisite
 
 `gws` must be authenticated. Check with `gws auth status` — if `auth_method` is `none`, stop and
@@ -33,7 +40,8 @@ move on to the next job rather than stopping the whole run.
    - **Skills**: reorder so items matching the job's `matched_must_haves` appear first.
    - **Experience**: reorder/re-emphasize existing bullets toward what the job asks for. Do not
      alter dates, employers, titles, or the substance of any bullet — only reorder bullets and
-     lightly reword phrasing, never metrics.
+     lightly reword phrasing, never metrics. Keep each role's three lines (`### Employer`, the
+     job-title line, the `dates | location` line) exactly as written.
    - Education and Certifications: carry over unchanged.
 
 3. Compute `slug` = the job title, lowercased, non-alphanumeric characters replaced with `-`,
@@ -59,8 +67,9 @@ move on to the next job rather than stopping the whole run.
    `gws docs +write` with the raw markdown text; it inserts `#`/`##`/`###`/`-` as literal visible
    characters instead of converting them to headings/bullets, which reads as broken and
    unprofessional (confirmed by visual inspection, not just a style preference). The script parses
-   the markdown structure from step 2 and applies real bold section headers, bold job titles,
-   italic date lines, and native bullet lists — no markdown syntax left in the visible text:
+   the markdown structure from step 2 and applies the master resume's layout — centered name,
+   headline and contact line, ruled uppercase section headings, bold employer and job-title
+   lines, bold skill labels and native bullet lists — no markdown syntax left in the visible text:
    ```
    python3 scripts/format_resume_doc.py output/tailored/{folder_name}.md "$DOCUMENT_ID"
    ```

@@ -13,7 +13,7 @@ const KIND_LABEL = { generated: 'Generated', regenerated: 'Regenerated', edited:
 export function resumePaper(markdown) {
   const nodes = groupBullets(parseResume(markdown)).map((b) => {
     switch (b.type) {
-      case 'name': return h('h1', {}, b.text);
+      case 'name': return h('p', { class: 'paper-name', role: 'heading', 'aria-level': '2' }, b.text);
       case 'tagline': return h('p', { class: 'paper-tagline' }, b.text);
       case 'section': return h('h2', {}, b.text);
       case 'role': return h('h3', {}, b.text);
@@ -64,6 +64,7 @@ export function resumePreview(initialRec, { onRegenerate, onRecord }) {
           render();
           const done = await pollTask(task_id).promise;
           s.rec = await api.get(`/api/resumes/${s.rec.id}`);
+          onRecord?.(s.rec);
           s.note = '';
           if (done.result?.drive?.status === 'failed') toast(`Saved locally, but not to Google Drive. ${done.result.drive.error}`, 'error', 9000);
         }

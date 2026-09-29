@@ -4,6 +4,18 @@
 whatever you use) and say "set this up for me." The pipeline order, every environment variable,
 and the exact run/deploy commands are all below — nothing else to figure out.
 
+## Documentation
+
+| Doc | What's in it |
+|---|---|
+| [`CLAUDE.md`](CLAUDE.md) | Hard rules, conventions, session workflow for AI assistants |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Pipeline diagram, stage ownership, job dict schema, subsystem notes |
+| [`docs/CONFIG.md`](docs/CONFIG.md) | Every env key (names only), Modal schedule/secrets, Apify input, Sheet columns |
+| [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | Run a stage, read logs, Telegram alerts, recover a failed day, Apify credit |
+| [`docs/MEMORY.md`](docs/MEMORY.md) · [`docs/TASKS.md`](docs/TASKS.md) · [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Decisions, open work, history |
+| [`docs/prompts/`](docs/prompts/) | The LLM prompts (scoring, tailoring, research) |
+| [`docs/ui/`](docs/ui/) | Dashboard UI specifications |
+
 ## What This Is
 
 An AI agent that finds Full-Stack Software Engineer (Java/Spring Boot/Angular) job postings, scores each one against your resume, tailors
@@ -207,7 +219,7 @@ modal deploy modal_app.py
 ```
 
 `GROQ_API_KEY` is the minimum LLM requirement; `OPENROUTER_API_KEY` and `GEMINI_API_KEY` are
-optional extra links in the failover chain. Runs daily at 7am Asia/Kolkata (IST). See
+optional extra links in the failover chain. Runs at 7am Asia/Kolkata (IST), Monday–Friday (`0 7 * * 1-5`). See
 [`GWS_SETUP.md`](GWS_SETUP.md) for the `gws-credentials` values and the Telegram section for the
 bot token.
 
