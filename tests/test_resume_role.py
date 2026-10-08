@@ -23,7 +23,7 @@ import tailoring_service as ts
 
 REAL_BASE = (paths.ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8")
 STATIC_HEADLINE = "Software Engineer | Java | Spring Boot | Angular | AWS"
-CANONICAL_LINKEDIN = "linkedin.com/in/akhildalali-320204233"
+CANONICAL_LINKEDIN = "linkedin.com/in/akhil-dalali-320204233"
 # Same shape and order as the real RESUME_CONTACT_LINE; the real phone/email stay out of this public repo.
 CONTACT = f"+91 90000 00000 | name@example.com | {CANONICAL_LINKEDIN} | Bengaluru, Karnataka, India"
 FIXED_HEADER = f"# AKHIL DALALI\n{STATIC_HEADLINE}\n\n{CONTACT}\n\n## Summary"
@@ -132,11 +132,11 @@ class FixedHeader(unittest.TestCase):
         self.assertEqual(rr.fixed_header(md, REAL_BASE).split("## Summary")[1], md.split("## Summary")[1])
 
     def test_misspelled_linkedin_in_the_contact_line_becomes_the_canonical_one(self):
-        typo = CONTACT.replace(CANONICAL_LINKEDIN, "linkedin.com/in/akhil-dalali-320204233")
+        typo = CONTACT.replace(CANONICAL_LINKEDIN, "linkedin.com/in/akhildalali-320204233")
         with mock.patch.dict(os.environ, {"RESUME_CONTACT_LINE": typo}):
             md = contact.with_contact(rr.fixed_header(REAL_BASE, REAL_BASE))
         self.assertIn(f"\n{CONTACT}", md)
-        self.assertNotIn("akhil-dalali-320204233", md)
+        self.assertNotIn("akhildalali-320204233", md)
 
 
 class Filename(unittest.TestCase):
