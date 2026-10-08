@@ -117,24 +117,29 @@ def tailor_text(job, resume_text, feedback=""):
     return call_llm(prompt, job.get("title"))
 
 
-def verified_resume(job, base_md):
+def verified_resume(job, base_md, want_record=False):
     """A scraped job's resume through the same path as the dashboard: tailoring_service.tailor()
     (JD analysis -> tailor a fresh copy of the master -> no-fabrication check -> one retry ->
     reorder-only fallback). Returns (markdown, None), or (None, reason) when even the fallback
-    fails verification -- an unverified rewrite never reaches Drive."""
+    fails verification -- an unverified rewrite never reaches Drive. want_record=True appends the
+    resume record id and version number (None, None on failure) for publishing the local PDF."""
     import jd_analysis
     import tailoring_service  # lazy: it imports this module lazily too
 
     norm = jd_analysis.normalize_job(job.get("title"), job.get("company"), job.get("link"), job.get("description"))
-    norm["source"] = "LinkedIn"
+    norm["source"] = job.get("source") or "LinkedIn"  # scraped jobs carry their source (LinkedIn, Naukri)
     if job.get("score") is not None:
         norm["pipeline_score"] = job["score"]
     rec = tailoring_service.tailor(norm, source="scraped", base_md=base_md, job_key=canonical_link(job.get("link")))
     version = rec["versions"][-1]
+    record = (rec.get("id"), version.get("n")) if want_record else ()
     if not version["validation"]["ok"]:
-        return None, "failed no-fabrication verification: " + "; ".join(version["validation"]["problems"])[:500]
+        reason = "failed no-fabrication verification: " + "; ".join(version["validation"]["problems"])[:500]
+        return (None, reason, None, None) if want_record else (None, reason)
     ok, reason = validate(version["markdown"])
-    return (version["markdown"], None) if ok else (None, reason)
+    if not ok:
+        return (None, reason, None, None) if want_record else (None, reason)
+    return (version["markdown"], None, *record)
 
 
 def create_job_folder(company, slug, parent_folder_id):
@@ -201,6 +206,11 @@ def _export_doc(markdown_path, doc_id, out_path, mime_type):
 
 def build_and_upload_resume(markdown_path, folder_id, tmp_pdf_path):
     export_doc_file(markdown_path, tmp_pdf_path)
+    return upload_pdf(tmp_pdf_path, folder_id)
+
+
+def upload_pdf(tmp_pdf_path, folder_id):
+    """Upload an existing PDF (named as the recruiter should see it) into the job's Drive folder."""
     export_dir = tmp_pdf_path.parent.resolve()
 
     uploaded = gws("drive", "files", "create", "--params", json.dumps({"fields": "id,webViewLink"}),
@@ -260,7 +270,7 @@ if __name__ == "__main__":
             continue
 
         try:
-            text, reason = verified_resume(job, resume_text)
+            text, reason, resume_id, resume_version = verified_resume(job, resume_text, want_record=True)
             if text is None:
                 by_link[key] = {**job, "status": "flagged_validation_failed", "reason": reason}
                 log.warning("Tailored resume flagged by validation", extra={"folder": folder_name, "reason": str(reason)[:200]})
@@ -269,13 +279,22 @@ if __name__ == "__main__":
                 md_path.write_text(text, encoding="utf-8")
 
                 folder_id, folder_link = create_job_folder(job["company"], slug, parent_folder_id)
+                # The verified version becomes the local artifact generated_resumes/<id>/v<n>.pdf
+                # (rendered once, checked, recorded); Drive gets that same file under its export name.
+                import resume_artifacts
+                import resume_store
+                resume_artifacts.publish_verified_pdf(resume_id, resume_version)
                 tmp_pdf_path = tmp_dir / folder_name / export_filename(text, "pdf", job["title"])
-                resume_link = build_and_upload_resume(md_path, folder_id, tmp_pdf_path)
+                tmp_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(resume_store.version_path(resume_id, resume_version, "pdf"), tmp_pdf_path)
+                resume_link = upload_pdf(tmp_pdf_path, folder_id)
 
                 by_link[key] = {
                     "title": job["title"], "company": job["company"], "link": link,
-                    "score": job["score"], "drive_folder_link": folder_link,
-                    "resume_link": resume_link, "status": "saved",
+                    "score": job["score"], "source": job.get("source") or "LinkedIn",
+                    "drive_folder_link": folder_link,
+                    "resume_link": resume_link, "resume_id": resume_id, "resume_version": resume_version,
+                    "status": "saved",
                     "tailored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 }
                 log.info("Tailored resume saved", extra={"folder": folder_name, "company": job["company"]})

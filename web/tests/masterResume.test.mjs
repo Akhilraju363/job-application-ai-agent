@@ -12,10 +12,10 @@ forbidBrowserStorage();
 const { masterResumePage, SAVED_MESSAGE, CONTACT_NOTE } = await import('../js/pages/masterResume.js');
 const lib = await import('../js/lib/masterResume.js');
 
-const CONTACT = 'name@example.com | +91 90000 00000 | linkedin.com/in/akhil-dalali-320204233 | Bengaluru, India';
+const CONTACT = 'name@example.com | +91 90000 00000 | linkedin.com/in/akhildalali-320204233 | Bengaluru, India';
 const RESUME = {
   name: 'AKHIL DALALI', headline: 'Software Engineer | Java | Spring Boot | Angular | AWS',
-  profile_lines: ['linkedin.com/in/akhil-dalali-320204233'],
+  profile_lines: ['linkedin.com/in/akhildalali-320204233'],
   summary: 'Results-driven Software Engineer with 4+ years of experience.',
   skills: [{ label: 'Languages', items: 'Java (Core & Advanced), Python, TypeScript, SQL' },
     { label: 'Backend', items: 'Spring Boot, Hibernate, JPA' }, { label: 'Frontend', items: 'Angular, RxJS' }],

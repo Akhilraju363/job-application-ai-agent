@@ -8,6 +8,8 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       UI redesign + `docs/ui/`, project docs). Not committed or pushed yet.
 
 ## Next
+- [ ] Naukri on Modal: needs the handoff file mirrored through Drive (`artifacts.py`); not implemented -- local only.
+- [ ] (title, company) dedupe across sources: the same posting on LinkedIn and Naukri has two links and is scored twice.
 - [ ] Test `agentx/all-jobs-scraper` (platforms Naukri, foundit; country India) with `limit=2`; record its input params and
       output field names in `CONFIG.md`.
 - [ ] Split `scripts/scrape_jobs.py`: `scrape_jobs()` orchestrates `scrape_linkedin()` + `scrape_naukri_foundit()`, then
@@ -23,6 +25,10 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       owner chose to keep the current order for now.
 
 ## Done
+- [x] 2026-10-07 (uncommitted) Local verified PDF artifact per tailored job (`scripts/resume_artifacts.py`);
+      the pipeline publishes it and uploads that file to Drive; saved records carry `resume_id`/`resume_version`.
+- [x] 2026-10-07 (uncommitted) Naukri source via the Auto_job_apply JSON handoff (`NAUKRI_JOBS_PATH`,
+      `JOB_SOURCES`); merge also on the 6h cache path; `source` carried through tailoring and the Sheet.
 - [x] 2026-09-29 Project docs: `CLAUDE.md` (short), `docs/ARCHITECTURE|CONFIG|RUNBOOK|MEMORY|TASKS|CHANGELOG.md`, `docs/prompts/`.
 - [x] 2026-09-29 UI modernisation phase 1 + `docs/ui/` specs.
 - [x] 2026-09-29 Master Resume editor (GET/PUT `/api/master-resume`, section-by-section, preview, versioning).
