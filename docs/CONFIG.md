@@ -22,6 +22,8 @@ Template: `.env.example`.
 | `JOB_LIMIT` | `.env` / secret | jobs per cloud run | 10 (sized to free-tier LLM quotas) |
 | `LOCAL_JOB_LIMIT` | `.env` | jobs per local run | 50 |
 | `FORCE_SCRAPE` | `.env` | bypass the 6h scrape cache (spends an Apify run) | unset |
+| `JOB_SOURCES` | `.env` / env | sources for `scrape_jobs.py`: `linkedin`, `naukri` (comma separated); `naukri` alone never calls Apify | `linkedin,naukri` (Naukri is a no-op without `NAUKRI_JOBS_PATH`) |
+| `NAUKRI_JOBS_PATH` | `.env` only (local) | Naukri jobs exported by the separate Auto_job_apply project (`exports/naukri_jobs.json`, already in the raw-job format) | unset = no Naukri jobs; never set on Modal |
 | `artifact_sync` | `.env` | `0` disables the Drive mirror of stage JSON | on |
 | `PIPELINE_DATE` | `.env` | recover an earlier day's artifacts (`YYYY-MM-DD`) | today |
 | `google_sheet_id` | `.env`, `job-apply-agent-secrets` | the "Job Application Tracker" sheet | lookup by name → create, if unset |
@@ -52,7 +54,21 @@ Template: `.env.example`.
 | Actor | Status | Endpoint / input |
 |---|---|---|
 | `curious_coder~linkedin-jobs-scraper` | **in use** (`scripts/scrape_jobs.py ACTOR_ID`) | `POST https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items?token=…`, timeout 300 s. Input: `keywords` (default `Full Stack Java Spring Boot Angular AWS Developer`), `location` (`India`), `datePosted` (`past24Hours` \| `pastWeek` \| `pastMonth`), `limitPerSource` (= job limit), `under10Applicants: false`, `autoConvertToAiSearch: true`, `scrapeCompany: false` |
-| `agentx/all-jobs-scraper` (platforms Naukri, foundit; country India) | **planned — not in code** | TODO: confirm the actor id and input params; test with `limit=2` before wiring it in |
+| `agentx/all-jobs-scraper` (platforms Naukri, foundit; country India) | **planned — not in code** | TODO: confirm the actor id and input params; test with `limit=2` before wiring it in. Naukri itself now arrives through the Auto_job_apply handoff (below) |
+
+## Naukri (Auto_job_apply handoff, local only)
+
+Naukri jobs are discovered by the separate **Auto_job_apply** project (headed Playwright browser with the owner's
+Naukri profile -- Naukri blocks headless, so this cannot run on Modal). It writes them with
+`python main.py --action export-to-agent` to a JSON list in the raw-job format; `scrape_jobs.load_naukri_jobs()` reads
+`NAUKRI_JOBS_PATH`, and `run_scrape()` merges them into `output/raw_jobs.json` (deduped by `canonical_link`, capped at
+the job limit) -- on a fresh scrape, on a 6h cache hit (the cache keeps its original age) and in Naukri-only mode
+(`JOB_SOURCES=naukri`, no Apify call). From there the normal stages run unchanged; `source` stays `"Naukri"` through
+tailoring and into the Sheet's Source column. Auto_job_apply reads `output/scored_jobs.json` back
+(`--action import-scores`); this project never writes into Auto_job_apply.
+
+Local run (PowerShell): `$env:LOCAL_MODE="true"; $env:JOB_SOURCES="naukri"; python scripts/run_pipeline.py`.
+First runs: export at most 2 jobs (`AI_AGENT_EXPORT_LIMIT=2` in Auto_job_apply).
 
 Dashboard overrides for keywords / location / date window / limit live in `output/preferences.json` (Job Alerts page);
 the Modal cron never has that file and uses the defaults. Plan: Apify Free (~$5/month credit; runs are blocked when it
@@ -70,7 +86,7 @@ runs out) — per the project owner; TODO: confirm the current plan.
 | F | Status | starts `"Not Applied"`; then one of Not Applied, Applied, Interviewing, Offer, Rejected (manual / dashboard) |
 | G | Timestamp | run date |
 | H | Company Notes | `company_notes` |
-| I | Source | `"LinkedIn"` (pipeline) or the dashboard's source |
+| I | Source | the job's `source` (`"LinkedIn"` or `"Naukri"`; `"LinkedIn"` for older records without one) or the dashboard's source |
 | J | Status Updated | set when the dashboard changes the status |
 | K | Resume ID | dashboard resume id |
 | L | Match % | dashboard JD match |

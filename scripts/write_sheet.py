@@ -149,6 +149,19 @@ def build_row(job, today, source="LinkedIn"):
     ]
 
 
+def build_new_rows(saved_jobs, existing_canonical, today):
+    """Rows for saved jobs not yet in the Sheet (deduped by canonical link, also within this run).
+    Each row's Source is the job's own source (LinkedIn, Naukri); older records without one are LinkedIn."""
+    new_rows, seen_this_run = [], set()
+    for job in saved_jobs:
+        key = canonical_link(job["link"])
+        if key in existing_canonical or key in seen_this_run:
+            continue
+        seen_this_run.add(key)
+        new_rows.append(build_row(job, today, source=job.get("source") or "LinkedIn"))
+    return new_rows
+
+
 def read_tracker(sheet_id):
     """All tracker rows as dicts, each with its 1-based sheet row number."""
     values = gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", "Sheet1!A:L").get("values", [])
@@ -211,14 +224,7 @@ if __name__ == "__main__":
     existing_canonical = {canonical_link(link) for link in get_existing_links(sheet_id)}
 
     today = date.today().isoformat()
-    new_rows = []
-    seen_this_run = set()
-    for job in saved_jobs:
-        key = canonical_link(job["link"])
-        if key in existing_canonical or key in seen_this_run:
-            continue
-        seen_this_run.add(key)
-        new_rows.append(build_row(job, today))
+    new_rows = build_new_rows(saved_jobs, existing_canonical, today)
 
     if new_rows:
         try:

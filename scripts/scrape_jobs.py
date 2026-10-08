@@ -2,6 +2,11 @@
 
 Actor: curious_coder/linkedin-jobs-scraper
 Docs: https://apify.com/curious_coder/linkedin-jobs-scraper
+
+Second source: Naukri jobs handed off by the separate Auto_job_apply project as a JSON file
+(NAUKRI_JOBS_PATH) already in the raw-job format below. This script never scrapes Naukri; it
+only reads that file and merges it into output/raw_jobs.json (deduped by canonical link).
+JOB_SOURCES selects the sources (default "linkedin,naukri"; "naukri" alone skips the Apify call).
 """
 import os
 import sys
@@ -20,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import logging_config as lc  # noqa: E402
 import paths  # noqa: E402
 from activity import log_event  # noqa: E402
+from job_links import canonical_link  # noqa: E402
 
 log = lc.get_logger("scraper")
 
@@ -113,33 +119,133 @@ def scrape_jobs(keywords="Full Stack Java Spring Boot Angular AWS Developer", lo
     return jobs
 
 
-if __name__ == "__main__":
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    lc.configure_logging("pipeline")
+NAUKRI_SOURCE = "Naukri"
+KNOWN_SOURCES = ("linkedin", "naukri")
+NAUKRI_REQUIRED_FIELDS = ("title", "company", "link", "description")
+
+
+def job_sources():
+    """Enabled sources from JOB_SOURCES (comma separated). Default: both -- the Naukri source is a
+    no-op unless NAUKRI_JOBS_PATH points at a file, so the Modal cron is unaffected."""
+    raw = os.environ.get("JOB_SOURCES", "").strip().lower()
+    sources = tuple(s.strip() for s in raw.split(",") if s.strip()) or KNOWN_SOURCES
+    unknown = [s for s in sources if s not in KNOWN_SOURCES]
+    if unknown:
+        raise ValueError(f"JOB_SOURCES has unknown source(s) {unknown}; use {', '.join(KNOWN_SOURCES)}")
+    return sources
+
+
+def load_naukri_jobs(path=None, limit=None):
+    """Raw-job records exported by Auto_job_apply (`python main.py --action export-to-agent`).
+
+    Missing path/file == no Naukri jobs. Records missing a required field are skipped (logged
+    without their content). Extra fields (source_job_id, dedup_key, ...) are kept as-is.
+    """
+    path = path if path is not None else os.environ.get("NAUKRI_JOBS_PATH", "").strip()
+    if not path:
+        return []
+    path = Path(path)
+    if not path.exists():
+        log.info("No Naukri handoff file; Naukri source skipped", extra={"path": str(path)})
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise ValueError(f"Naukri handoff file must contain a JSON list: {path}")
+    jobs = []
+    for index, job in enumerate(data):
+        missing = [f for f in NAUKRI_REQUIRED_FIELDS
+                   if not isinstance(job, dict) or not str(job.get(f) or "").strip()]
+        if missing:
+            log.warning("Skipping invalid Naukri record", extra={"index": index, "missing": missing})
+            continue
+        jobs.append({**job, "source": job.get("source") or NAUKRI_SOURCE,
+                     "found_at": job.get("found_at") or date.today().isoformat()})
+    limit = effective_job_limit() if limit is None else limit
+    if len(jobs) > limit:
+        log.info("Naukri jobs capped at the job limit", extra={"loaded": len(jobs), "job_limit": limit})
+        jobs = jobs[:limit]
+    return jobs
+
+
+def merge_jobs(base, extra):
+    """base + extra jobs; first occurrence wins per canonical link (base jobs are never dropped)."""
+    seen = {canonical_link(j.get("link")) for j in base}
+    merged = list(base)
+    for job in extra:
+        key = canonical_link(job.get("link"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(job)
+    return merged
+
+
+def _write_raw_jobs(jobs, mtime=None):
+    """Write output/raw_jobs.json. `mtime` keeps the LinkedIn cache age honest: merging Naukri
+    jobs into a cached scrape must not make that scrape look newer than it is."""
+    CACHE_PATH.parent.mkdir(exist_ok=True)
+    CACHE_PATH.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+    if mtime is not None:
+        os.utime(CACHE_PATH, (time.time(), mtime))
+
+
+def run_scrape(force=False):
+    """The scrape stage: LinkedIn (Apify, 6h cache) and/or the Naukri handoff file -> raw_jobs.json."""
     import artifacts
 
-    force = "--force" in sys.argv or os.environ.get("FORCE_SCRAPE", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
+    sources = job_sources()
     # A failed Modal run may have already scraped today -- reuse that instead of
     # spending another paid Apify call on the local recovery run.
     artifacts.pull("raw_jobs.json")
+    naukri_jobs = load_naukri_jobs() if "naukri" in sources else []
     cache_age = time.time() - CACHE_PATH.stat().st_mtime if CACHE_PATH.exists() else None
+    cache_fresh = not force and cache_age is not None and cache_age < CACHE_MAX_AGE_SECONDS
 
-    if not force and cache_age is not None and cache_age < CACHE_MAX_AGE_SECONDS:
+    def cached_non_naukri():
         cached = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-        log.info("Using cached scrape (pass --force or set FORCE_SCRAPE=true to re-scrape)",
-                 extra={"cached_count": len(cached), "cache_age_minutes": round(cache_age / 60), "path": str(CACHE_PATH)})
-        artifacts.push("raw_jobs.json")
-        sys.exit(0)
+        return [j for j in cached if j.get("source") != NAUKRI_SOURCE]
 
-    prefs = load_preferences()
-    limit = prefs["limit"]
-    log.info("Scrape started", extra={"mode": "local" if LOCAL_MODE else "cloud", "job_limit": limit})
-    jobs = scrape_jobs(keywords=prefs["keywords"], location=prefs["location"],
-                       date_posted=prefs["date_posted"], limit=limit)
-    CACHE_PATH.parent.mkdir(exist_ok=True)
-    CACHE_PATH.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+    if "linkedin" not in sources:
+        # Naukri-only: never call Apify. Keep a still-fresh LinkedIn cache (and its age);
+        # otherwise mark the file stale so the next LinkedIn run scrapes as usual.
+        base = cached_non_naukri() if cache_fresh else []
+        mtime = CACHE_PATH.stat().st_mtime if cache_fresh else 0
+        log.info("Naukri-only run: Apify skipped",
+                 extra={"cached_count": len(base), "naukri_count": len(naukri_jobs)})
+    elif cache_fresh:
+        if not naukri_jobs:  # unchanged pre-Naukri behaviour
+            cached = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+            log.info("Using cached scrape (pass --force or set FORCE_SCRAPE=true to re-scrape)",
+                     extra={"cached_count": len(cached), "cache_age_minutes": round(cache_age / 60),
+                            "path": str(CACHE_PATH)})
+            artifacts.push("raw_jobs.json")
+            return cached
+        base, mtime = cached_non_naukri(), CACHE_PATH.stat().st_mtime
+        log.info("Using cached scrape; merging Naukri jobs",
+                 extra={"cached_count": len(base), "cache_age_minutes": round(cache_age / 60)})
+    else:
+        prefs = load_preferences()
+        limit = prefs["limit"]
+        log.info("Scrape started", extra={"mode": "local" if LOCAL_MODE else "cloud", "job_limit": limit})
+        base = scrape_jobs(keywords=prefs["keywords"], location=prefs["location"],
+                           date_posted=prefs["date_posted"], limit=limit)
+        mtime = None
+        log.info("Scrape completed", extra={"scraped_count": len(base), "path": str(CACHE_PATH)})
+        log_event("jobs_found", f"Found {len(base)} new jobs from LinkedIn", count=len(base), source="LinkedIn")
+
+    jobs = merge_jobs(base, naukri_jobs)
+    _write_raw_jobs(jobs, mtime)
     artifacts.push("raw_jobs.json")
-    log.info("Scrape completed", extra={"scraped_count": len(jobs), "path": str(CACHE_PATH)})
-    log_event("jobs_found", f"Found {len(jobs)} new jobs from LinkedIn", count=len(jobs), source="LinkedIn")
+    if naukri_jobs:
+        added = len(jobs) - len(base)
+        log.info("Naukri jobs merged", extra={"naukri_count": len(naukri_jobs), "added": added, "total": len(jobs)})
+        log_event("jobs_found", f"Loaded {added} Naukri jobs from Auto_job_apply", count=added, source=NAUKRI_SOURCE)
+    return jobs
+
+
+if __name__ == "__main__":
+    lc.configure_logging("pipeline")
+    force = "--force" in sys.argv or os.environ.get("FORCE_SCRAPE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    run_scrape(force=force)

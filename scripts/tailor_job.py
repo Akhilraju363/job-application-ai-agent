@@ -126,7 +126,7 @@ def verified_resume(job, base_md):
     import tailoring_service  # lazy: it imports this module lazily too
 
     norm = jd_analysis.normalize_job(job.get("title"), job.get("company"), job.get("link"), job.get("description"))
-    norm["source"] = "LinkedIn"
+    norm["source"] = job.get("source") or "LinkedIn"  # scraped jobs carry their source (LinkedIn, Naukri)
     if job.get("score") is not None:
         norm["pipeline_score"] = job["score"]
     rec = tailoring_service.tailor(norm, source="scraped", base_md=base_md, job_key=canonical_link(job.get("link")))
@@ -274,7 +274,8 @@ if __name__ == "__main__":
 
                 by_link[key] = {
                     "title": job["title"], "company": job["company"], "link": link,
-                    "score": job["score"], "drive_folder_link": folder_link,
+                    "score": job["score"], "source": job.get("source") or "LinkedIn",
+                    "drive_folder_link": folder_link,
                     "resume_link": resume_link, "status": "saved",
                     "tailored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 }

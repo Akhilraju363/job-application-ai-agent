@@ -256,7 +256,10 @@ def sources():
 
     job_sources = [{"id": "linkedin", "name": "LinkedIn", "via": "Apify",
                     "active": _env("apify_api_key"),
-                    "detail": "Full-Stack Java/Spring Boot/Angular postings via the Apify LinkedIn actor"}]
+                    "detail": "Full-Stack Java/Spring Boot/Angular postings via the Apify LinkedIn actor"},
+                   {"id": "naukri", "name": "Naukri", "via": "Auto_job_apply handoff file",
+                    "active": _env("NAUKRI_JOBS_PATH"),
+                    "detail": "Naukri jobs exported by the local Auto_job_apply scanner (NAUKRI_JOBS_PATH)"}]
     services = [
         {"id": "groq", "name": "Groq", "active": _env("GROQ_API_KEY") and not llm.IS_LOCAL},
         {"id": "openrouter", "name": "OpenRouter", "active": _env("OPENROUTER_API_KEY", "open_router_apikey")
