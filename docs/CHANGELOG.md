@@ -2,6 +2,7 @@
 
 Newest first. One line per change. Entries up to 2026-09-28 come from `git log`; 2026-09-29 entries are uncommitted.
 
+- 2026-10-08 (uncommitted) fix: canonical LinkedIn URL is `linkedin.com/in/akhildalali-320204233` (base resume + tests)
 - 2026-10-07 (uncommitted) feat: verified local PDF artifacts (`scripts/resume_artifacts.py`, `resume_store.mark_artifact`); pipeline publishes `v<n>.pdf` and uploads that file to Drive; saved records carry `resume_id`/`resume_version`
 - 2026-10-07 (uncommitted) feat: Naukri source from the Auto_job_apply handoff file (`NAUKRI_JOBS_PATH`, `JOB_SOURCES=naukri` skips Apify); `source` kept through tailoring + Sheet; dashboard lists Naukri
 - 2026-09-29 (uncommitted) docs: short `CLAUDE.md`; add `docs/ARCHITECTURE|CONFIG|RUNBOOK|MEMORY|TASKS|CHANGELOG.md` and `docs/prompts/`
