@@ -67,7 +67,7 @@ class WithContact(unittest.TestCase):
 
     def test_real_base_resume_gets_exactly_one_canonical_linkedin(self):
         base = (paths.ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8")
-        canonical = "linkedin.com/in/akhildalali-320204233"
+        canonical = "linkedin.com/in/akhil-dalali-320204233"
         full = f"+91 90000 00000 | name@example.com | Bengaluru, India | {canonical}"
         with mock.patch.dict(os.environ, {"RESUME_CONTACT_LINE": full}):
             out = contact.with_contact(base)

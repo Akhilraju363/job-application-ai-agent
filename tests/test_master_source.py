@@ -28,7 +28,7 @@ import tailoring_service as ts
 MASTER_PATH = paths.ROOT / "resume" / "base_resume.md"
 MASTER = MASTER_PATH.read_text(encoding="utf-8").replace("\r", "")
 NAME, HEADLINE = "# AKHIL DALALI", "Software Engineer | Java | Spring Boot | Angular | AWS"
-LINKEDIN = "linkedin.com/in/akhildalali-320204233"
+LINKEDIN = "linkedin.com/in/akhil-dalali-320204233"
 # Same shape as the real RESUME_CONTACT_LINE; the real phone/email never go in this public repo.
 CONTACT = f"name@example.com | +91 90000 00000 | {LINKEDIN} | Bengaluru, Karnataka, India"
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
