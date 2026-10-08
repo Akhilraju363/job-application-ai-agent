@@ -56,6 +56,13 @@ Template: `.env.example`.
 | `curious_coder~linkedin-jobs-scraper` | **in use** (`scripts/scrape_jobs.py ACTOR_ID`) | `POST https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items?token=…`, timeout 300 s. Input: `keywords` (default `Full Stack Java Spring Boot Angular AWS Developer`), `location` (`India`), `datePosted` (`past24Hours` \| `pastWeek` \| `pastMonth`), `limitPerSource` (= job limit), `under10Applicants: false`, `autoConvertToAiSearch: true`, `scrapeCompany: false` |
 | `agentx/all-jobs-scraper` (platforms Naukri, foundit; country India) | **planned — not in code** | TODO: confirm the actor id and input params; test with `limit=2` before wiring it in. Naukri itself now arrives through the Auto_job_apply handoff (below) |
 
+## Verified PDF artifacts
+
+`python scripts/resume_artifacts.py --resume-id <id>` (or `--link <job url>`) publishes the latest verified
+version of a tailored resume as `output/generated_resumes/<id>/v<n>.pdf` (Google Docs export via `gws`;
+needs `RESUME_CONTACT_LINE` like every export). Idempotent; refuses unverified versions. The pipeline does
+this automatically for every saved job.
+
 ## Naukri (Auto_job_apply handoff, local only)
 
 Naukri jobs are discovered by the separate **Auto_job_apply** project (headed Playwright browser with the owner's

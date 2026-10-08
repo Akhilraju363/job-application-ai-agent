@@ -80,6 +80,16 @@ retried on the next run; `modal_app.reconcile_qualified` raises (→ Telegram) i
 ### 4. Google Sheet row (`write_sheet.build_row`) — see `CONFIG.md` for the column layout.
 
 ### Dashboard resume record — `output/generated_resumes/<resume_id>/meta.json`
+
+**Verified PDF artifact** (`scripts/resume_artifacts.py publish_verified_pdf`): for a version whose
+`validation.ok` is true, `v<n>.pdf` is rendered from exactly `v<n>.md` through the existing
+`tailor_job.export_doc_file` (fixed header + contact line), structure-checked (stdlib), published
+atomically and recorded as `versions[n].exports.pdf` plus `versions[n].artifacts.pdf =
+{file, version, verified, md_sha1, job_key, master_version, size, generated_at}`. The scheduled
+pipeline publishes it for every saved job and uploads that same file to Drive; saved entries in
+`tailored_jobs.json` now also carry `resume_id` and `resume_version`. Unverified versions are never
+exported. Consumers (Auto_job_apply's Naukri upload) re-check identity, freshness and text.
+
 Created by `tailoring_service.tailor()` via `resume_store.create()`: source, job, analysis, match, provider, `dedupe_key`,
 `master_version` (12-char SHA-1 of the master), versions with markdown + validation. TODO: confirm full field list
 against `scripts/resume_store.py` if you need it.

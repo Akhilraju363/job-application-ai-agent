@@ -121,6 +121,18 @@ def mark_export(rid, n, fmt):
         _write_meta(rid, meta)
 
 
+def mark_artifact(rid, n, fmt, info):
+    """Record a published, verified local export of a version (see resume_artifacts.py):
+    versions[n].artifacts[fmt] = {file, md_sha1, job_key, verified, ...}."""
+    with _lock:
+        meta = get(rid, with_markdown=False)
+        for v in meta["versions"]:
+            if v["n"] == int(n):
+                v.setdefault("artifacts", {})[fmt] = info
+        meta["updated_at"] = now_iso()
+        _write_meta(rid, meta)
+
+
 def mark_drive(rid, n, fmt, info):
     """Record a version's Google Drive outcome for one format: {status: uploaded|failed, ...}."""
     with _lock:

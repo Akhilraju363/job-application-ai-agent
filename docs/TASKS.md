@@ -25,6 +25,8 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       owner chose to keep the current order for now.
 
 ## Done
+- [x] 2026-10-07 (uncommitted) Local verified PDF artifact per tailored job (`scripts/resume_artifacts.py`);
+      the pipeline publishes it and uploads that file to Drive; saved records carry `resume_id`/`resume_version`.
 - [x] 2026-10-07 (uncommitted) Naukri source via the Auto_job_apply JSON handoff (`NAUKRI_JOBS_PATH`,
       `JOB_SOURCES`); merge also on the 6h cache path; `source` carried through tailoring and the Sheet.
 - [x] 2026-09-29 Project docs: `CLAUDE.md` (short), `docs/ARCHITECTURE|CONFIG|RUNBOOK|MEMORY|TASKS|CHANGELOG.md`, `docs/prompts/`.
