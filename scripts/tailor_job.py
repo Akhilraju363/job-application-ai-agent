@@ -32,6 +32,7 @@ from validate_resume import validate
 from contact import contact_line, with_contact  # noqa: E402
 from resume_role import export_filename, fixed_header  # noqa: E402
 import paths  # noqa: E402
+import employment_history  # noqa: E402
 from llm import call_llm, validate_local_setup  # noqa: E402 -- LLM endpoint/model/retry config, .env-driven
 from job_links import canonical_link  # noqa: E402
 import logging_config as lc  # noqa: E402
@@ -40,27 +41,36 @@ log = lc.get_logger("tailoring")
 
 TAILOR_PROMPT = """You are tailoring a candidate's resume to a specific job posting.
 
-Hard rule: never invent experience, employers, tools, dates, or metrics. Only reorder and
-reword content that already exists in the base resume below. If the job wants something the
-resume doesn't have, leave it out.
+The BASE RESUME below is the authoritative source of truth about the candidate. Never invent
+experience, employers, tools, dates, locations, achievements or metrics -- not even to match a
+keyword. Only reorder and reword content that already exists in the base resume, and only where
+the base resume's facts already support the new wording. If the job wants something the resume
+doesn't have, leave it out.
+
+EMPLOYMENT HISTORY IS IMMUTABLE. Copy these protected lines character for character, in this
+order, each employer exactly once. Do not combine, split, move or rewrite them: never add a
+location to a job-title line, never move a location off its date line, never change a date,
+title, employer name, punctuation or capitalization, never reorder, drop or repeat an employer.
+PROTECTED EMPLOYMENT LINES:
+__EMPLOYMENT__
 
 Preserve the section headers exactly: ## Summary, ## Skills, ## Experience, ## Education,
 ## Certifications.
-- Summary: reword to mirror the job's language/keywords.
+- Summary: reword to mirror the job's language/keywords, using only facts in the base resume.
 - Skills: reorder so items matching the job's matched requirements appear first.
-- Experience: reorder/re-emphasize existing bullets toward what the job asks for. Do not alter
-  dates, employers, titles, or the substance of any bullet -- only reorder bullets and lightly
-  reword phrasing, never metrics. Never add or remove bullets, and never move a technology from
-  one employer's section to another (e.g. a language used at one job must not appear under a
-  different job). Keep every "###" employer heading, the job-title line under it and its
-  date line exactly as written, in the same order.
+- Experience: under each protected employer block, reorder/re-emphasize that employer's existing
+  bullets toward what the job asks for -- only reorder bullets and lightly reword phrasing, never
+  metrics or substance. Never add or remove bullets, and never move a bullet or a technology from one
+  employer's section to another (e.g. a language used at one job must not appear under a
+  different job).
 - Keep the header (name, headline, LinkedIn line) exactly as written.
 - Keep exactly the base resume's sections in the same order. Never add a section (no Projects,
   Achievements, Technical Highlights) and never remove or rename one.
 - Skills: only items already in the base resume's Skills section may appear.
 - Education and Certifications: carry over unchanged.
 
-Respond with ONLY the tailored resume in markdown, no commentary, no code fences.
+Respond with ONLY the tailored resume in markdown, in the base resume's format -- no
+explanations, no notes before or after it, no code fences.
 
 BASE RESUME:
 __RESUME__
@@ -104,6 +114,7 @@ def slugify(title):
 def tailor_text(job, resume_text, feedback=""):
     prompt = (
         TAILOR_PROMPT
+        .replace("__EMPLOYMENT__", employment_history.protected_lines(resume_text))
         .replace("__RESUME__", resume_text)
         .replace("__TITLE__", str(job.get("title")))
         .replace("__COMPANY__", str(job.get("company") or "(not specified)"))

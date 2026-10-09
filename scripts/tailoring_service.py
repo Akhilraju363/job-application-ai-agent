@@ -20,7 +20,9 @@ import hashlib
 import re
 
 import activity
+import bullet_tailoring
 import contact
+import employment_history
 import jd_analysis
 import logging_config as lc
 import no_fabrication as nf
@@ -166,8 +168,26 @@ def verify(markdown, base_md, jd_terms=(), analysis=None, match=None, title=""):
     if placeholder.lower() in markdown.lower() and placeholder.lower() not in base_md.lower():
         problems.append(f'"{placeholder}" is a tracker placeholder, not an employer -- remove it from the resume')
     ats = ats_validation(markdown, base_md, analysis, match, title, checks, unsupported)
-    warnings = [f"Omitted from this version: {r}" for r in nf.omitted_roles(base_md, markdown)]
-    return {"ok": not problems, "problems": problems, "warnings": warnings, "ats": ats}
+    return {"ok": not problems, "problems": problems, "warnings": [], "ats": ats}
+
+
+def bullet_mode():
+    """Local models (llm.IS_LOCAL) tailor bullet by bullet; cloud models keep the full rewrite."""
+    import llm
+    return llm.IS_LOCAL
+
+
+def locked_employment(markdown, base_md):
+    """A model rewrite with the master's employment history put back (employment_history.restore):
+    exact employer/title/date lines, master order. Returns (markdown, restore notes); when restoring
+    isn't unambiguous the text is returned as-is and verification rejects it."""
+    restored, notes = employment_history.restore(markdown, base_md)
+    if notes is None:
+        verify_log.warning("Employment history could not be restored unambiguously; verification decides")
+        return markdown, []
+    if notes:
+        verify_log.info("Employment history restored from the master resume", extra={"restored_count": len(notes)})
+    return restored, notes
 
 
 def conservative_resume(base_md, analysis, match):
@@ -272,28 +292,58 @@ def _tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key
     def check(md, m):
         return verify(md, base_md, jd_terms=m["missing_skills"], analysis=analysis, match=m, title=job["title"])
 
-    feedback, markdown, verdict, llm_problems, kind_override = "", "", None, [], None
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    # Employment history (employer/title/date lines, role order) is likewise the master's: the
+    # model's version is replaced by it where that is unambiguous, and verified either way.
+
+    feedback, markdown, verdict, llm_problems, kind_override, bullets = "", "", None, [], None, None
+    if bullet_mode():
+        # Local models reword single master bullets, each checked against its own source; code
+        # assembles the resume (bullet_tailoring). One LLM call; no whole-resume rewrite.
+        attempt, done = 1, False
         stage("generate")
-        markdown = resume_role.fixed_header(
-            _strip_fences(tailor_job.tailor_text(tailor_input, base_md, feedback=feedback)), base_md)
-        log.info("Resume generation completed", extra={"attempt": attempt, "chars": len(markdown)})
+        tailored, bullets = bullet_tailoring.tailor(tailor_input, base_md, analysis, match)
+        markdown = resume_role.fixed_header(conservative_resume(tailored, analysis, match), base_md)
+        log.info("Resume generation completed", extra={
+            "attempt": attempt, "chars": len(markdown), "strategy": "bullets", "rewritten": bullets["rewritten"],
+            "rejected": bullets["rejected"], "unchanged": bullets["unchanged"] + bullets["missing"]})
         stage("validate")
         match = jd_analysis.compute_match(analysis, base_md, markdown)
         verdict = check(markdown, match)
         log.info("ATS validation completed", extra={"attempt": attempt, "ats_score": verdict["ats"].get("score"),
                                                      "ats_ok": verdict["ats"].get("ok")})
-        if verdict["ok"]:
+        if verdict["ok"] and bullets["rewritten"]:
             verify_log.info("No-fabrication verification passed", extra={"attempt": attempt})
-            break
-        llm_problems = verdict["problems"]
-        verify_log.warning("Resume fact-check failed" if attempt < MAX_ATTEMPTS else "Resume fact-check failed after retry",
-                           extra={"attempt": attempt, "problem_count": len(llm_problems), "problems": _brief(llm_problems)})
-        if attempt < MAX_ATTEMPTS:
-            log.info("Retrying resume generation", extra={"attempt": attempt + 1})
-        feedback = "- " + "\n- ".join(verdict["problems"])
+            done = True
+        else:
+            llm_problems = verdict["problems"] or ["no bullet rewrite passed the source-evidence check"]
+            verify_log.warning("Bullet tailoring produced no verified rewrite",
+                               extra={"problem_count": len(verdict["problems"]), "problems": _brief(llm_problems)})
     else:
-        # Both model rewrites failed fact-checking. Fall back to a reorder-only version of the
+        done = False
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            stage("generate")
+            markdown = resume_role.fixed_header(
+                _strip_fences(tailor_job.tailor_text(tailor_input, base_md, feedback=feedback)), base_md)
+            markdown, restored = locked_employment(markdown, base_md)
+            log.info("Resume generation completed", extra={"attempt": attempt, "chars": len(markdown)})
+            stage("validate")
+            match = jd_analysis.compute_match(analysis, base_md, markdown)
+            verdict = check(markdown, match)
+            verdict["warnings"] += [f"Corrected from the master resume: {n}" for n in restored]
+            log.info("ATS validation completed", extra={"attempt": attempt, "ats_score": verdict["ats"].get("score"),
+                                                         "ats_ok": verdict["ats"].get("ok")})
+            if verdict["ok"]:
+                verify_log.info("No-fabrication verification passed", extra={"attempt": attempt})
+                done = True
+                break
+            llm_problems = verdict["problems"]
+            verify_log.warning("Resume fact-check failed" if attempt < MAX_ATTEMPTS else "Resume fact-check failed after retry",
+                               extra={"attempt": attempt, "problem_count": len(llm_problems), "problems": _brief(llm_problems)})
+            if attempt < MAX_ATTEMPTS:
+                log.info("Retrying resume generation", extra={"attempt": attempt + 1})
+            feedback = "- " + "\n- ".join(verdict["problems"])
+    if not done:
+        # The model's output failed fact-checking. Fall back to a reorder-only version of the
         # master resume rather than leaving the user with nothing (or an unverified rewrite).
         log.info("Using reorder-only fallback", extra={"attempts": attempt})
         markdown = resume_role.fixed_header(conservative_resume(base_md, analysis, match), base_md)
@@ -306,7 +356,12 @@ def _tailor(job, *, source, resume_id=None, on_stage=None, base_md=None, job_key
 
     stage("prepare")
     validation = {**verdict, "attempts": attempt, "llm_problems": llm_problems if kind_override else []}
-    if kind_override:
+    if bullets is not None:
+        validation["bullet_tailoring"] = {**bullets, "applied": not kind_override}
+    if kind_override and bullets is not None:
+        validation["notice"] = ("No bullet rewrite could be verified against your master resume, so this version "
+                                "only re-orders your existing skills and bullets. Nothing was reworded.")
+    elif kind_override:
         validation["notice"] = (f"The model's rewrite failed fact-checking after {attempt} attempts "
                                 "(it added claims your master resume doesn't support), so this version "
                                 "only re-orders your existing skills and bullets. Nothing was reworded.")

@@ -141,7 +141,7 @@ class NoFabrication(unittest.TestCase):
         self.assertFlags(MASTER.replace("Jan 2022 – Jun 2024", "Jan 2021 – Jun 2024"), "dates changed")
 
     def test_changed_location(self):
-        self.assertFlags(MASTER.replace("Jun 2024 | Chennai, India", "Jun 2024 | Pune, India"), "dates changed")
+        self.assertFlags(MASTER.replace("Jun 2024 | Chennai, India", "Jun 2024 | Pune, India"), "location changed")
 
     def test_changed_education(self):
         self.assertFlags(MASTER.replace("Sri Venkateswara University", "Anna University"), "education")
