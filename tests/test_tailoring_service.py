@@ -116,11 +116,11 @@ class Verification(unittest.TestCase):
         self.assertFalse(v["ok"])
         self.assertFalse(ts.verify(BASE + "\n<b>bold</b>\n", BASE)["ok"])
 
-    def test_omitted_role_is_a_warning_not_a_block(self):
+    def test_omitted_role_blocks(self):
         t = BASE[:BASE.index("### Software Engineer | Java | Microservices")] + BASE[BASE.index("## Education"):]
         v = ts.verify(t, BASE)
-        self.assertTrue(v["ok"])
-        self.assertTrue(any("LTIMindtree" in w for w in v["warnings"]))
+        self.assertFalse(v["ok"])
+        self.assertTrue(any("employer missing" in p and "LTIMindtree" in p for p in v["problems"]), v["problems"])
 
 
 class Storage(unittest.TestCase):

@@ -158,7 +158,9 @@ job-apply-agent/
     tailoring_service.py     # ONE shared tailor path (manual JD + scraped job): analyze -> match -> tailor_job.tailor_text -> verify
     master_resume.py         # Master Resume editor: base_resume.md <-> structured sections, field validation, atomic save (GET/PUT /api/master-resume)
     jd_analysis.py           # JD sanitising, LLM requirement extraction, code-verified match vs base resume
-    no_fabrication.py        # verifier: rejects invented tech/employers/dates/numbers; reorder-only fallback lives in tailoring_service
+    no_fabrication.py        # verifier: rejects invented tech/employers/dates/numbers; check_employment = employers/titles/dates/locations/order immutable; reorder-only fallback lives in tailoring_service
+    bullet_tailoring.py      # local models: reword single master bullets by id, each checked against its own source; code assembles the resume
+    employment_history.py    # puts the master's employer/title/date lines + role order back into a model rewrite (only when unambiguous); feeds the prompt's protected lines
     resume_store.py          # output/generated_resumes/<id>/ (versions, exports)
     tracker_service.py       # cached, failure-tolerant wrapper over write_sheet.py
     dashboard_data.py / dashboard_tasks.py / dashboard_server.py   # dashboard read models, background tasks, stdlib HTTP server
@@ -281,6 +283,26 @@ verified resumes (or the reorder-only fallback) are ever exported to Drive
 apply: `no_fabrication.check_no_fabrication` gates every export and tracker save; the automated
 pipeline's 8+ cutoff is untouched (human-initiated dashboard actions may go below it, with a UI
 warning). Tests import `tests/fixtures.py` first, which disables `.env` loading.
+
+**Local models tailor bullet by bullet.** When `llm.IS_LOCAL`, `tailoring_service._tailor` skips the whole-resume
+rewrite: `bullet_tailoring.tailor` sends every master bullet with a stable id (`E<employer>.B<bullet>`) in one JSON
+call and accepts a rewrite only if `check_rewrite` finds nothing the source bullet doesn't say (no added term --
+tech vocabulary, master skills or any JD term --, no dropped technology, no new number, no new leadership/ownership/
+impact/scale word, no "to improve X" goal restated as an achieved result, not merely the source with words cut out,
+>=60% of words shared both ways). Identical or punctuation-only output counts as unchanged. Rejected or missing
+rewrites keep the original. The master with
+accepted rewrites is re-ordered by `conservative_resume` and verified as usual; no accepted rewrite (or a failed
+verify) -> the reorder-only fallback. Per-bullet results are stored in the version's `validation.bullet_tailoring`.
+Cloud providers keep the full-rewrite path below unchanged.
+
+**Employment history is immutable.** After each model rewrite (not user edits), `tailoring_service.locked_employment`
+runs `employment_history.restore`: when every master employer appears exactly once and each role block is only
+metadata lines + bullets, it puts back the master's exact `### Employer` / title / `dates | location` lines and role
+order, keeping the model's bullets under their employer (a `Corrected from the master resume` warning records it).
+Otherwise the text is left as-is and `no_fabrication.check_employment` rejects it with the employer and field
+(employer missing / duplicated / not in master, reordered, title, dates, location changed/moved/added, date line
+reformatted, unexpected text in a role block) -- then the usual retry and reorder-only fallback. Dropping an employer
+is a block, not a warning (since 2026-10-09).
 
 **Master Resume page** (`web/js/pages/masterResume.js`, `/master-resume`). Edits `resume/base_resume.md` section
 by section through `GET`/`PUT /api/master-resume` (`scripts/master_resume.py`): the UI sends structured sections plus

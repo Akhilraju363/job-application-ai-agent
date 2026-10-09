@@ -8,6 +8,12 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       UI redesign + `docs/ui/`, project docs). Not committed or pushed yet.
 
 ## Next
+- [ ] Local bullet tailoring is still shallow -- a model limit, not the checker: across 7 SourcingXPress probes on
+      2026-10-09 (original prompt re-run + 5 prompt variants + final harness run) qwen2.5:7b returned 0-2 changed
+      bullets of 18, and every change was a deletion or punctuation. The final run fell back to reorder-only. The 5
+      rewrites of the 11:53 run were run-to-run variance. Options to evaluate (owner's call): a larger local model,
+      or one call per employer (more latency). Summary stays the master's; Skills are re-ordered only. "maintaining"
+      -> "managing" stays blocked by design.
 - [ ] Naukri on Modal: needs the handoff file mirrored through Drive (`artifacts.py`); not implemented -- local only.
 - [ ] (title, company) dedupe across sources: the same posting on LinkedIn and Naukri has two links and is scored twice.
 - [ ] Test `agentx/all-jobs-scraper` (platforms Naukri, foundit; country India) with `limit=2`; record its input params and
@@ -25,6 +31,14 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       owner chose to keep the current order for now.
 
 ## Done
+- [x] 2026-10-09 (uncommitted) Bullet prompt v2 (restructure, not synonym swaps; examples; instruction repeated after
+      the bullets) + two stricter `check_rewrite` rules (goal -> achieved result; deletion-only); punctuation-only
+      output counts as unchanged. Probe script: `output/test_runs/bullet_prompt_probe.py` (bullet call only, local).
+- [x] 2026-10-09 (uncommitted) Evidence-grounded bullet tailoring for local models (`scripts/bullet_tailoring.py`,
+      `tests/test_bullet_tailoring.py`); SourcingXPress isolated run passed with genuine rewrites.
+- [x] 2026-10-09 (uncommitted) Immutable employment history: deterministic restore + per-field employment validation
+      + protected lines in the tailor prompt; `tests/test_employment_history.py`. Isolated harness:
+      `output/test_runs/isolated_tailor_test.py <company>` (local only, gitignored).
 - [x] 2026-10-07 (uncommitted) Local verified PDF artifact per tailored job (`scripts/resume_artifacts.py`);
       the pipeline publishes it and uploads that file to Drive; saved records carry `resume_id`/`resume_version`.
 - [x] 2026-10-07 (uncommitted) Naukri source via the Auto_job_apply JSON handoff (`NAUKRI_JOBS_PATH`,

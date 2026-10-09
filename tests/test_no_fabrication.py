@@ -27,10 +27,6 @@ class Faithful(unittest.TestCase):
         t = BASE.replace("building Java and Angular applications", "building full stack Java and Angular applications")
         self.assertEqual(check(t, jd_terms=["Kafka"]), [])
 
-    def test_omitting_a_role_is_allowed_but_reported(self):
-        t = BASE[:BASE.index("### Software Engineer | Java | Microservices")] + BASE[BASE.index("## Education"):]
-        self.assertEqual(check(t), [])
-        self.assertEqual(nf.omitted_roles(BASE, t), ["Software Engineer | Java | Microservices — LTIMindtree"])
 
 
 class Fabrication(unittest.TestCase):
@@ -58,6 +54,12 @@ class Fabrication(unittest.TestCase):
         t = BASE.replace("- Worked with PostgreSQL databases for API-driven data processing.",
                          "- Worked with Java and PostgreSQL databases for API-driven data processing.")
         self.assertFlags(t, "java")
+
+    def test_omitting_a_role_is_rejected(self):
+        # Employment history is immutable: every master employer stays (owner decision 2026-10-09).
+        t = BASE[:BASE.index("### Software Engineer | Java | Microservices")] + BASE[BASE.index("## Education"):]
+        self.assertFlags(t, "employer missing: 'Software Engineer | Java | Microservices — LTIMindtree")
+        self.assertEqual(nf.omitted_roles(BASE, t), ["Software Engineer | Java | Microservices — LTIMindtree"])
 
     def test_role_heading_changed(self):
         self.assertFlags(BASE.replace("Zyter Technologies", "Zyter Technologies Inc"), "roles not in master")

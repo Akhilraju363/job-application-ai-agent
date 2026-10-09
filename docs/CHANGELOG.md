@@ -2,6 +2,9 @@
 
 Newest first. One line per change. Entries up to 2026-09-28 come from `git log`; 2026-09-29 entries are uncommitted.
 
+- 2026-10-09 (uncommitted) fix: bullet prompt asks for restructuring with examples (repeated after the bullets); `check_rewrite` rejects goal -> achieved-result upgrades and deletion-only rewrites; punctuation-only output = unchanged; `docs/prompts/tailoring.md` synced
+- 2026-10-09 (uncommitted) feat: local models tailor bullet by bullet (`scripts/bullet_tailoring.py`): stable bullet ids, one JSON call, each rewrite checked against its own source bullet, rejected ones keep the original; cloud path unchanged
+- 2026-10-09 (uncommitted) fix: employment history immutable -- `employment_history.restore` puts the master's employer/title/date lines and role order back into model rewrites; `no_fabrication.check_employment` checks title/dates/location separately with per-employer messages and rejects missing/duplicated employers; tailor prompt lists the protected lines
 - 2026-10-08 (uncommitted) fix: revert the LinkedIn URL change below; canonical stays `linkedin.com/in/akhil-dalali-320204233` (the non-hyphenated URL returns 404)
 - 2026-10-08 fix: canonical LinkedIn URL is `linkedin.com/in/akhildalali-320204233` (base resume + tests) -- reverted above
 - 2026-10-07 (uncommitted) feat: verified local PDF artifacts (`scripts/resume_artifacts.py`, `resume_store.mark_artifact`); pipeline publishes `v<n>.pdf` and uploads that file to Drive; saved records carry `resume_id`/`resume_version`

@@ -8,9 +8,12 @@ a recruiter. Pure functions, no I/O, no LLM.
 What is verified (each returns human-readable violations, empty list == clean):
   * header: name, headline + contact line unchanged
   * structure: exactly the master's sections, in the master's order
-  * experience: same employer headings, job-title lines and "dates | location" lines, same
-    order (dash/whitespace differences ignored); no extra bullets; every
-    bullet must be a rewording of a bullet under the *same* employer
+  * experience (check_employment): every master employer exactly once, in the master's order,
+    none added; per employer the job-title line, the date range and the location compared as
+    separate fields (dash/whitespace differences ignored, nothing else), with the field and
+    employer named in each violation; no text in a role block besides those lines and bullets
+  * bullets: no extra bullets; every bullet must be a rewording of a bullet under the *same*
+    employer
   * technologies: nothing from a broad tech vocabulary (or the JD's missing skills) may
     appear unless the master resume already has it; nothing from the Skills list may move
     into an employer whose master section doesn't mention it (e.g. Python into the
@@ -116,6 +119,17 @@ def item_key(item):
     return norm_ws(re.sub(r"\(.*?\)", "", item)).lower()
 
 
+def split_date_line(line):
+    """'Jan 2022 – Jun 2024 | Chennai, India' -> ('Jan 2022 – Jun 2024', 'Chennai, India').
+    The segments with a year are the date range, the rest the location; None when absent."""
+    if line is None:
+        return None, None
+    parts = [norm_ws(p) for p in line.split("|") if p.strip()]
+    dates = " | ".join(p for p in parts if _YEAR.search(p))
+    location = " | ".join(p for p in parts if not _YEAR.search(p))
+    return dates or None, location or None
+
+
 def parse_resume(md):
     header, sections, cur = [], {}, None
     for ln in md.splitlines():
@@ -129,23 +143,31 @@ def parse_resume(md):
 
     # A role is "### Employer", an optional job-title line, then the "dates | location" line
     # (the first line with a year). Older "### Title — Employer" resumes have no title line.
+    # Non-bullet lines after the date line ("extra") and title/date lines that came after a
+    # bullet ("late_meta") are recorded so check_employment can reject them.
     roles, role = [], None
     for ln in sections.get("experience", []):
         if ln.startswith("### "):
-            role = {"heading": norm_ws(ln[4:]), "title": None, "date": None, "bullets": [], "lines": [ln]}
+            role = {"heading": norm_ws(ln[4:]), "title": None, "date": None, "bullets": [], "lines": [ln],
+                    "extra": [], "late_meta": []}
             roles.append(role)
         elif role is not None:
             role["lines"].append(ln)
             if ln.startswith("- "):
                 role["bullets"].append(ln[2:].strip())
             elif ln.strip() and role["date"] is None:
+                if role["bullets"]:
+                    role["late_meta"].append(norm_ws(ln))
                 if _YEAR.search(ln) or role["title"] is not None:
                     role["date"] = norm_ws(ln)
                 else:
                     role["title"] = norm_ws(ln)
+            elif ln.strip():
+                role["extra"].append(norm_ws(ln))
     for r in roles:
         r["text"] = "\n".join(r["lines"])
         r["label"] = f"{r['title']} — {r['heading']}" if r["title"] else r["heading"]
+        r["dates"], r["location"] = split_date_line(r["date"])
 
     skill_items = []
     for ln in sections.get("skills", []):
@@ -180,6 +202,87 @@ def omitted_roles(base_md, tailored_md):
     return [r["heading"] for r in parse_resume(base_md)["roles"] if r["heading"] not in kept]
 
 
+def _short(s, n=80):
+    return s if s is None else s[:n]
+
+
+def _title_problem(emp, got, want, base, role):
+    """Why a role's job-title line differs, naming the employer and both values."""
+    hint = ""
+    if got and want and _dashless(got).startswith(_dashless(want)):
+        added = _dashless(got)[len(_dashless(want)):].strip(" |")
+        locations = {_dashless(r["location"]) for r in base["roles"] if r["location"]}
+        hint = (f" -- location {added!r} was appended to the title line" if added in locations
+                else f" -- {added!r} was appended to the title line")
+    elif got is None and want and role["date"] and _dashless(want) in _dashless(role["date"]):
+        hint = " -- the title was merged into the date line"
+    return f"job title changed for {emp!r}: got {got!r}, expected {want!r}{hint}"
+
+
+def _location_problem(emp, got, want, role):
+    if got is None:
+        where = [("title line", role["title"])] + [("text below the bullets", x) for x in role["extra"]]
+        moved = next((name for name, line in where if line and _dashless(want) in _dashless(line)), None)
+        if moved:
+            return f"location moved for {emp!r}: {want!r} must stay on the date line, found it in the {moved}"
+        return f"location missing for {emp!r}: expected {want!r} on the date line"
+    if want is None:
+        return f"location added for {emp!r}: got {got!r}, the master resume has none"
+    return f"location changed for {emp!r}: got {got!r}, expected {want!r}"
+
+
+def check_employment(base, tail):
+    """Employment history is immutable: every master employer exactly once, in the master's
+    order, none added, and per employer the same job title, date range, location and date-line
+    layout. Takes parse_resume() results; returns violations naming the field and the employer."""
+    v = []
+    base_heads = [r["heading"] for r in base["roles"]]
+    tail_heads = [r["heading"] for r in tail["roles"]]
+    for h in dict.fromkeys(tail_heads):
+        if h not in base_heads:
+            v.append(f"experience roles not in master resume: employer {_short(h)!r} does not exist in the "
+                     "master resume (employer headings must be unchanged)")
+    for h in base_heads:
+        n = tail_heads.count(h)
+        if n == 0:
+            v.append(f"employer missing: {_short(h)!r} is in the master resume but not in this resume "
+                     "(keep every employer)")
+        elif n > 1:
+            v.append(f"employer duplicated: {_short(h)!r} appears {n} times (once in the master resume)")
+    kept = [h for h in dict.fromkeys(tail_heads) if h in base_heads]
+    if kept != [h for h in base_heads if h in kept]:
+        v.append(f"experience roles were reordered (keep the master resume's order): got "
+                 f"{[_short(h, 30) for h in kept]}, expected {[_short(h, 30) for h in base_heads]}")
+
+    base_by_head, seen = {r["heading"]: r for r in base["roles"]}, set()
+    for r in tail["roles"]:
+        b = base_by_head.get(r["heading"])
+        if b is None or r["heading"] in seen:
+            continue
+        seen.add(r["heading"])
+        emp, fields_ok = _short(r["heading"]), True
+        if _dashless(r["title"]) != _dashless(b["title"]):
+            v.append(_title_problem(emp, r["title"], b["title"], base, r))
+            fields_ok = False
+        if _dashless(r["dates"]) != _dashless(b["dates"]):
+            v.append(f"dates changed for {emp!r}: got {r['dates']!r}, expected {b['dates']!r}")
+            fields_ok = False
+        if _dashless(r["location"]) != _dashless(b["location"]):
+            v.append(_location_problem(emp, r["location"], b["location"], r))
+            fields_ok = False
+        if fields_ok and _dashless(r["date"]) != _dashless(b["date"]):
+            v.append(f"date line reformatted for {emp!r}: got {r['date']!r}, expected {b['date']!r}")
+        if r["late_meta"] and not b["late_meta"]:
+            v.append(f"title/date line moved below the bullets for {emp!r} (keep it directly under the "
+                     f"employer heading): {r['late_meta'][0][:80]!r}")
+        base_extra = {_dashless(x) for x in b["extra"]}
+        for x in r["extra"]:
+            if _dashless(x) not in base_extra:
+                v.append(f"unexpected text under {emp!r} (only its title line, date line and bullets may "
+                         f"appear): {x[:80]!r}")
+    return v
+
+
 def check_no_fabrication(base_md, tailored_md, jd_terms=()):
     """Return a list of violation strings; [] means the tailored resume is faithful."""
     base, tail = parse_resume(base_md), parse_resume(tailored_md)
@@ -200,25 +303,13 @@ def check_no_fabrication(base_md, tailored_md, jd_terms=()):
         v.append(f"resume sections must match the master resume exactly: {list(tail['sections'])} "
                  f"!= {list(base['sections'])}")
 
-    # experience structure: no added/changed role headings, original order kept. Omitting a
-    # role is not fabrication (tailoring may drop an irrelevant one) -- verify() surfaces it
-    # as a warning instead.
-    base_heads = [r["heading"] for r in base["roles"]]
-    tail_heads = [r["heading"] for r in tail["roles"]]
-    extra = [h for h in tail_heads if h not in base_heads]
-    if extra:
-        v.append(f"experience roles not in master resume (titles and employers must be unchanged): {extra}")
-    elif tail_heads != [h for h in base_heads if h in tail_heads]:
-        v.append("experience roles were reordered (keep the master resume's order)")
+    # employment history: employers, titles, dates, locations and their order are immutable
+    v += check_employment(base, tail)
     base_by_head = {r["heading"]: r for r in base["roles"]}
     for r in tail["roles"]:
         b = base_by_head.get(r["heading"])
         if b is None:
             continue
-        if _dashless(r["title"]) != _dashless(b["title"]):
-            v.append(f"job title changed for {r['heading'][:50]!r}: {r['title']!r} != {b['title']!r}")
-        if _dashless(r["date"]) != _dashless(b["date"]):
-            v.append(f"dates changed for {r['heading'][:50]!r}: {r['date']!r} != {b['date']!r}")
         if len(r["bullets"]) > len(b["bullets"]):
             v.append(f"extra bullets added under {r['heading'][:50]!r}")
         base_bullet_toks = [_tokens(x) for x in b["bullets"]]
