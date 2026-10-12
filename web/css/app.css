@@ -175,6 +175,12 @@ select.input { appearance: auto; padding-right: var(--s-2); }
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; margin-bottom: var(--s-4); }
 .toolbar-right { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
 .toolbar .search { width: 300px; max-width: 100%; }
+.sort-control { display: inline-flex; align-items: center; gap: var(--s-2); white-space: nowrap; }
+.sort-label { color: var(--muted); font-size: var(--fs-caption); }
+.sheet-slot { display: contents; } .sheet-missing { align-self: center; }
+.pager { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); flex-wrap: wrap; margin-top: var(--s-4); }
+.pager-pages { display: flex; align-items: center; gap: var(--s-1); flex-wrap: wrap; }
+.page-btn { min-width: 32px; padding: 0 var(--s-2); } .pager-gap { min-width: 20px; text-align: center; color: var(--muted); }
 .result-count { font-size: var(--fs-caption); color: var(--muted); margin-bottom: var(--s-2); }
 
 /* ============================== states ============================== */
@@ -362,13 +368,7 @@ select.input { appearance: auto; padding-right: var(--s-2); }
   transition: background var(--dur-fast), border-color var(--dur-fast); }
 .history-item:hover { background: var(--surface-2); border-color: var(--border-strong); } .history-meta { display: flex; gap: var(--s-2); align-items: center; }
 
-/* ============================== board / settings / login ============================== */
-.board { display: grid; grid-template-columns: repeat(5, minmax(210px, 1fr)); gap: var(--s-3); overflow-x: auto; padding-bottom: 6px; }
-.board-col { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 10px; display: flex; flex-direction: column; gap: var(--s-2); min-height: 140px; }
-.board-col > header { display: flex; justify-content: space-between; align-items: center; padding: 2px var(--s-1) var(--s-1); font-size: var(--fs-caption); }
-.board-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s-3); display: flex; flex-direction: column; gap: 6px;
-  box-shadow: var(--shadow-xs); font-size: var(--fs-secondary); }
-.board-card strong { font-size: var(--fs-secondary); line-height: 1.35; } .board-meta { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; }
+/* ============================== settings / login ============================== */
 .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-4); align-items: start; }
 .settings-section h3 { display: flex; align-items: center; gap: var(--s-2); }
 .settings-section .card-foot { margin-top: var(--s-4); padding-top: var(--s-3); border-top: 1px solid var(--border); }
@@ -386,13 +386,6 @@ select.input { appearance: auto; padding-right: var(--s-2); }
 .ats-table td { padding: 5px 6px; border-top: 1px solid var(--border); } .ats-table td:nth-child(n+2), .ats-table th:nth-child(n+2) { text-align: right; width: 70px; }
 .ats-facts { display: flex; gap: 18px; flex-wrap: wrap; font-size: var(--fs-secondary); color: var(--muted); } .ats h5 { margin: 6px 0 2px; font-size: var(--fs-caption); color: var(--muted); }
 
-/* ============================== logs page ============================== */
-.logs-filters { display: flex; flex-direction: column; gap: var(--s-3); margin-bottom: var(--s-4); }
-.logs-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-.logs-table { min-width: 720px; }
-.log-row { cursor: pointer; } .log-row:hover td, .log-row:focus-visible td { background: var(--surface-2); }
-.log-time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); font-family: var(--font-mono); font-size: var(--fs-caption); }
-.log-message { max-width: 460px; overflow-wrap: anywhere; color: var(--text); }
 .kv { display: flex; flex-direction: column; gap: 3px; } .kv-value { overflow-wrap: anywhere; white-space: pre-wrap; font-size: var(--fs-secondary); }
 
 /* ============================== Master Resume editor (pages/masterResume.js) ============================== */
@@ -446,7 +439,6 @@ select.input { appearance: auto; padding-right: var(--s-2); }
   .nav-group-label + .nav-link, .nav .nav-link:first-child { margin-top: var(--s-2); }
   .topbar { padding: 0 var(--s-6); } .main { padding: var(--s-5) var(--s-6) var(--s-10); }
   .grid-kpi-inner { grid-template-columns: repeat(2, minmax(0, 1fr)); } .grid-bottom { grid-template-columns: 1fr; } .tailor-grid, .settings-grid { grid-template-columns: 1fr; }
-  .board { grid-template-columns: repeat(5, 220px); }
 }
 @media (max-width: 1000px) { .master-layout { grid-template-columns: 1fr; } .master-preview { position: static; max-height: none; } }
 @media (max-width: 760px) {
@@ -466,8 +458,9 @@ select.input { appearance: auto; padding-right: var(--s-2); }
   .quick-list { grid-template-columns: 1fr; } .card { padding: var(--s-4); } .paper { padding: 20px 18px; }
   .form-actions .btn-primary { margin-left: 0; width: 100%; } .info-card { max-width: none; }
   .donut-wrap { justify-content: flex-start; }
-  .toolbar { align-items: stretch; } .toolbar .search, .toolbar-right { width: 100%; } .toolbar-right .input-sm { flex: 1; }
+  .toolbar { align-items: stretch; } .toolbar .search, .toolbar-right { width: 100%; } .toolbar-right .input-sm { flex: 1; } .sort-control { flex: 1 1 auto; }
   .tabs { max-width: 100%; overflow-x: auto; flex-wrap: nowrap; } .tab { flex: none; }
+  .pager-pages { order: 3; width: 100%; justify-content: center; }
   .input, .input-sm, textarea.input { font-size: 16px; }
   .master-item-row { flex-direction: column; } .master-item-actions { padding-top: 0; align-self: flex-end; }
   .master-actions { position: static; flex-direction: column-reverse; padding-bottom: 0; } .master-actions .btn { width: 100%; }

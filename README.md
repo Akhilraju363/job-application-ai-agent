@@ -166,7 +166,7 @@ It does not replace the Modal cron.
 python scripts/dashboard_server.py --open      # http://127.0.0.1:8765
 ```
 
-Pages: Dashboard, Find Jobs, **Tailor Resume** (`/tailor-resume`), Applications, Job Tracker,
+Pages: Dashboard, Find Jobs, **Tailor Resume** (`/tailor-resume`), Master Resume, Applications,
 Job Alerts (search preferences), Settings. No new dependencies and no build step (stdlib server +
 plain ES modules).
 
@@ -344,10 +344,10 @@ code -> Python logging -+-> stderr  -> Modal runtime logs   (always; survives a 
   app keeps running with console logging only.
 - **Modal logs** — the same records, human-readable, in Modal's runtime logs for both the dashboard and
   the daily cron (`modal app logs job-apply-agent`). The cron logs to the console only: it has no Volume.
-- **Dashboard → Logs page** — authenticated viewer over `GET /api/logs` (level, component, date, and
-  request/task/resume/job id filters, pagination, click a row for the traceback). It can only read the
-  log directory, validates every filter, caps results at 500 per page and never loads a whole file.
-  Level `ERROR` also shows `CRITICAL`.
+- **`GET /api/logs`** — authenticated, read-only query over the log files (level, component, date, and
+  request/task/resume/job id filters, pagination). It can only read the log directory, validates every filter,
+  caps results at 500 per page and never loads a whole file. Level `ERROR` also shows `CRITICAL`. The
+  dashboard no longer has a Logs page (removed 2026-10-12); call the API while signed in, or read the files.
 - **Ids** — every dashboard response carries `X-Request-ID` (a safe client-supplied one is kept); the
   same id, plus the background `task_id`, `resume_id` and `job_id` when known, appears on the related
   log lines, so one request can be followed from the HTTP call to the LLM call to the Drive upload.

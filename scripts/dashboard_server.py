@@ -560,7 +560,9 @@ def tracker_list(req):
         raise ApiError(400, f"status must be one of: {', '.join(dd.STATUSES)}", "bad_status")
     rows = [r for r in tr["rows"] if not status or r["status"] == status]
     return {"rows": rows, "statuses": dd.STATUSES, "total": len(tr["rows"]),
-            "tracker": {k: tr[k] for k in ("available", "error", "stale", "configured")}}
+            "tracker": {**{k: tr[k] for k in ("available", "error", "stale", "configured")},
+                        # only the browser link to the sheet the tracker already uses -- no credentials
+                        "sheet_url": tracker.sheet_url() if tr["configured"] else None}}
 
 
 @route("PATCH", "/api/tracker/status")

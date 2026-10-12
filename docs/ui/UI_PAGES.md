@@ -7,12 +7,15 @@
 | `/tailor-resume` | `pages/tailor.js` | Workspace | `UI_TAILOR_RESUME.md` | Give me a truthful resume for this JD |
 | `/master-resume` | `pages/masterResume.js` | Workspace | `UI_MASTER_RESUME.md` | What are my career facts? (source of truth) |
 | `/applications` | `pages/applications.js` `applicationsPage` | Tracking | `UI_APPLICATIONS.md` | Where do my applications stand? |
-| `/job-tracker` | `pages/applications.js` `trackerBoardPage` | Tracking | `UI_JOB_TRACKER.md` | Board view of the same tracker |
 | `/job-alerts` | `pages/alerts.js` | Tracking | `UI_JOB_ALERTS.md` | What does Find New Jobs search for? |
 | `/settings` | `pages/settings.js` | System | `UI_SETTINGS.md` | How is this app configured? |
-| `/logs` | `pages/logs.js` | System | `UI_LOGS.md` | What did the system do (technical)? |
 
 Signed out: the login view (`components/loginForm.js`) replaces the shell.
+
+Removed 2026-10-12: **Job Tracker** (`/job-tracker`, a board over the same tracker — Applications covers search, sort,
+status changes and the Sheet link; the Dashboard's status chart gives per-status counts and links into Applications)
+and **Logs** (`/logs`). Both old URLs redirect (`MOVED` in `app.js`: → `/applications`, → `/settings`). Backend kept:
+`/api/tracker[/status]`, `/api/logs`, `log_reader.py`, the log files.
 
 ## Common page anatomy
 1. `pageHeader` — title, one-sentence purpose, actions (≤1 primary).

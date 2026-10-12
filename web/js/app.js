@@ -6,17 +6,16 @@ import { ensureSession, signOut } from './lib/authClient.js';
 import { loginView } from './components/loginForm.js';
 import { icon } from './icons.js';
 import { errorState, menu } from './ui.js';
-import { currentRoute, onRoute } from './router.js';
+import { currentRoute, navigate, onRoute } from './router.js';
 import { theme } from './theme.js';
 import { initials } from './lib/format.js';
 import { dashboardPage } from './pages/dashboard.js';
 import { findJobsPage } from './pages/findJobs.js';
 import { tailorPage } from './pages/tailor.js';
 import { masterResumePage } from './pages/masterResume.js';
-import { applicationsPage, trackerBoardPage } from './pages/applications.js';
+import { applicationsPage } from './pages/applications.js';
 import { alertsPage } from './pages/alerts.js';
 import { settingsPage } from './pages/settings.js';
-import { logsPage } from './pages/logs.js';
 
 const NAV = [
   { path: '/', label: 'Dashboard', icon: 'home', page: dashboardPage, group: 'Workspace' },
@@ -24,11 +23,13 @@ const NAV = [
   { path: '/tailor-resume', label: 'Tailor Resume', icon: 'wand', page: tailorPage, group: 'Workspace' },
   { path: '/master-resume', label: 'Master Resume', icon: 'user', page: masterResumePage, group: 'Workspace' },
   { path: '/applications', label: 'Applications', icon: 'send', page: applicationsPage, group: 'Tracking' },
-  { path: '/job-tracker', label: 'Job Tracker', icon: 'list', page: trackerBoardPage, group: 'Tracking' },
   { path: '/job-alerts', label: 'Job Alerts', icon: 'bell', page: alertsPage, group: 'Tracking' },
   { path: '/settings', label: 'Settings', icon: 'settings', page: settingsPage, group: 'System' },
-  { path: '/logs', label: 'Logs', icon: 'terminal', page: logsPage, group: 'System' },
 ];
+
+// Pages removed on 2026-10-12: old bookmarks land on the page that covers them now (no dead routes).
+// Job Tracker was a board over the same tracker as Applications; the Logs viewer is gone but GET /api/logs stays.
+export const MOVED = { '/job-tracker': '/applications', '/logs': '/settings' };
 
 const app = document.getElementById('app');
 
@@ -114,6 +115,7 @@ async function boot() {
   let firstRender = true;
   const render = () => {
     const { path, query } = currentRoute();
+    if (MOVED[path]) { navigate(MOVED[path], { replace: true }); return; }
     const entry = NAV.find((n) => n.path === path);
     links.forEach((a) => a.classList.toggle('active', a.dataset.path === (entry ? entry.path : null)));
     a11yCurrent(links, entry);

@@ -162,7 +162,7 @@ job-apply-agent/
     bullet_tailoring.py      # local models: reword single master bullets by id, each checked against its own source; code assembles the resume
     employment_history.py    # puts the master's employer/title/date lines + role order back into a model rewrite (only when unambiguous); feeds the prompt's protected lines
     resume_store.py          # output/generated_resumes/<id>/ (versions, exports)
-    tracker_service.py       # cached, failure-tolerant wrapper over write_sheet.py
+    tracker_service.py       # cached, failure-tolerant wrapper over write_sheet.py; sheet_url() for the dashboard link
     dashboard_data.py / dashboard_tasks.py / dashboard_server.py   # dashboard read models, background tasks, stdlib HTTP server
     activity.py / paths.py   # activity log (output/activity_log.jsonl), shared paths
     dashboard_auth.py         # username/password sign-in: PBKDF2 hashes, server-side sessions, login rate limiter; create_/reset_dashboard_password.py are the setup utilities
@@ -325,7 +325,7 @@ back. `output/generated_resumes/` stays as the local cache/download source.
 The dashboard UI (`web/`) is specified in `docs/ui/` — read the relevant file before any UI change:
 `UI_DESIGN_SYSTEM.md` (tokens, the visual source of truth), `UI_ARCHITECTURE.md` (vanilla ES modules, no build step,
 `h()` only, layers), `UI_COMPONENTS.md`, `UI_PAGES.md` + one spec per page (`UI_DASHBOARD`, `UI_JOBS`, `UI_TAILOR_RESUME`,
-`UI_MASTER_RESUME`, `UI_APPLICATIONS`, `UI_JOB_TRACKER`, `UI_JOB_ALERTS`, `UI_SETTINGS`, `UI_LOGS`), `UI_RESPONSIVE.md`,
+`UI_MASTER_RESUME`, `UI_APPLICATIONS`, `UI_JOB_ALERTS`, `UI_SETTINGS`), `UI_RESPONSIVE.md`,
 `UI_ACCESSIBILITY.md`, and `UI_IMPLEMENTATION.md` (how to change the UI safely + the checklist). UI work never changes API
 contracts, auth, tailoring/no-fabrication, the master-resume rules, the 8+ cutoff, tracker, Drive, logging, Modal or cron,
 and never shows invented data or features.
@@ -353,5 +353,5 @@ change the password with `scripts/create_dashboard_password_hash.py` / `scripts/
 **Logging** (`scripts/logging_config.py`). One setup for everything: stderr (Modal runtime logs) plus rotating
 JSON files in `output/logs/`, with request/task/resume/job ids and secret redaction. Use
 `get_logger("<component>")`, never `print()` for diagnostics, and never log prompts, JDs, resumes, request
-bodies or credentials. `/api/logs` + the Logs page (`scripts/log_reader.py`) are authenticated, validated and
-bounded. `scripts/activity.py` (the user-facing Recent Activity feed) is separate and unchanged.
+bodies or credentials. `/api/logs` (`scripts/log_reader.py`) is authenticated, validated and bounded; the
+dashboard's Logs page was removed 2026-10-12 (the API stays for troubleshooting). `scripts/activity.py` (the user-facing Recent Activity feed) is separate and unchanged.

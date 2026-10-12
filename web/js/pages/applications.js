@@ -1,12 +1,16 @@
-// Applications (filterable table) and Job Tracker (board). Both read the same
-// /api/tracker data -- the Google Sheet is the single source of truth.
+// Applications: the tracker as a filterable, sortable, paginated table over /api/tracker
+// -- the Google Sheet is the single source of truth. Search and sort run on
+// the loaded rows (no extra Sheet reads); the sort choice is remembered per page.
 import { h, mount } from '../dom.js';
 import { api, qs } from '../api.js';
 import { icon } from '../icons.js';
 import { emptyState, errorState, loadable, pageHeader, scoreBadge, searchInput, statusBadge, toast } from '../ui.js';
 import { navigate } from '../router.js';
-import { relDay, safeHref } from '../lib/format.js';
+import { safeHref } from '../lib/format.js';
 import { TRACKER_STATUSES } from '../components/jobs.js';
+import {
+  PAGE_SIZES, SORT_KEYS, SORT_OPTIONS, formatDateMMDDYYYY, loadPageSize, loadSort, pageList, paginate, savePageSize, saveSort, sheetHref, sortRows,
+} from '../lib/trackerView.js';
 
 function statusSelect(row, onChanged) {
   return h('select', { class: 'input input-sm status-select', 'aria-label': `Status for ${row.title}`, onChange: async (e) => {
@@ -37,41 +41,99 @@ const noApplications = (title = 'No applications yet') => emptyState({ title, ic
 // Client-side search over the loaded tracker rows (role / company) -- no extra Sheet reads.
 export const matchesQuery = (row, q) => !q || `${row.title} ${row.company}`.toLowerCase().includes(q.toLowerCase());
 
-// loadable() + a search box that re-renders the last response instead of refetching the Sheet.
-function searchableSection(host, load, render, label) {
+// "Open Google Sheet": the link the backend reports for the tracker sheet, opened in a new tab --
+// only when it is a real https Google Sheets URL; otherwise a short note instead.
+export function sheetAction(url) {
+  const href = sheetHref(url);
+  if (!href) return h('span', { class: 'muted small sheet-missing', role: 'note' }, 'Google Sheets link is not configured.');
+  return h('a', { class: 'btn btn-outline sheet-link', href, target: '_blank', rel: 'noopener noreferrer',
+    'aria-label': 'Open Google Sheet (opens in a new tab)', title: 'Open the tracker in Google Sheets' }, icon('ext', 16), 'Open Google Sheet');
+}
+
+export function sortSelect({ value, label, onSort }) {
+  const sel = h('select', { class: 'input input-sm sort-select', 'aria-label': label, onChange: (e) => onSort(e.target.value) },
+    ...SORT_OPTIONS.map((o) => h('option', { value: o.value, selected: o.value === value }, o.label)));
+  return h('label', { class: 'sort-control' }, h('span', { class: 'sort-label', 'aria-hidden': 'true' }, 'Sort by'), sel);
+}
+
+function pageSizeSelect({ value, onChange }) {
+  const sel = h('select', { class: 'input input-sm page-size-select', 'aria-label': 'Rows per page', onChange: (e) => onChange(Number(e.target.value)) },
+    ...PAGE_SIZES.map((n) => h('option', { value: String(n), selected: n === value }, String(n))));
+  return h('label', { class: 'sort-control page-size-control' }, h('span', { class: 'sort-label', 'aria-hidden': 'true' }, 'Rows per page'), sel);
+}
+
+// Previous · 1 2 3 … 9 · Next. Native buttons: disabled ends are really disabled; the current page has aria-current.
+export function pager({ page, pages }, go) {
+  const nav = (key, text, target, disabled) => h('button', { class: 'btn btn-outline btn-sm', type: 'button', 'data-page-nav': key,
+    disabled, onClick: () => go(target, key) }, text);
+  return h('nav', { class: 'pager', 'aria-label': 'Applications pages' },
+    nav('prev', 'Previous', page - 1, page <= 1),
+    h('div', { class: 'pager-pages' }, ...pageList(page, pages).map((n) => (n == null
+      ? h('span', { class: 'pager-gap', 'aria-hidden': 'true' }, '…')
+      : h('button', { class: `btn btn-sm page-btn ${n === page ? 'btn-primary' : 'btn-ghost'}`, type: 'button', 'data-page-nav': String(n),
+        'aria-label': `Page ${n}`, 'aria-current': n === page ? 'page' : null, onClick: () => go(n, String(n)) }, String(n))))),
+    nav('next', 'Next', page + 1, page >= pages));
+}
+
+// loadable() + search and sort controls that re-render the last response instead of refetching the Sheet.
+// The page header's sheet slot is filled from the same response. Search and sort send `state.page`
+// back to 1; render() clamps it to the pages that exist.
+function searchableSection(host, load, render, { label, sortLabel, sortKey, sheetSlot, pageSize }) {
   let last = null;
-  const state = { q: '' };
-  const list = loadable(host, { skeleton: 'table', load, render: (d, reload) => { last = [d, reload]; return render(d, reload, state.q); } });
-  const search = searchInput({ label, placeholder: 'Search role or company', onSearch: (v) => {
-    state.q = v;
-    if (last) mount(host, render(last[0], last[1], state.q));
+  const state = { q: '', sort: loadSort(sortKey), page: 1, pageSize };
+  const rerender = () => { if (last) mount(host, render(last[0], last[1], state)); };
+  // A page button re-renders the table; keep keyboard focus on the same control (or the current page when it is now disabled).
+  state.go = (n, focusKey) => {
+    state.page = n;
+    rerender();
+    const el = host.querySelector?.(`[data-page-nav="${focusKey}"]`);
+    (el && !el.disabled ? el : host.querySelector?.('[aria-current="page"]'))?.focus?.();
+  };
+  state.rerender = rerender;
+  const list = loadable(host, { skeleton: 'table', load, render: (d, reload) => {
+    last = [d, reload];
+    mount(sheetSlot, d.tracker?.configured === false ? null : sheetAction(d.tracker?.sheet_url));
+    return render(d, reload, state);
   } });
-  return { list, search };
+  const search = searchInput({ label, placeholder: 'Search role or company', onSearch: (v) => { state.q = v; state.page = 1; rerender(); } });
+  const sort = sortSelect({ value: state.sort, label: sortLabel, onSort: (v) => { state.sort = v; state.page = 1; saveSort(sortKey, v); rerender(); } });
+  return { list, search, sort, state };
 }
 
 export function applicationsPage(root, { query }) {
   const wanted = query.get('status');
   const status = TRACKER_STATUSES.includes(wanted) ? wanted : '';
   const host = h('div', {});
-  const render = (d, reload, q) => {
+  const sheetSlot = h('span', { class: 'sheet-slot' });
+  const render = (d, reload, st) => {
     if (!d.tracker.available) return errorState(`The tracker couldn’t be read: ${d.tracker.error}`, reload);
     if (!d.tracker.configured) return notConfigured();
     if (d.rows.length === 0) return noApplications(status ? `No ${status} applications` : undefined);
-    const rows = d.rows.filter((r) => matchesQuery(r, q));
-    if (rows.length === 0) return emptyState({ title: 'No applications match your search', text: 'Try a different company or role.', iconName: 'search' });
+    // status filter (server) -> search -> sort -> page: only the current page's rows are rendered
+    const matching = sortRows(d.rows.filter((r) => matchesQuery(r, st.q)), st.sort);
+    if (matching.length === 0) return emptyState({ title: 'No applications match your search', text: 'Try a different company or role.', iconName: 'search' });
+    const pg = paginate(matching, st.page, st.pageSize);
+    st.page = pg.page;   // clamp: a smaller result set never leaves an empty page
+    const rows = pg.items;
+    const noun = `application${pg.total === 1 ? '' : 's'}`;
     return h('div', {}, trackerBanner(d.tracker),
-      h('p', { class: 'result-count', role: 'status' }, `${rows.length} application${rows.length === 1 ? '' : 's'}`),
+      h('p', { class: 'result-count', role: 'status' }, pg.pages > 1 ? `Showing ${pg.start + 1}–${pg.end} of ${pg.total} ${noun}` : `${pg.total} ${noun}`),
       h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
-        h('thead', {}, h('tr', {}, ...['Role', 'Company', 'Fit', 'Status', 'Resume', 'Logged', 'Source', ''].map((t) => h('th', { scope: 'col' }, t)))),
+        h('thead', {}, h('tr', {}, ...['Role', 'Company', 'Fit', 'Status', 'Resume', 'Date', 'Source', ''].map((t) => h('th', { scope: 'col' }, t)))),
         h('tbody', {}, ...rows.map((r) => {
           const href = safeHref(r.link);
           return h('tr', {}, h('td', { class: 'cell-title' }, r.title), h('td', {}, r.company),
             h('td', {}, scoreBadge(r.score || null)), h('td', {}, statusSelect(r, () => list.reload())),
-            h('td', {}, resumeCell(r)), h('td', { class: 'nowrap' }, relDay(r.timestamp) || '—'), h('td', {}, r.source || 'LinkedIn'),
+            h('td', {}, resumeCell(r)), h('td', { class: 'nowrap cell-date' }, formatDateMMDDYYYY(r.timestamp) || '—'), h('td', {}, r.source || 'LinkedIn'),
             h('td', {}, href ? h('a', { class: 'btn-icon', href, target: '_blank', rel: 'noopener noreferrer', 'aria-label': `Open ${r.title}`, title: 'Open job posting' }, icon('ext', 16)) : null));
-        })))));
+        })))),
+      pg.pages > 1 && pager(pg, st.go));
   };
-  const { list, search } = searchableSection(host, () => api.get(`/api/tracker${qs({ status })}`), render, 'Search applications');
+  const { list, search, sort, state } = searchableSection(host, () => api.get(`/api/tracker${qs({ status })}`), render,
+    { label: 'Search applications', sortLabel: 'Sort applications', sortKey: SORT_KEYS.applications, sheetSlot, pageSize: loadPageSize() });
+  // a status tab is a navigation, so it re-creates this page and starts on page 1
+  const size = pageSizeSelect({ value: state.pageSize, onChange: (n) => { state.pageSize = n; state.page = 1; savePageSize(n); state.rerender(); } });
+  const refresh = () => { state.page = 1; list.reload(); };
 
   const tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Filter by status' }, ...[['', 'All'], ...TRACKER_STATUSES.map((s) => [s, s])].map(([k, label]) =>
     h('button', { class: `tab ${status === k ? 'active' : ''}`, role: 'tab', 'aria-selected': String(status === k),
@@ -79,31 +141,6 @@ export function applicationsPage(root, { query }) {
 
   mount(root,
     pageHeader({ title: 'Applications', subtitle: 'Everything in your tracker. The agent never submits an application — you apply, then update the status here.',
-      actions: h('button', { class: 'btn btn-outline', onClick: () => list.reload() }, icon('refresh', 16), 'Refresh') }),
-    h('section', { class: 'card' }, h('div', { class: 'toolbar' }, tabs, h('div', { class: 'toolbar-right' }, search)), host));
-}
-
-export function trackerBoardPage(root) {
-  const host = h('div', {});
-  const render = (d, reload, q) => {
-    if (!d.tracker.available) return errorState(`The tracker couldn’t be read: ${d.tracker.error}`, reload);
-    if (!d.tracker.configured) return notConfigured();
-    if (d.rows.length === 0) return noApplications();
-    const visible = d.rows.filter((r) => matchesQuery(r, q));
-    return h('div', {}, trackerBanner(d.tracker), h('div', { class: 'board' }, ...TRACKER_STATUSES.map((s) => {
-      const rows = visible.filter((r) => r.status === s);
-      return h('section', { class: 'board-col', 'aria-label': `${s}: ${rows.length}` },
-        h('header', {}, statusBadge(s), h('span', { class: 'muted' }, String(rows.length))),
-        ...rows.map((r) => h('article', { class: 'board-card' }, h('strong', {}, r.title), h('span', { class: 'muted' }, r.company),
-          h('div', { class: 'board-meta' }, r.score ? scoreBadge(r.score) : null, resumeCell(r)),
-          statusSelect(r, () => list.reload()))),
-        rows.length === 0 && h('p', { class: 'muted small' }, q ? 'No matches' : 'Nothing here'));
-    })));
-  };
-  const { list, search } = searchableSection(host, () => api.get('/api/tracker'), render, 'Search the tracker');
-  mount(root,
-    pageHeader({ title: 'Job Tracker', subtitle: 'A board view of the same tracker data — change a status and the Google Sheet updates.',
-      actions: h('button', { class: 'btn btn-outline', onClick: () => list.reload() }, icon('refresh', 16), 'Refresh') }),
-    h('div', { class: 'toolbar' }, h('div', { class: 'toolbar-right' }, search)),
-    host);
+      actions: [sheetSlot, h('button', { class: 'btn btn-outline', onClick: refresh }, icon('refresh', 16), 'Refresh')] }),
+    h('section', { class: 'card' }, h('div', { class: 'toolbar' }, tabs, h('div', { class: 'toolbar-right' }, search, sort, size)), host));
 }

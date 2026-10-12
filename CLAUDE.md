@@ -52,7 +52,9 @@ company research → log to Google Sheets; runs on Modal (07:00 IST, Mon–Fri) 
 - Google Workspace goes through the `gws` CLI (`drive files …` is under `drive`; export `--output` must be a relative
   path from the target dir). Never `gws docs +write` raw markdown — use `scripts/format_resume_doc.py`.
 - Dashboard: `scripts/dashboard_server.py` (stdlib HTTP, default-deny auth) + `web/` (vanilla ES modules, `h()` only,
-  no build step). Relative `/api/...` URLs only.
+  no build step). Relative `/api/...` URLs only. Sidebar: Dashboard, Find Jobs, Tailor Resume, Master Resume,
+  Applications, Job Alerts, Settings (`NAV` in `web/js/app.js`). Job Tracker and Logs pages were removed 2026-10-12 —
+  old URLs redirect (`MOVED`); `/api/tracker`, `/api/logs`, `log_reader.py` and the log files stay.
 - Tests: `python -m unittest discover -s tests` (tests import `tests/fixtures.py` first; it disables `.env`) and
   `node --test web/tests/*.test.mjs`. Known pre-existing failure:
   `test_tracker_outage_degrades_sections_instead_of_failing`. Add tests with every behaviour change.

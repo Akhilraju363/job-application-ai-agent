@@ -22,7 +22,7 @@ index.html ── theme-init.js (pre-paint theme)
                 ├── api.js         fetch wrapper: same-origin JSON, ApiError{status, code, details}, pollTask, download
                 ├── ui.js          primitives: pageHeader, loadable, states, badge/statusBadge, toast, dialogs, drawer, menu, withBusy
                 ├── components/    reusable widgets (jobsTable, metricCard, charts, resumePreview, stageList, …)
-                ├── lib/           pure logic, no DOM (format, logs, resumeMarkdown, masterResume, tailorValidation, authClient)
+                ├── lib/           pure logic, no DOM (format, trackerView, resumeMarkdown, masterResume, tailorValidation, authClient)
                 └── pages/         one module per route; composes ui + components; owns page state
 ```
 

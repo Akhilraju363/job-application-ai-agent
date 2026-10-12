@@ -562,6 +562,39 @@ class TrackerAndJobActions(ServerCase):
             self.assertEqual([r["title"] for r in self.call("GET", "/api/tracker?status=Offer")[2]["rows"]], ["B"])
             self.assertEqual(self.call("GET", "/api/tracker?status=Nope")[0], 400)
 
+    FAKE_SHEET_ID = "FAKE_sheet_id_0123456789"
+
+    def test_tracker_listing_carries_the_sheet_link_and_nothing_else_secret(self):
+        with mock.patch.dict(os.environ, {"google_sheet_id": self.FAKE_SHEET_ID}):
+            s, _, body = self.call("GET", "/api/tracker")
+            _, _, raw = self.call("GET", "/api/tracker", raw=True)
+        self.assertEqual(s, 200)
+        self.assertEqual(body["tracker"]["sheet_url"], f"https://docs.google.com/spreadsheets/d/{self.FAKE_SHEET_ID}/edit")
+        self.assertEqual(set(body["tracker"]), {"available", "error", "stale", "configured", "sheet_url"})
+        for key, value in SECRETS.items():
+            if key != "google_sheet_id":
+                self.assertNotIn(value.encode(), raw, key)
+
+    def test_tracker_sheet_link_is_null_when_not_configured_or_malformed(self):
+        unconfigured = {**tracker_state(), "configured": False}
+        with mock.patch.dict(os.environ, {"google_sheet_id": ""}), mock.patch.object(srv.tracker, "_sheet_id", None):
+            self.assertIsNone(self.call("GET", "/api/tracker")[2]["tracker"]["sheet_url"])
+            with mock.patch.object(srv.tracker, "snapshot", return_value=unconfigured):
+                self.assertIsNone(self.call("GET", "/api/tracker")[2]["tracker"]["sheet_url"])
+        for bad in ("abc", "x/../../evil", "id with spaces 123456", "https://evil.example.com/sheet"):
+            with mock.patch.dict(os.environ, {"google_sheet_id": bad}):
+                self.assertIsNone(self.call("GET", "/api/tracker")[2]["tracker"]["sheet_url"], bad)
+
+    def test_sheet_url_reuses_the_resolved_id_without_a_gws_call(self):
+        with mock.patch.dict(os.environ, {"google_sheet_id": ""}), mock.patch.object(srv.tracker, "_sheet_id", self.FAKE_SHEET_ID), \
+                mock.patch("write_sheet.gws", side_effect=AssertionError("no Sheets call for the link")):
+            self.assertEqual(srv.tracker.sheet_url(), f"https://docs.google.com/spreadsheets/d/{self.FAKE_SHEET_ID}/edit")
+
+    def test_settings_and_sources_still_never_expose_the_sheet_id(self):
+        with mock.patch.dict(os.environ, {"google_sheet_id": self.FAKE_SHEET_ID}):
+            for path in ("/api/settings", "/api/dashboard/sources", "/api/me"):
+                self.assertNotIn(self.FAKE_SHEET_ID.encode(), self.call("GET", path, raw=True)[2], path)
+
 
 class PipelineActionsAndPreferences(ServerCase):
     class FakeProc:
