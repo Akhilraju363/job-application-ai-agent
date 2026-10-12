@@ -700,9 +700,14 @@ class TaskLogging(LogCase):
 
 
 class TailoringLogging(LogCase):
+    def run_cloud_tailor(self, outputs, **kwargs):
+        import llm
+        with mock.patch.object(llm, "IS_LOCAL", False):
+            return run_tailor(outputs, **kwargs)
+
     def test_happy_path_logs_the_lifecycle_with_ids_and_no_content(self):
         self.configure()
-        rec, _, _ = run_tailor([reorder_bullets(BASE)], job_key="abc123abc123")
+        rec, _, _ = self.run_cloud_tailor([reorder_bullets(BASE)], job_key="abc123abc123")
         msgs = [e["message"] for e in self.entries()]
         for expected in ("Tailoring started", "JD analysis completed", "Resume match completed", "Resume generation completed",
                          "ATS validation completed", "No-fabrication verification passed", "Resume record created",
@@ -718,7 +723,7 @@ class TailoringLogging(LogCase):
 
     def test_fact_check_failure_retry_and_fallback_are_logged(self):
         self.configure()
-        run_tailor([FAKE_KAFKA, FAKE_ROLE])
+        self.run_cloud_tailor([FAKE_KAFKA, FAKE_ROLE])
         by = [(e["component"], e["level"], e["message"]) for e in self.entries()]
         self.assertIn(("verification", "WARNING", "Resume fact-check failed"), by)
         self.assertIn(("tailoring", "INFO", "Retrying resume generation"), by)
@@ -733,7 +738,7 @@ class TailoringLogging(LogCase):
 
     def test_fact_check_retry_that_succeeds(self):
         self.configure()
-        run_tailor([FAKE_KAFKA, reorder_bullets(BASE)])
+        self.run_cloud_tailor([FAKE_KAFKA, reorder_bullets(BASE)])
         msgs = [e["message"] for e in self.entries()]
         self.assertIn("Resume fact-check failed", msgs)
         self.assertIn("Retrying resume generation", msgs)

@@ -9,10 +9,11 @@ only reads that file and merges it into output/raw_jobs.json (deduped by canonic
 JOB_SOURCES selects the sources (default "linkedin,naukri"; "naukri" alone skips the Apify call).
 """
 import os
+import shutil
 import sys
 import json
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
@@ -180,6 +181,120 @@ def merge_jobs(base, extra):
     return merged
 
 
+def merge_naukri_history(history, incoming):
+    """Earlier Naukri records in raw_jobs.json + this run's handoff -> (records, conflicts, stats).
+
+    Identity: canonical link (job_links.canonical_link) and, when present, source_job_id. Every
+    earlier record stays unless the handoff legitimately replaces it:
+    - new job (no link or id match): appended;
+    - same link and same id (or one side has no id): refreshed in place -- the handoff's fields win
+      (it is the current export) but the earliest found_at is kept, so re-importing never makes an old
+      job look newer, and fields only the old record had are kept;
+    - same link but a different id, or same id but a different link, or link and id pointing at two
+      different records: a conflict. The handoff record takes its place (the current run exports it
+      under that link) and every displaced record is returned in `conflicts` -- never silently dropped.
+    Repeated jobs inside the handoff: the first occurrence wins (same as merge_jobs).
+    Scoring and tailoring are unaffected: what they process is decided by the run's scope, not by
+    what raw_jobs.json holds.
+    """
+    records = [dict(j) for j in history]
+    stats = {"added": 0, "refreshed": 0, "duplicates_in_handoff": 0, "conflicts": 0}
+    conflicts = []
+    seen_links, seen_ids = set(), set()
+
+    def job_id(job):
+        return str(job.get("source_job_id") or "").strip() or None
+
+    for job in incoming:
+        link, jid = canonical_link(job.get("link")), job_id(job)
+        if link in seen_links or (jid and jid in seen_ids):
+            stats["duplicates_in_handoff"] += 1
+            continue
+        seen_links.add(link)
+        if jid:
+            seen_ids.add(jid)
+        by_link = [i for i, r in enumerate(records) if canonical_link(r.get("link")) == link]
+        by_id = [i for i, r in enumerate(records) if jid and job_id(r) == jid]
+        matches = sorted(set(by_link) | set(by_id))
+        if not matches:
+            records.append(job)
+            stats["added"] += 1
+            continue
+        old = records[matches[0]]
+        same_job = (len(matches) == 1 and canonical_link(old.get("link")) == link
+                    and (job_id(old) is None or jid is None or job_id(old) == jid))
+        if same_job:
+            found = sorted(d for d in (old.get("found_at"), job.get("found_at")) if d)
+            records[matches[0]] = {**old, **job, **({"found_at": found[0]} if found else {})}
+            stats["refreshed"] += 1
+            continue
+        reason = ("same link, different source_job_id" if by_link and not by_id else
+                  "same source_job_id, different link" if by_id and not by_link else
+                  "link and source_job_id match different records")
+        for index in reversed(matches):
+            conflicts.append({"reason": reason, "displaced": records.pop(index),
+                              "replaced_by": {"link": job.get("link"), "source_job_id": jid}})
+        records.append(job)
+        stats["conflicts"] += 1
+        log.warning("Naukri record conflict: earlier record kept in raw_jobs_conflicts.jsonl",
+                    extra={"reason": reason, "source_job_id": jid})
+    return records, conflicts, stats
+
+
+def _keep_conflicts(conflicts):
+    """Append displaced records to output/raw_jobs_conflicts.jsonl (append-only, never cleared)."""
+    if not conflicts:
+        return
+    path = CACHE_PATH.with_name("raw_jobs_conflicts.jsonl")
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with path.open("a", encoding="utf-8") as handle:
+        for conflict in conflicts:
+            handle.write(json.dumps({"at": stamp, **conflict}) + "\n")
+
+
+def _backup_unreadable_cache():
+    """Preserve an unreadable cache under a unique name before recovery."""
+    stamp = int(time.time())
+    keep = CACHE_PATH.with_name(f"raw_jobs.unreadable-{stamp}.json")
+    suffix = 1
+    while keep.exists():
+        keep = CACHE_PATH.with_name(f"raw_jobs.unreadable-{stamp}-{suffix}.json")
+        suffix += 1
+    shutil.copyfile(CACHE_PATH, keep)
+    return keep
+
+
+def _read_cached_jobs():
+    """Read the cache once, preserving malformed or structurally invalid content.
+
+    ``None`` means recovery is required; an empty list is a valid empty cache.
+    """
+    if not CACHE_PATH.exists():
+        return []
+    try:
+        cached = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        keep = _backup_unreadable_cache()
+        log.error("raw_jobs.json unreadable; copied aside for recovery", extra={"copy": str(keep)})
+        return None
+    if not isinstance(cached, list):
+        keep = _backup_unreadable_cache()
+        log.error("raw_jobs.json has an invalid top-level type; copied aside for recovery",
+                  extra={"copy": str(keep), "type": type(cached).__name__})
+        return None
+    return cached
+
+
+_CACHE_UNSET = object()
+
+
+def _cached_naukri_history(cached=_CACHE_UNSET):
+    """Naukri records already in raw_jobs.json (whatever the LinkedIn cache age)."""
+    if cached is _CACHE_UNSET:
+        cached = _read_cached_jobs()
+    return [j for j in (cached or []) if isinstance(j, dict) and j.get("source") == NAUKRI_SOURCE]
+
+
 def _write_raw_jobs(jobs, mtime=None):
     """Write output/raw_jobs.json. `mtime` keeps the LinkedIn cache age honest: merging Naukri
     jobs into a cached scrape must not make that scrape look newer than it is."""
@@ -198,18 +313,24 @@ def run_scrape(force=False):
     # spending another paid Apify call on the local recovery run.
     artifacts.pull("raw_jobs.json")
     naukri_jobs = load_naukri_jobs() if "naukri" in sources else []
+    cached = _read_cached_jobs()
+    cache_recovery_required = cached is None
+    # Earlier Naukri records are kept (merged with this run's handoff), not replaced by it.
+    naukri_history = _cached_naukri_history(cached)
     cache_age = time.time() - CACHE_PATH.stat().st_mtime if CACHE_PATH.exists() else None
-    cache_fresh = not force and cache_age is not None and cache_age < CACHE_MAX_AGE_SECONDS
+    cache_fresh = (not force and not cache_recovery_required and cache_age is not None
+                   and cache_age < CACHE_MAX_AGE_SECONDS)
 
     def cached_non_naukri():
-        cached = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-        return [j for j in cached if j.get("source") != NAUKRI_SOURCE]
+        return [j for j in (cached or []) if isinstance(j, dict) and j.get("source") != NAUKRI_SOURCE]
 
     if "linkedin" not in sources:
         # Naukri-only: never call Apify. Keep a still-fresh LinkedIn cache (and its age);
         # otherwise mark the file stale so the next LinkedIn run scrapes as usual.
         base = cached_non_naukri() if cache_fresh else []
         mtime = CACHE_PATH.stat().st_mtime if cache_fresh else 0
+        if cache_recovery_required and not naukri_jobs:
+            raise ValueError("raw_jobs.json could not be recovered and no Naukri handoff was provided")
         log.info("Naukri-only run: Apify skipped",
                  extra={"cached_count": len(base), "naukri_count": len(naukri_jobs)})
     elif cache_fresh:
@@ -233,12 +354,16 @@ def run_scrape(force=False):
         log.info("Scrape completed", extra={"scraped_count": len(base), "path": str(CACHE_PATH)})
         log_event("jobs_found", f"Found {len(base)} new jobs from LinkedIn", count=len(base), source="LinkedIn")
 
-    jobs = merge_jobs(base, naukri_jobs)
+    naukri, conflicts, stats = merge_naukri_history(naukri_history, naukri_jobs)
+    _keep_conflicts(conflicts)
+    jobs = merge_jobs(base, naukri)
     _write_raw_jobs(jobs, mtime)
     artifacts.push("raw_jobs.json")
     if naukri_jobs:
-        added = len(jobs) - len(base)
-        log.info("Naukri jobs merged", extra={"naukri_count": len(naukri_jobs), "added": added, "total": len(jobs)})
+        added = stats["added"]
+        log.info("Naukri jobs merged", extra={"naukri_count": len(naukri_jobs), "added": added,
+                                              "refreshed": stats["refreshed"], "conflicts": stats["conflicts"],
+                                              "kept_history": len(naukri_history), "total": len(jobs)})
         log_event("jobs_found", f"Loaded {added} Naukri jobs from Auto_job_apply", count=added, source=NAUKRI_SOURCE)
     return jobs
 
