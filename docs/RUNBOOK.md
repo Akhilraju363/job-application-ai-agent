@@ -35,6 +35,9 @@ including flagged ones, are kept as they were.
 Each stage records its part in `output/scoped_run_report.json` for that `run_id`: score — `in_scope`, `missing`
 (not in `raw_jobs.json`), `already_scored`, `newly_scored`, `failed`; tailor — `not_scored`, `not_qualified`,
 `already_tailored`, `newly_tailored`, `flagged`. Code: `scripts/job_scope.py`.
+`raw_jobs.json` keeps earlier Naukri jobs (the scrape stage merges each handoff by canonical link + `source_job_id`;
+an identity conflict moves the earlier record to `output/raw_jobs_conflicts.jsonl`). Keeping them does not widen a
+scoped run: only the scope's ids are scored or tailored.
 
 ## Read logs
 - **Modal (cron + hosted dashboard):** `modal app logs job-apply-agent`, or the Modal web UI → app → function logs.

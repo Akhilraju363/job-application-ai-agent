@@ -8,9 +8,10 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       UI redesign + `docs/ui/`, project docs). Not committed or pushed yet.
 
 ## Next
-- [ ] First live scoped run (Auto_job_apply -> `--job-ids-file`): so far verified only in an isolated copy with real
-      exported ids and no LLM/Drive (2026-10-12, 12/12 checks). On the first real run, confirm
-      `output/scoped_run_report.json` lists exactly the exported ids and that no other job was newly scored/tailored.
+- [x] First live scoped run (Auto_job_apply -> `--job-ids-file`), 2026-10-12 run `20261012T165349-8dd2834d`: 2 exported
+      ids scored (local qwen2.5:7b, 4 LLM calls), 1 tailored + uploaded, nothing out of scope scored/tailored. It showed
+      the scrape stage dropping earlier Naukri records from `raw_jobs.json` (`121026001994`, `121026001987`; their scores
+      stay in `scored_jobs.json`) -- fixed the same day (`merge_naukri_history`); those two are not re-added to raw.
 - [x] 2026-10-12 (uncommitted) `test_tracker_outage_degrades_sections_instead_of_failing` fixed: it pins "today" to
       2026-09-20 through `parse_range(today=…)` (fixture jobs found 2026-09-18/19 fell outside the default 7d window
       ending the real `date.today()`); assertions unchanged, no production change. Full suite now passes.
