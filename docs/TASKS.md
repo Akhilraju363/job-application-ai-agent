@@ -8,12 +8,23 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       UI redesign + `docs/ui/`, project docs). Not committed or pushed yet.
 
 ## Next
+- [ ] First live scoped run (Auto_job_apply -> `--job-ids-file`): so far verified only in an isolated copy with real
+      exported ids and no LLM/Drive (2026-10-12, 12/12 checks). On the first real run, confirm
+      `output/scoped_run_report.json` lists exactly the exported ids and that no other job was newly scored/tailored.
+- [x] 2026-10-12 (uncommitted) `test_tracker_outage_degrades_sections_instead_of_failing` fixed: it pins "today" to
+      2026-09-20 through `parse_range(today=…)` (fixture jobs found 2026-09-18/19 fell outside the default 7d window
+      ending the real `date.today()`); assertions unchanged, no production change. Full suite now passes.
+- [x] 2026-10-12 (uncommitted) `test_summary_overview_status_use_real_data` pinned the same way (its `range=30d`
+      window from the real today would have dropped the 2026-09-18 fixture job from 2026-10-18). Both tests now share
+      `pinned_today()` in `tests/test_dashboard_server.py`; assertions unchanged.
 - [ ] Local bullet tailoring is still shallow -- a model limit, not the checker: across 7 SourcingXPress probes on
       2026-10-09 (original prompt re-run + 5 prompt variants + final harness run) qwen2.5:7b returned 0-2 changed
       bullets of 18, and every change was a deletion or punctuation. The final run fell back to reorder-only. The 5
       rewrites of the 11:53 run were run-to-run variance. Options to evaluate (owner's call): a larger local model,
       or one call per employer (more latency). Summary stays the master's; Skills are re-ordered only. "maintaining"
-      -> "managing" stays blocked by design.
+      -> "managing" stays blocked by design. Same on the new master (2026-10-09 live runs): a Java/Spring Boot JD
+      got 0 changed bullets -> reorder-only (`conservative`, verified; Skills still re-ordered for the JD); an
+      Angular/Python JD got 2 accepted rewrites + 1 rejected (`generated`, verified).
 - [ ] Naukri on Modal: needs the handoff file mirrored through Drive (`artifacts.py`); not implemented -- local only.
 - [ ] (title, company) dedupe across sources: the same posting on LinkedIn and Naukri has two links and is scored twice.
 - [ ] Test `agentx/all-jobs-scraper` (platforms Naukri, foundit; country India) with `limit=2`; record its input params and
@@ -24,13 +35,21 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
 - [ ] Decide the schedule: owner notes say "daily 7am IST", code runs Mon–Fri (`0 7 * * 1-5`). TODO: confirm.
 - [ ] Watch Apify Free-plan credit once a second actor runs (more results per run → more credit and more LLM calls).
 - [ ] UI Phase 2 (`docs/ui/UI_IMPLEMENTATION.md`): server-side pagination on Find Jobs; pipeline-status card once the
-      backend exposes the last run's outcome; Logs filter chips.
+      backend exposes the last run's outcome.
 - [ ] Show `master_resume_current: false` in the dashboard (API already returns it) for resumes built from an older master.
 - [ ] Consider loading prompts from `docs/prompts/*.md` instead of Python constants (suggestion only).
 - [ ] Optional: reorder `RESUME_CONTACT_LINE` to `email | phone | linkedin | location` (in `.env` and the Modal secret) —
       owner chose to keep the current order for now.
 
 ## Done
+- [x] 2026-10-12 (uncommitted) Removed the Job Tracker and Logs pages (old URLs redirect; backend APIs and logging kept).
+- [x] 2026-10-12 (uncommitted) Applications pagination (client-side; 10/20/50/100, default 10, remembered per browser).
+      Browser-checked at 1600/820/390 in both themes against the real tracker (88 rows).
+- [x] 2026-10-12 (uncommitted) Applications / Job Tracker: “Open Google Sheet” action (`tracker.sheet_url` on
+      `GET /api/tracker`) + per-page “Sort by” (newest first by default, remembered in `localStorage`). Browser-checked at
+      1600/820/390 in both themes; the real link opened a new tab (headless browser landed on Google sign-in).
+- [x] 2026-10-09 (uncommitted) Domain-neutral master resume (`resume/base_resume.md`) + matching one-page A4 DOCX/PDF
+      (`Akhil_Dalali_Master_ATS_Resume.*`, kept outside the repo); tests re-pointed, no pipeline code changed.
 - [x] 2026-10-09 (uncommitted) Bullet prompt v2 (restructure, not synonym swaps; examples; instruction repeated after
       the bullets) + two stricter `check_rewrite` rules (goal -> achieved result; deletion-only); punctuation-only
       output counts as unchanged. Probe script: `output/test_runs/bullet_prompt_probe.py` (bullet call only, local).
