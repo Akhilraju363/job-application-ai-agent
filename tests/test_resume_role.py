@@ -177,7 +177,7 @@ class TailoredOutput(unittest.TestCase):
         self.assertEqual(r["status"], "completed", r["verification"])
 
     def test_reorder_only_fallback_gets_the_fixed_header_too(self):
-        bad = REAL_BASE.replace("- Tools: Git, GitHub, GitLab, SCSS", "- Tools: Git, GitHub, GitLab, SCSS, Kafka")
+        bad = REAL_BASE.replace("- Tools: Git, GitHub, GitLab", "- Tools: Git, GitHub, GitLab, Kafka")
         with TempOutput():
             r, rec = tailor("Python Developer", md_outputs=[bad] * 5)
         v = rec["versions"][-1]
