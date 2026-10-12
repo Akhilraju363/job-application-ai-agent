@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -25,6 +26,16 @@ import resume_store
 LINK = "https://in.linkedin.com/jobs/view/java-dev-123?trackingId=abc"
 FIXED_HEADER = "# Jane Roe\nSoftware Engineer | Java | Spring Boot | Angular\n\n"   # the fixture master's, whatever the job
 KEY = dd.job_key(LINK)
+FIXTURE_TODAY = date(2026, 9, 20)   # the day after the fixture jobs' found_at dates (same as test_dashboard_data.TODAY)
+
+
+def pinned_today():
+    """Dashboard ranges (7d/30d/90d) end "today"; pin that to FIXTURE_TODAY through parse_range's own `today=`
+    (as test_dashboard_data does) so the fixture jobs found 2026-09-18/19 stay in range whatever day the suite runs."""
+    parse_range = dd.parse_range
+    return mock.patch.object(dd, "parse_range", side_effect=lambda rng, start=None, end=None: parse_range(rng, start, end, today=FIXTURE_TODAY))
+
+
 SECRETS = {"apify_api_key": "apify-SECRET-123456", "GROQ_API_KEY": "gsk_SECRET_abcdef", "TELEGRAM_BOT_TOKEN": "123456:TG-SECRET",
            "google_sheet_id": "SHEETID_SECRET_1"}
 
@@ -188,11 +199,12 @@ class Security(ServerCase):
 
 class DashboardEndpoints(ServerCase):
     def test_summary_overview_status_use_real_data(self):
-        s, _, d = self.call("GET", "/api/dashboard/summary?range=30d")
-        self.assertEqual(s, 200)
-        self.assertEqual(d["metrics"]["jobs_found"]["current"], 2)
-        s, _, o = self.call("GET", "/api/dashboard/overview?range=30d")
-        self.assertEqual({x["key"]: x["value"] for x in o["series"]}["qualified"], 1)
+        with pinned_today():
+            s, _, d = self.call("GET", "/api/dashboard/summary?range=30d")
+            self.assertEqual(s, 200)
+            self.assertEqual(d["metrics"]["jobs_found"]["current"], 2)
+            s, _, o = self.call("GET", "/api/dashboard/overview?range=30d")
+            self.assertEqual({x["key"]: x["value"] for x in o["series"]}["qualified"], 1)
         s, _, st = self.call("GET", "/api/dashboard/status")
         self.assertEqual((st["total"], len(st["statuses"])), (0, 5))
 
@@ -218,7 +230,7 @@ class DashboardEndpoints(ServerCase):
         self.assertEqual(self.call("GET", "/api/jobs/" + "0" * 12)[0], 404)
 
     def test_tracker_outage_degrades_sections_instead_of_failing(self):
-        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(available=False, error="gws: not signed in")):
+        with pinned_today(), mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(available=False, error="gws: not signed in")):
             s, _, d = self.call("GET", "/api/dashboard/summary")
             self.assertEqual(s, 200)
             self.assertIsNone(d["metrics"]["applications_sent"])
