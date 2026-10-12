@@ -94,6 +94,11 @@ def score_jobs(jobs, resume_text, out_path=None, scored=None, on_progress=None):
 if __name__ == "__main__":
     lc.configure_logging("pipeline")
     import artifacts
+    import job_scope
+
+    # --job-ids-file / JOB_IDS_FILE: score only those jobs (see job_scope.py). None = unscoped, as before.
+    # A bad scope file raises here: a scoped run never falls back to scoring everything.
+    scope = job_scope.from_cli_or_env()
 
     validate_local_setup()  # no-op unless LOCAL_MODE=true; fails loudly, never falls back to cloud
     resume_text = (ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8")
@@ -111,7 +116,13 @@ if __name__ == "__main__":
     # different day with a new trackingId/position is still the same posting. See
     # scripts/job_links.py.
     done_links = {canonical_link(j["link"]) for j in already_scored}
-    remaining = [j for j in jobs if canonical_link(j["link"]) not in done_links]
+    if scope is None:
+        remaining = [j for j in jobs if canonical_link(j["link"]) not in done_links]
+    else:
+        remaining, scope_report = job_scope.select_for_scoring(jobs, done_links, scope)
+        log.info("Scoped scoring", extra={"in_scope": len(scope_report["in_scope"]),
+                                          "to_score": len(remaining), "missing": len(scope_report["missing"]),
+                                          "already_scored": len(scope_report["already_scored"])})
     if already_scored:
         log.info("Resuming scoring", extra={"already_scored": len(already_scored), "total": len(jobs), "remaining": len(remaining)})
     else:
@@ -123,6 +134,9 @@ if __name__ == "__main__":
               if remaining else already_scored)
     out_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
     artifacts.push("scored_jobs.json")
+    if scope is not None:
+        job_scope.write_report(out_path.parent, "score",
+                               job_scope.finish_scoring(scope_report, remaining, scored, scope), scope)
 
     if remaining and len(scored) == len(already_scored):
         # Every job in this run failed (e.g. OpenRouter free-tier daily quota exhausted).
