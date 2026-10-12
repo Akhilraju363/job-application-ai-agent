@@ -115,6 +115,7 @@ class Filename(unittest.TestCase):
 
 class NoFabrication(unittest.TestCase):
     def assertFlags(self, tailored, needle, jd_terms=()):
+        self.assertNotEqual(tailored, MASTER, "the edit didn't apply -- the quoted master text changed")
         v = check(tailored, jd_terms)
         self.assertTrue(any(needle in x for x in v), f"expected {needle!r} in {v}")
 
@@ -125,7 +126,7 @@ class NoFabrication(unittest.TestCase):
         self.assertEqual(check(MASTER.replace("–", "-").replace("—", "-").replace("\n- ", "\n-  ")), [])
 
     def test_jd_only_technology(self):
-        for tech in ("Kafka", "React", "Terraform", "FastAPI", "Azure"):
+        for tech in ("Kafka", "React", "Terraform", "Django", "Azure"):
             self.assertFlags(MASTER.replace("Microservices, RESTful APIs, Nx Monorepo",
                                             f"Microservices, RESTful APIs, Nx Monorepo, {tech}"),
                              "not in master resume", jd_terms=[tech])
@@ -134,8 +135,8 @@ class NoFabrication(unittest.TestCase):
         self.assertFlags(MASTER.replace("### LTIMindtree", "### Infosys"), "not in master resume")
 
     def test_changed_job_title(self):
-        self.assertFlags(MASTER.replace("Software Engineer — Backend Development",
-                                        "Senior Software Engineer — Backend Development"), "job title changed")
+        self.assertFlags(MASTER.replace("Software Engineer | Java | Spring Boot | Backend Development",
+                                        "Senior Software Engineer | Java | Spring Boot | Backend Development"), "job title changed")
 
     def test_changed_dates(self):
         self.assertFlags(MASTER.replace("Jan 2022 – Jun 2024", "Jan 2021 – Jun 2024"), "dates changed")
@@ -162,9 +163,12 @@ class NoFabrication(unittest.TestCase):
                          "numbers not in master resume")
 
     def test_technology_moved_between_employers(self):
-        # Spring Boot is LTIMindtree's; it must not appear under Zyter
-        self.assertFlags(MASTER.replace("Built Python-based backend services and REST APIs",
-                                        "Built Python-based and Spring Boot backend services and REST APIs"),
+        # Spring Boot is Infinite's and LTIMindtree's, FastAPI is Zyter's; neither may cross over
+        self.assertFlags(MASTER.replace("Built Python and FastAPI backend services and REST APIs",
+                                        "Built Python, FastAPI and Spring Boot backend services and REST APIs"),
+                         "attributed to")
+        self.assertFlags(MASTER.replace("REST APIs for the TruCare Admin backend using Java and Spring Boot",
+                                        "REST APIs for the TruCare Admin backend using Java, Spring Boot and FastAPI"),
                          "attributed to")
 
     def test_added_removed_or_reordered_sections(self):
@@ -173,8 +177,8 @@ class NoFabrication(unittest.TestCase):
         self.assertFlags(re.sub(r"## Certifications.*", "", MASTER, flags=re.S), "sections must match")
 
     def test_leadership_claim(self):
-        self.assertFlags(MASTER.replace("Collaborated with cross-functional Agile teams to deliver feature",
-                                        "Led cross-functional Agile teams to deliver feature"), "leadership")
+        self.assertFlags(MASTER.replace("tested feature changes, and delivered releases with cross-functional Agile teams",
+                                        "tested feature changes, and led cross-functional Agile teams"), "leadership")
 
 
 class SafeFallback(unittest.TestCase):

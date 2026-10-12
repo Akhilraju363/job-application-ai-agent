@@ -238,6 +238,11 @@ def upload_pdf(tmp_pdf_path, folder_id):
 if __name__ == "__main__":
     lc.configure_logging("pipeline")
     import artifacts
+    import job_scope
+
+    # --job-ids-file / JOB_IDS_FILE: tailor only those jobs (see job_scope.py). None = unscoped, as before.
+    # A bad scope file raises here: a scoped run never falls back to tailoring everything.
+    scope = job_scope.from_cli_or_env()
 
     validate_local_setup()  # no-op unless LOCAL_MODE=true; fails loudly, never falls back to cloud
     parent_folder_id = os.environ["google_drive_folder_id"]
@@ -248,8 +253,13 @@ if __name__ == "__main__":
     artifacts.pull("tailored_jobs.json")
 
     jobs = json.loads((ROOT / "output" / "scored_jobs.json").read_text(encoding="utf-8"))
-    qualified = [j for j in jobs if j.get("qualified")]
-    log.info("Tailoring started", extra={"operation": "pipeline_tailor", "qualified_count": len(qualified)})
+    if scope is None:
+        qualified = [j for j in jobs if j.get("qualified")]
+    else:
+        qualified, scope_report = job_scope.select_for_tailoring(jobs, scope)
+        scope_outcomes = {"already_tailored": [], "newly_tailored": [], "flagged": []}
+    log.info("Tailoring started", extra={"operation": "pipeline_tailor", "qualified_count": len(qualified),
+                                         "scoped": scope is not None})
 
     tailored_dir = ROOT / "output" / "tailored"
     tailored_dir.mkdir(parents=True, exist_ok=True)
@@ -265,6 +275,13 @@ if __name__ == "__main__":
     # recognized as the same job and doesn't get a second Drive folder.
     previous = json.loads(out_path.read_text(encoding="utf-8")) if out_path.exists() else []
     by_link = {canonical_link(r["link"]): r for r in previous if r.get("status") == "saved"}
+    saved_before = {k for k, r in by_link.items() if r.get("status") == "saved"}
+    # Scoped run: earlier non-saved records (flagged/errored) of jobs this run does not process are kept as
+    # they were -- an unscoped run drops them because it retries them; a scoped run never touches them.
+    preserved = []
+    if scope is not None:
+        processed = {canonical_link(j["link"]) for j in qualified}
+        preserved = [r for r in previous if r.get("status") != "saved" and canonical_link(r["link"]) not in processed]
 
     for job in qualified:
         link = job["link"]
@@ -314,11 +331,19 @@ if __name__ == "__main__":
             by_link[key] = {**job, "status": "flagged_error", "reason": str(e)}
             log.error("Tailoring failed for job", exc_info=True, extra={"folder": folder_name})
 
-        out_path.write_text(json.dumps(list(by_link.values()), indent=2), encoding="utf-8")
+        out_path.write_text(json.dumps(list(by_link.values()) + preserved, indent=2), encoding="utf-8")
         artifacts.push("tailored_jobs.json")
 
-    out_path.write_text(json.dumps(list(by_link.values()), indent=2), encoding="utf-8")
+    out_path.write_text(json.dumps(list(by_link.values()) + preserved, indent=2), encoding="utf-8")
     artifacts.push("tailored_jobs.json")
+    if scope is not None:
+        for job in qualified:
+            key = canonical_link(job["link"])
+            outcome = ("already_tailored" if key in saved_before else
+                       "newly_tailored" if by_link.get(key, {}).get("status") == "saved" else "flagged")
+            if scope.id_for(key) not in scope_outcomes[outcome]:
+                scope_outcomes[outcome].append(scope.id_for(key))
+        job_scope.write_report(out_path.parent, "tailor", {**scope_report, **scope_outcomes}, scope)
 
     results = list(by_link.values())
     saved = sum(1 for r in results if r["status"] == "saved")

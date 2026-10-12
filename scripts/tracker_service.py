@@ -6,6 +6,7 @@ system of record for application status; this only adds a short TTL cache (each 
 the dashboard can show a per-section error + retry instead of a 500.
 """
 import os
+import re
 import threading
 import time
 from datetime import date
@@ -20,6 +21,7 @@ log = lc.get_logger("tracker")
 TTL_SECONDS = 45
 FAILURE_TTL_SECONDS = 15  # don't re-run a failing `gws` call once per dashboard widget
 STATUSES = write_sheet.STATUS_OPTIONS
+SHEET_ID_RE = re.compile(r"[A-Za-z0-9_-]{10,200}")  # Google spreadsheet ids; anything else gets no link
 
 
 class TrackerError(RuntimeError):
@@ -53,6 +55,14 @@ class Tracker:
             sid = write_sheet.get_or_create_sheet_id() if create else write_sheet.find_sheet_by_title()
         self._sheet_id = sid
         return sid
+
+    def sheet_url(self):
+        """Browser link to the tracker sheet, built from the id already resolved (configured, or
+        found by snapshot()) -- never triggers a lookup. None when unknown or malformed."""
+        sid = os.environ.get("google_sheet_id", "").strip() or self._sheet_id
+        if not sid or not SHEET_ID_RE.fullmatch(sid):
+            return None
+        return f"https://docs.google.com/spreadsheets/d/{sid}/edit"
 
     def snapshot(self, force=False):
         """{"rows": [...], "available": bool, "error": str|None, "stale": bool, "configured": bool}"""

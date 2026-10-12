@@ -200,7 +200,7 @@ class MasterApi(ServerCase):
     def test_pipeline_reads_the_saved_master(self):
         b = self.get()
         r = copy.deepcopy(b["resume"])
-        r["summary"] = r["summary"].replace("Results-driven", "Detail-oriented")
+        r["summary"] = r["summary"].replace("Software Engineer with 4+", "Detail-oriented Software Engineer with 4+")
         s, _, out = self.put(r, b["version"])
         self.assertEqual(s, 200, out)
         saved = paths.read_base_resume()

@@ -77,7 +77,7 @@ export function resumePreview(initialRec, { onRegenerate, onRecord }) {
   async function saveToTracker(btn) {
     try {
       const r = await withBusy(btn, () => api.post(`/api/resumes/${s.rec.id}/save-to-tracker`, { version: version().n }));
-      toast(r.result === 'added' ? 'Saved to the Job Tracker' : 'Already in the Job Tracker', 'success');
+      toast(r.result === 'added' ? 'Saved to Applications' : 'Already in Applications', 'success');
       update(await api.get(`/api/resumes/${s.rec.id}`), s.n);
     } catch (e) { toast(e.message, 'error'); }
   }

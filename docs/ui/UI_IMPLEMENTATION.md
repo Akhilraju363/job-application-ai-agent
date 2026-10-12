@@ -11,7 +11,9 @@ How to change the dashboard UI without breaking the architecture, the backend co
 ## Hard constraints
 - Vanilla ES modules, no framework, no bundler, no new runtime dependency.
 - DOM only via `h()` / `mount()` — never `innerHTML`, `insertAdjacentHTML` or `document.write`.
-- Relative `/api/...` only; no absolute URLs, CDNs or web fonts; no `sessionStorage`; `localStorage` only for the theme.
+- Relative `/api/...` only; no absolute URLs, CDNs or web fonts; no `sessionStorage`; `localStorage` only for UI
+  preferences — the theme, the Applications sort (`jobagent.sort.applications`, option name only) and the Applications page
+  size (`jobagent.pageSize.applications`, a number), each read/write in try/catch.
 - Do not change API contracts, auth, the tailoring / no-fabrication pipeline, the master-resume rules, the 8+ cutoff,
   tracker behaviour, Drive, logging, Modal or cron from a UI task.
 - Never invent data or features: no sample rows, fake counts, fake notifications, invented statuses or fields.
@@ -22,7 +24,7 @@ How to change the dashboard UI without breaking the architecture, the backend co
 - CSS lives in `web/css/app.css` in the right section; page-specific rules go under the page's comment header.
 - Every async section uses `loadable` (skeleton / empty / error + Retry). Every write is a safe update.
 - Keep these test hooks stable: `data-section`, `data-field`, `data-kind`, `data-meta`, `data-action`, `data-choice`,
-  `status-select`, `status-note`, `status-hint`, `toast-*`, `paper-master`, nav order in `NAV`.
+  `status-select`, `status-note`, `status-hint`, `sort-select`, `page-size-select`, `data-page-nav`, `pager`, `sheet-link`, `sheet-missing`, `toast-*`, `paper-master`, nav order in `NAV`.
 
 ## Checklist before you finish
 - `node --test web/tests/*.test.mjs` passes; `python -m unittest discover -s tests` passes except the known pre-existing
@@ -37,9 +39,9 @@ Phase 1 (done): design tokens in `app.css`; shell (grouped light sidebar, collap
 topbar breadcrumb, account menu, mobile drawer with Escape + focus return, first-load focus rule, page fade); shared
 `pageHeader`, `statusBadge`, `scoreBadge`, `searchInput`, `workflowSteps`; refreshed buttons, inputs, tabs (segmented),
 tables, cards, badges, toasts, dialogs, drawers, menus, states; dashboard greeting header + actions (no emoji/quote);
-metric cards label-first, 2×2 on phones; Find Jobs sort; Applications and Job Tracker client-side search + empty-state
+metric cards label-first, 2×2 on phones; Find Jobs sort; Applications client-side search + empty-state
 actions; Settings in six sections; Tailor Resume workflow stepper driven by real task stages; resume previews no
 longer add a second `h1`.
 
 Phase 2 (open): server-side pagination on Find Jobs (the API already accepts `offset`); a compact pipeline-status card on
-the dashboard once the backend exposes the last run's outcome; Logs component column filters as chips.
+the dashboard once the backend exposes the last run's outcome.

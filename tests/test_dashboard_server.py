@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -25,6 +26,16 @@ import resume_store
 LINK = "https://in.linkedin.com/jobs/view/java-dev-123?trackingId=abc"
 FIXED_HEADER = "# Jane Roe\nSoftware Engineer | Java | Spring Boot | Angular\n\n"   # the fixture master's, whatever the job
 KEY = dd.job_key(LINK)
+FIXTURE_TODAY = date(2026, 9, 20)   # the day after the fixture jobs' found_at dates (same as test_dashboard_data.TODAY)
+
+
+def pinned_today():
+    """Dashboard ranges (7d/30d/90d) end "today"; pin that to FIXTURE_TODAY through parse_range's own `today=`
+    (as test_dashboard_data does) so the fixture jobs found 2026-09-18/19 stay in range whatever day the suite runs."""
+    parse_range = dd.parse_range
+    return mock.patch.object(dd, "parse_range", side_effect=lambda rng, start=None, end=None: parse_range(rng, start, end, today=FIXTURE_TODAY))
+
+
 SECRETS = {"apify_api_key": "apify-SECRET-123456", "GROQ_API_KEY": "gsk_SECRET_abcdef", "TELEGRAM_BOT_TOKEN": "123456:TG-SECRET",
            "google_sheet_id": "SHEETID_SECRET_1"}
 
@@ -188,11 +199,12 @@ class Security(ServerCase):
 
 class DashboardEndpoints(ServerCase):
     def test_summary_overview_status_use_real_data(self):
-        s, _, d = self.call("GET", "/api/dashboard/summary?range=30d")
-        self.assertEqual(s, 200)
-        self.assertEqual(d["metrics"]["jobs_found"]["current"], 2)
-        s, _, o = self.call("GET", "/api/dashboard/overview?range=30d")
-        self.assertEqual({x["key"]: x["value"] for x in o["series"]}["qualified"], 1)
+        with pinned_today():
+            s, _, d = self.call("GET", "/api/dashboard/summary?range=30d")
+            self.assertEqual(s, 200)
+            self.assertEqual(d["metrics"]["jobs_found"]["current"], 2)
+            s, _, o = self.call("GET", "/api/dashboard/overview?range=30d")
+            self.assertEqual({x["key"]: x["value"] for x in o["series"]}["qualified"], 1)
         s, _, st = self.call("GET", "/api/dashboard/status")
         self.assertEqual((st["total"], len(st["statuses"])), (0, 5))
 
@@ -218,7 +230,7 @@ class DashboardEndpoints(ServerCase):
         self.assertEqual(self.call("GET", "/api/jobs/" + "0" * 12)[0], 404)
 
     def test_tracker_outage_degrades_sections_instead_of_failing(self):
-        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(available=False, error="gws: not signed in")):
+        with pinned_today(), mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(available=False, error="gws: not signed in")):
             s, _, d = self.call("GET", "/api/dashboard/summary")
             self.assertEqual(s, 200)
             self.assertIsNone(d["metrics"]["applications_sent"])
@@ -561,6 +573,39 @@ class TrackerAndJobActions(ServerCase):
             self.assertEqual(self.call("GET", "/api/tracker")[2]["total"], 2)
             self.assertEqual([r["title"] for r in self.call("GET", "/api/tracker?status=Offer")[2]["rows"]], ["B"])
             self.assertEqual(self.call("GET", "/api/tracker?status=Nope")[0], 400)
+
+    FAKE_SHEET_ID = "FAKE_sheet_id_0123456789"
+
+    def test_tracker_listing_carries_the_sheet_link_and_nothing_else_secret(self):
+        with mock.patch.dict(os.environ, {"google_sheet_id": self.FAKE_SHEET_ID}):
+            s, _, body = self.call("GET", "/api/tracker")
+            _, _, raw = self.call("GET", "/api/tracker", raw=True)
+        self.assertEqual(s, 200)
+        self.assertEqual(body["tracker"]["sheet_url"], f"https://docs.google.com/spreadsheets/d/{self.FAKE_SHEET_ID}/edit")
+        self.assertEqual(set(body["tracker"]), {"available", "error", "stale", "configured", "sheet_url"})
+        for key, value in SECRETS.items():
+            if key != "google_sheet_id":
+                self.assertNotIn(value.encode(), raw, key)
+
+    def test_tracker_sheet_link_is_null_when_not_configured_or_malformed(self):
+        unconfigured = {**tracker_state(), "configured": False}
+        with mock.patch.dict(os.environ, {"google_sheet_id": ""}), mock.patch.object(srv.tracker, "_sheet_id", None):
+            self.assertIsNone(self.call("GET", "/api/tracker")[2]["tracker"]["sheet_url"])
+            with mock.patch.object(srv.tracker, "snapshot", return_value=unconfigured):
+                self.assertIsNone(self.call("GET", "/api/tracker")[2]["tracker"]["sheet_url"])
+        for bad in ("abc", "x/../../evil", "id with spaces 123456", "https://evil.example.com/sheet"):
+            with mock.patch.dict(os.environ, {"google_sheet_id": bad}):
+                self.assertIsNone(self.call("GET", "/api/tracker")[2]["tracker"]["sheet_url"], bad)
+
+    def test_sheet_url_reuses_the_resolved_id_without_a_gws_call(self):
+        with mock.patch.dict(os.environ, {"google_sheet_id": ""}), mock.patch.object(srv.tracker, "_sheet_id", self.FAKE_SHEET_ID), \
+                mock.patch("write_sheet.gws", side_effect=AssertionError("no Sheets call for the link")):
+            self.assertEqual(srv.tracker.sheet_url(), f"https://docs.google.com/spreadsheets/d/{self.FAKE_SHEET_ID}/edit")
+
+    def test_settings_and_sources_still_never_expose_the_sheet_id(self):
+        with mock.patch.dict(os.environ, {"google_sheet_id": self.FAKE_SHEET_ID}):
+            for path in ("/api/settings", "/api/dashboard/sources", "/api/me"):
+                self.assertNotIn(self.FAKE_SHEET_ID.encode(), self.call("GET", path, raw=True)[2], path)
 
 
 class PipelineActionsAndPreferences(ServerCase):

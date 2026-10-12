@@ -109,7 +109,7 @@ class ForEveryRole(unittest.TestCase):
     def test_fields_are_parsed_separately(self):
         r = {x["heading"]: x for x in roles(REAL)}["LTIMindtree"]
         self.assertEqual((r["title"], r["dates"], r["location"]),
-                         ("Software Engineer — Backend Development", "Jan 2022 – Jun 2024", "Chennai, India"))
+                         ("Software Engineer | Java | Spring Boot | Backend Development", "Jan 2022 – Jun 2024", "Chennai, India"))
         self.assertEqual(nf.split_date_line("Jul 2020 – Feb 2023"), ("Jul 2020 – Feb 2023", None))
 
     def test_changed_title_is_rejected(self):
@@ -211,7 +211,7 @@ class ForEveryRole(unittest.TestCase):
             self.assertRejected(md, t, "unexpected text under", repr(r["heading"][:80]))
 
     def test_legitimate_summary_and_skills_tailoring_passes(self):
-        t = REAL.replace("Results-driven Software Engineer", "Full-stack Software Engineer", 1) \
+        t = REAL.replace("Software Engineer with 4+", "Full-stack Software Engineer with 4+", 1) \
                 .replace("- Databases: MySQL, Oracle, PostgreSQL", "- Databases: PostgreSQL, MySQL, Oracle")
         self.assertEqual(check(REAL, t), [])
         t = SYNTH.replace("building Java services", "building scalable Java services") \

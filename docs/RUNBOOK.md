@@ -17,11 +17,30 @@ Whole cloud pipeline once, without deploying: `modal run modal_app.py` (add `--f
 Dashboard: `python scripts/dashboard_server.py` (Windows: `start_local.ps1` / `start_local.bat`).
 New scrape source or changed field mapping: test with `limit=2` first (e.g. `scrape_jobs(limit=2)`) and inspect the dicts.
 
+### Scoped run (only listed jobs)
+`score_jobs.py` and `tailor_job.py` accept `--job-ids-file <path>` (or `JOB_IDS_FILE=<path>`): only the jobs in
+that file can be scored or tailored; cached LinkedIn jobs and older jobs in the stores are left alone and nothing
+historical is rewritten. Auto_job_apply's Naukri pipeline uses this for every run it starts, with the jobs it just
+exported. Without the flag the stages behave exactly as above.
+
+```bash
+python3 scripts/score_jobs.py --job-ids-file ../Auto_job_apply/exports/agent_job_scope.json
+python3 scripts/tailor_job.py --job-ids-file ../Auto_job_apply/exports/agent_job_scope.json
+```
+
+File: `{"run_id": "...", "jobs": [{"id": "<caller id>", "link": "<job URL>"}]}`, matched by `canonical_link`;
+`run_id` is required (the report is keyed by it). An empty `jobs` list processes nothing; a missing or malformed
+file stops the stage (never an unscoped fallback). Records of jobs outside the scope in `tailored_jobs.json`,
+including flagged ones, are kept as they were.
+Each stage records its part in `output/scoped_run_report.json` for that `run_id`: score — `in_scope`, `missing`
+(not in `raw_jobs.json`), `already_scored`, `newly_scored`, `failed`; tailor — `not_scored`, `not_qualified`,
+`already_tailored`, `newly_tailored`, `flagged`. Code: `scripts/job_scope.py`.
+
 ## Read logs
 - **Modal (cron + hosted dashboard):** `modal app logs job-apply-agent`, or the Modal web UI → app → function logs.
   The cron logs to the console only (no Volume). Key lines: `Pipeline step started/finished`, `N scraped, M qualified`,
   `JOB-APPLY-AGENT — daily run complete`, `JOB-APPLY-AGENT — PIPELINE FAILED at <stage>`.
-- **Local / dashboard:** `output/logs/` (JSON lines; `errors.log` has tracebacks), or the dashboard **Logs** page.
+- **Local / dashboard:** `output/logs/` (JSON lines; `errors.log` has tracebacks), or `GET /api/logs` while signed in to the dashboard (the Logs page was removed 2026-10-12).
 - **Activity feed:** `output/activity_log.jsonl` (dashboard Recent Activity).
 
 ## Telegram alerts

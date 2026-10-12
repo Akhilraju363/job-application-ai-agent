@@ -53,8 +53,7 @@ export function settingsPage(root, { profile = {} } = {}) {
         section('settings', 'System',
           h('ul', { class: 'plain-list' },
             h('li', {}, 'API keys, tokens and Google credentials stay on the server; this page only shows whether each is set.'),
-            h('li', {}, signedIn ? 'Every API call needs a signed-in session.' : 'The dashboard listens on this machine only.')),
-          foot(link('/logs', 'View application logs'))));
+            h('li', {}, signedIn ? 'Every API call needs a signed-in session.' : 'The dashboard listens on this machine only.'))));
     },
   });
   mount(root, pageHeader({ title: 'Settings', subtitle: 'How this workspace is configured. Secrets are never displayed.' }), host);

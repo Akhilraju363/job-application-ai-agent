@@ -18,7 +18,10 @@ import paths
 import resume_store
 import tailoring_service as ts
 
-MASTER = (paths.ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8").replace("\r", "")
+# The checker cases below quote bullets (and real qwen2.5:7b rewrites of them) from the master as it was on
+# 2026-10-09, so they run against that frozen copy; LiveMaster covers resume/base_resume.md itself.
+MASTER = (paths.ROOT / "tests" / "data" / "master_resume_2026-10-09.md").read_text(encoding="utf-8").replace("\r", "")
+LIVE_MASTER = (paths.ROOT / "resume" / "base_resume.md").read_text(encoding="utf-8").replace("\r", "")
 BULLETS = {b["id"]: b for b in bt.source_bullets(MASTER)}
 UNIVERSE = bt._universe(MASTER, ANALYSIS, ja.compute_match(ANALYSIS, MASTER))
 JOB = {"title": "Senior Full Stack Developer", "company": "Acme", "link": "https://acme.example/jobs/7",
@@ -365,6 +368,51 @@ class Service(unittest.TestCase):
         full.assert_called_once()
         bullets.assert_not_called()
         self.assertNotIn("bullet_tailoring", rec["versions"][-1]["validation"])
+
+
+class LiveMaster(unittest.TestCase):
+    """Bullet tailoring against resume/base_resume.md as it is today."""
+
+    BULLETS = {b["id"]: b for b in bt.source_bullets(LIVE_MASTER)}
+    UNIVERSE = bt._universe(LIVE_MASTER, ANALYSIS, ja.compute_match(ANALYSIS, LIVE_MASTER))
+
+    def bullet(self, prefix):
+        return next(b for b in self.BULLETS.values() if b["text"].startswith(prefix))
+
+    def respond(self, rewrites):
+        return json.dumps({"bullets": [{"id": i, "text": rewrites.get(i, b["text"])} for i, b in self.BULLETS.items()]})
+
+    def test_zyter_and_infinite_have_five_bullets_each(self):
+        counts = {}
+        for b in self.BULLETS.values():
+            counts[b["employer"]] = counts.get(b["employer"], 0) + 1
+        self.assertEqual((counts["Zyter Technologies India Private Limited"], counts["Infinite Computer Solutions"]), (5, 5))
+
+    def test_unchanged_response_returns_the_master(self):
+        with mock.patch("bullet_tailoring._call", return_value=self.respond({})):
+            md, _ = bt.tailor(JOB, LIVE_MASTER, ANALYSIS, ja.compute_match(ANALYSIS, LIVE_MASTER))
+        self.assertEqual(md, LIVE_MASTER)
+
+    def test_supported_rewrite_is_applied_and_passes_the_fact_check(self):
+        b = self.bullet("Built and maintained REST APIs for the TruCare Admin")
+        rewrite = ("Built and maintained Java and Spring Boot REST APIs for the TruCare Admin backend, supporting "
+                   "secure data exchange between admin and client-facing applications.")
+        self.assertEqual(bt.check_rewrite(b["text"], rewrite, self.UNIVERSE), [])
+        with mock.patch("bullet_tailoring._call", return_value=self.respond({b["id"]: rewrite})):
+            md, rep = bt.tailor(JOB, LIVE_MASTER, ANALYSIS, ja.compute_match(ANALYSIS, LIVE_MASTER))
+        self.assertIn("- " + rewrite, md)
+        self.assertEqual(rep["rewritten"], 1)
+        self.assertEqual(nf.check_no_fabrication(LIVE_MASTER, md), [])
+
+    def test_employer_stacks_stay_separate(self):
+        # Zyter is Python/FastAPI + Angular; Infinite is Java/Spring Boot + Angular
+        for prefix, src_tech, moved in (("Built and maintained REST APIs for the TruCare Admin", "Java and Spring Boot", "FastAPI"),
+                                        ("Built Python and FastAPI backend", "Python and FastAPI", "Spring Boot")):
+            with self.subTest(moved=moved):
+                b = self.bullet(prefix)
+                tailored = LIVE_MASTER.replace(b["text"], b["text"].replace(src_tech, f"{src_tech} and {moved}"))
+                self.assertNotEqual(tailored, LIVE_MASTER)
+                self.assertTrue(any("attributed to" in x for x in nf.check_no_fabrication(LIVE_MASTER, tailored)))
 
 
 if __name__ == "__main__":
