@@ -46,6 +46,20 @@ const lastToast = (tone) => document.body.findAll((e) => (e.attributes.class || 
 
 // ---- rendering ----------------------------------------------------------------------------
 
+const postedCell = (table) => table.findAll((e) => e.tagName === 'TD')[4];
+
+test('the Posted column shows the posting date as MM/DD/YYYY, never a relative label', () => {
+  assert.equal(postedCell(jobsTable([baseJob({ posted_date: '2026-10-12', found_at: '2026-10-13' })], () => {})).textContent, '10/12/2026');
+  assert.equal(postedCell(jobsTable([baseJob({ posted_date: '2026-09-30' })], () => {})).textContent, '09/30/2026');
+});
+
+test('the Posted column shows "—" for a missing or invalid posting date, without falling back to found_at', () => {
+  for (const posted_date of [null, undefined, '', 'yesterday', '2026-02-30']) {
+    const table = jobsTable([baseJob({ posted_date, found_at: '2026-10-13' })], () => {});
+    assert.equal(postedCell(table).textContent, '—', JSON.stringify(posted_date));
+  }
+});
+
 test('the dropdown offers exactly the canonical five application statuses, in order', () => {
   const sel = selectIn(jobsTable([baseJob()], () => {}));
   assert.deepEqual(optionValues(sel), ['Not Applied', 'Applied', 'Interviewing', 'Offer', 'Rejected']);
