@@ -100,23 +100,26 @@ export function saveSort(key, value, storage) {
   try { storageOf(storage)?.setItem(key, validSort(value)); } catch { /* storage blocked: keep it for this visit only */ }
 }
 
-// ---- pagination (Applications) -----------------------------------------------------------------
-// Client-side: /api/tracker returns every row, so a page change only re-slices what is loaded.
+// ---- pagination (Applications, Find Jobs) ------------------------------------------------------
+// Client-side: each page already holds its full result set (/api/tracker every row, /api/jobs up to
+// 200), so a page change only re-slices what is loaded. Controls: components/pagination.js.
 export const PAGE_SIZES = [10, 20, 50, 100];
 export const DEFAULT_PAGE_SIZE = 10;
 export const PAGE_SIZE_KEY = 'jobagent.pageSize.applications';
+// One remembered page size per page; the value is only the number.
+export const PAGE_SIZE_KEYS = { applications: PAGE_SIZE_KEY, findJobs: 'jobagent.pageSize.findJobs' };
 
 export const validPageSize = (value) => {
   const n = Number(value);
   return PAGE_SIZES.includes(n) ? n : DEFAULT_PAGE_SIZE;
 };
 
-export function loadPageSize(storage) {
-  try { return validPageSize(storageOf(storage)?.getItem(PAGE_SIZE_KEY)); } catch { return DEFAULT_PAGE_SIZE; }
+export function loadPageSize(storage, key = PAGE_SIZE_KEY) {
+  try { return validPageSize(storageOf(storage)?.getItem(key)); } catch { return DEFAULT_PAGE_SIZE; }
 }
 
-export function savePageSize(value, storage) {
-  try { storageOf(storage)?.setItem(PAGE_SIZE_KEY, String(validPageSize(value))); } catch { /* storage blocked: keep it for this visit only */ }
+export function savePageSize(value, storage, key = PAGE_SIZE_KEY) {
+  try { storageOf(storage)?.setItem(key, String(validPageSize(value))); } catch { /* storage blocked: keep it for this visit only */ }
 }
 
 // The requested page clamped to 1..pages, and that page's slice of the (already filtered + sorted) rows.

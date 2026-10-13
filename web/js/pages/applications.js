@@ -8,8 +8,9 @@ import { emptyState, errorState, loadable, pageHeader, scoreBadge, searchInput, 
 import { navigate } from '../router.js';
 import { safeHref } from '../lib/format.js';
 import { TRACKER_STATUSES } from '../components/jobs.js';
+import { pageSizeSelect, pager, refocusPager } from '../components/pagination.js';
 import {
-  PAGE_SIZES, SORT_KEYS, SORT_OPTIONS, formatDateMMDDYYYY, loadPageSize, loadSort, pageList, paginate, savePageSize, saveSort, sheetHref, sortRows,
+  SORT_KEYS, SORT_OPTIONS, formatDateMMDDYYYY, loadPageSize, loadSort, paginate, savePageSize, saveSort, sheetHref, sortRows,
 } from '../lib/trackerView.js';
 
 function statusSelect(row, onChanged) {
@@ -56,25 +57,6 @@ export function sortSelect({ value, label, onSort }) {
   return h('label', { class: 'sort-control' }, h('span', { class: 'sort-label', 'aria-hidden': 'true' }, 'Sort by'), sel);
 }
 
-function pageSizeSelect({ value, onChange }) {
-  const sel = h('select', { class: 'input input-sm page-size-select', 'aria-label': 'Rows per page', onChange: (e) => onChange(Number(e.target.value)) },
-    ...PAGE_SIZES.map((n) => h('option', { value: String(n), selected: n === value }, String(n))));
-  return h('label', { class: 'sort-control page-size-control' }, h('span', { class: 'sort-label', 'aria-hidden': 'true' }, 'Rows per page'), sel);
-}
-
-// Previous · 1 2 3 … 9 · Next. Native buttons: disabled ends are really disabled; the current page has aria-current.
-export function pager({ page, pages }, go) {
-  const nav = (key, text, target, disabled) => h('button', { class: 'btn btn-outline btn-sm', type: 'button', 'data-page-nav': key,
-    disabled, onClick: () => go(target, key) }, text);
-  return h('nav', { class: 'pager', 'aria-label': 'Applications pages' },
-    nav('prev', 'Previous', page - 1, page <= 1),
-    h('div', { class: 'pager-pages' }, ...pageList(page, pages).map((n) => (n == null
-      ? h('span', { class: 'pager-gap', 'aria-hidden': 'true' }, '…')
-      : h('button', { class: `btn btn-sm page-btn ${n === page ? 'btn-primary' : 'btn-ghost'}`, type: 'button', 'data-page-nav': String(n),
-        'aria-label': `Page ${n}`, 'aria-current': n === page ? 'page' : null, onClick: () => go(n, String(n)) }, String(n))))),
-    nav('next', 'Next', page + 1, page >= pages));
-}
-
 // loadable() + search and sort controls that re-render the last response instead of refetching the Sheet.
 // The page header's sheet slot is filled from the same response. Search and sort send `state.page`
 // back to 1; render() clamps it to the pages that exist.
@@ -82,13 +64,7 @@ function searchableSection(host, load, render, { label, sortLabel, sortKey, shee
   let last = null;
   const state = { q: '', sort: loadSort(sortKey), page: 1, pageSize };
   const rerender = () => { if (last) mount(host, render(last[0], last[1], state)); };
-  // A page button re-renders the table; keep keyboard focus on the same control (or the current page when it is now disabled).
-  state.go = (n, focusKey) => {
-    state.page = n;
-    rerender();
-    const el = host.querySelector?.(`[data-page-nav="${focusKey}"]`);
-    (el && !el.disabled ? el : host.querySelector?.('[aria-current="page"]'))?.focus?.();
-  };
+  state.go = (n, focusKey) => { state.page = n; rerender(); refocusPager(host, focusKey); };
   state.rerender = rerender;
   const list = loadable(host, { skeleton: 'table', load, render: (d, reload) => {
     last = [d, reload];
@@ -127,7 +103,7 @@ export function applicationsPage(root, { query }) {
             h('td', {}, resumeCell(r)), h('td', { class: 'nowrap cell-date' }, formatDateMMDDYYYY(r.timestamp) || '—'), h('td', {}, r.source || 'LinkedIn'),
             h('td', {}, href ? h('a', { class: 'btn-icon', href, target: '_blank', rel: 'noopener noreferrer', 'aria-label': `Open ${r.title}`, title: 'Open job posting' }, icon('ext', 16)) : null));
         })))),
-      pg.pages > 1 && pager(pg, st.go));
+      pg.pages > 1 && pager(pg, st.go, 'Applications pages'));
   };
   const { list, search, sort, state } = searchableSection(host, () => api.get(`/api/tracker${qs({ status })}`), render,
     { label: 'Search applications', sortLabel: 'Sort applications', sortKey: SORT_KEYS.applications, sheetSlot, pageSize: loadPageSize() });

@@ -51,6 +51,17 @@ export class FakeElement extends FakeBase {
   }
   find(pred) { return this.findAll(pred)[0] || null; }
   querySelector(tag) { return this.find((e) => e.tagName === tag.toUpperCase()); }
+  // Only ".class" selectors (what the Find Jobs filter tabs use).
+  querySelectorAll(sel) { return this.findAll((e) => e.classList.contains(sel.replace(/^\./, ''))); }
+  get classList() {
+    const names = () => (this.attributes.class || '').split(/\s+/).filter(Boolean);
+    const set = (list) => { this.attributes.class = list.join(' '); };
+    return {
+      contains: (c) => names().includes(c),
+      add: (c) => { if (!names().includes(c)) set([...names(), c]); },
+      remove: (c) => set(names().filter((n) => n !== c)),
+    };
+  }
 }
 
 export function installFakeDom() {
