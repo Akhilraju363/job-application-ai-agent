@@ -43,5 +43,6 @@ metric cards label-first, 2×2 on phones; Find Jobs sort; Applications client-si
 actions; Settings in six sections; Tailor Resume workflow stepper driven by real task stages; resume previews no
 longer add a second `h1`.
 
-Phase 2 (open): server-side pagination on Find Jobs (the API already accepts `offset`); a compact pipeline-status card on
+Phase 2 (open): server-side pagination on Find Jobs only if more than 200 jobs per filter becomes normal (client-side paging
+shipped 2026-10-13; the API already accepts `offset`); a compact pipeline-status card on
 the dashboard once the backend exposes the last run's outcome.

@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  relTime, relDay, matchTone, statusTone, trendInfo, periodLabel, initials, safeHref, fileNameFromDisposition, todayISO,
+  relTime, relDay, formatPostedDate, matchTone, statusTone, trendInfo, periodLabel, initials, safeHref, fileNameFromDisposition, todayISO,
 } from '../js/lib/format.js';
 import { parseResume, groupBullets } from '../js/lib/resumeMarkdown.js';
 import { niceMax, gridTicks, donutArcs, percentOf } from '../js/lib/chartGeometry.js';
@@ -26,6 +26,55 @@ test('relDay treats date-only values as days, not hours', () => {
   assert.equal(relDay('2026-09-14T00:00:00+00:00', NOW), '6 days ago');
   assert.equal(relDay('2026-09-20T10:00:00Z', NOW), '2 hours ago');
   assert.match(relDay('2026-06-01', NOW), /Jun 1, 2026/);
+});
+
+test('formatPostedDate renders valid dates as MM/DD/YYYY, zero-padded', () => {
+  assert.equal(formatPostedDate('2026-10-12'), '10/12/2026');
+  assert.equal(formatPostedDate('2026-10-13'), '10/13/2026');
+  assert.equal(formatPostedDate('2026-09-30'), '09/30/2026');
+  assert.equal(formatPostedDate('2026-01-05'), '01/05/2026');
+  assert.equal(formatPostedDate(' 2026-03-09 '), '03/09/2026');
+  assert.equal(formatPostedDate('2026-10-12T00:00:00+00:00'), '10/12/2026');
+  assert.equal(formatPostedDate('2026-10-12 08:15:00'), '10/12/2026');
+});
+
+test('formatPostedDate never shows a relative label', () => {
+  for (const v of ['2026-10-12', '2026-10-13', '2026-09-30', '2020-01-01']) {
+    assert.match(formatPostedDate(v), /^\d{2}\/\d{2}\/\d{4}$/);
+  }
+});
+
+test('formatPostedDate returns "" for missing or invalid dates (no current-date substitution)', () => {
+  for (const v of [null, undefined, '', '   ', true, false, 'yesterday', '2 days ago', '1 week ago', 'garbage',
+    '2026-13-01', '2026-02-30', '2026-00-10', '2026-10-12Tnot-a-time', 'NaN', 12, -1, '1.5e12']) {
+    assert.equal(formatPostedDate(v), '', `expected "" for ${JSON.stringify(v)}`);
+  }
+});
+
+test('formatPostedDate accepts epoch timestamps (seconds or ms) in UTC', () => {
+  const ms = Date.UTC(2026, 9, 12, 23, 59, 59);
+  assert.equal(formatPostedDate(ms), '10/12/2026');
+  assert.equal(formatPostedDate(String(ms)), '10/12/2026');
+  assert.equal(formatPostedDate(Math.floor(ms / 1000)), '10/12/2026');
+  assert.equal(formatPostedDate(Date.UTC(2026, 9, 13, 0, 0, 0)), '10/13/2026');
+});
+
+test('formatPostedDate keeps the written calendar date across timezone boundaries', () => {
+  const original = process.env.TZ;
+  try {
+    for (const tz of ['UTC', 'Asia/Kolkata', 'America/Los_Angeles', 'Pacific/Kiritimati', 'Pacific/Pago_Pago']) {
+      process.env.TZ = tz;
+      assert.equal(formatPostedDate('2026-10-12'), '10/12/2026', tz);
+      assert.equal(formatPostedDate('2026-10-12T00:00:00Z'), '10/12/2026', tz);
+      assert.equal(formatPostedDate('2026-10-12T23:30:00-05:00'), '10/12/2026', tz);
+      assert.equal(formatPostedDate('2026-10-13T00:30:00+05:30'), '10/13/2026', tz);
+      assert.equal(formatPostedDate('2026-12-31T23:59:59Z'), '12/31/2026', tz);
+      assert.equal(formatPostedDate('2027-01-01T00:00:00Z'), '01/01/2027', tz);
+      assert.equal(formatPostedDate(Date.UTC(2026, 9, 12, 23, 30)), '10/12/2026', tz);
+    }
+  } finally {
+    if (original === undefined) delete process.env.TZ; else process.env.TZ = original;
+  }
 });
 
 test('tones', () => {

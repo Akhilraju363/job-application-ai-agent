@@ -34,6 +34,7 @@ The choice is remembered in `localStorage` (`jobagent.sort.applications`, the op
 ## Pagination
 Client-side: `GET /api/tracker` has no `offset`/`limit` and already returns every row (status-filtered), so paging only
 re-slices the loaded rows (`paginate()` / `pageList()` in `web/js/lib/trackerView.js`) — no extra Sheet read, never a status write.
+The pager and the “Rows per page” select are shared with Find Jobs (`web/js/components/pagination.js`).
 - Order: status tab (server) → search → sort → count → `rows.slice((page-1)*size, page*size)`; only that page is rendered.
   The count is of the filtered/searched rows.
 - Rows per page: 10 (default) · 20 · 50 · 100, remembered in `localStorage` `jobagent.pageSize.applications` (the number

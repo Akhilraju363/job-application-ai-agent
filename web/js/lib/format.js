@@ -31,6 +31,31 @@ export function relDay(value, now = Date.now()) {
   return new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
+// A job's posting date as MM/DD/YYYY, or '' when missing/invalid (callers render '—').
+// ISO strings keep the calendar date they were written with -- '2026-10-12T23:30:00-05:00' is
+// 10/12/2026, never shifted by the viewer's timezone. Epoch numbers (seconds or ms) use UTC.
+// Relative text ("2 days ago") is rejected: resolving it would substitute the current date.
+export function formatPostedDate(value) {
+  if (value == null || value === '' || typeof value === 'boolean') return '';
+  const s = String(value).trim();
+  let y, m, d;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})(?:$|[T ])/.exec(s);
+  if (iso) {
+    if (s.length > 10 && Number.isNaN(Date.parse(s.replace(' ', 'T')))) return '';
+    [y, m, d] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+    const check = new Date(Date.UTC(y, m - 1, d));
+    if (check.getUTCFullYear() !== y || check.getUTCMonth() !== m - 1 || check.getUTCDate() !== d) return '';
+  } else if (/^\d{9,13}$/.test(s)) {
+    const n = Number(s);
+    const t = new Date(n < 1e11 ? n * 1000 : n);
+    [y, m, d] = [t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate()];
+  } else {
+    return '';
+  }
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(m)}/${pad(d)}/${y}`;
+}
+
 export function matchTone(pct) {
   if (pct == null) return 'neutral';
   if (pct >= 80) return 'green';

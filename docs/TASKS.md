@@ -18,6 +18,8 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
 - [x] 2026-10-12 (uncommitted) `test_summary_overview_status_use_real_data` pinned the same way (its `range=30d`
       window from the real today would have dropped the 2026-09-18 fixture job from 2026-10-18). Both tests now share
       `pinned_today()` in `tests/test_dashboard_server.py`; assertions unchanged.
+- [x] 2026-10-13 (uncommitted) Jobs table Posted column shows `MM/DD/YYYY` from `posted_date` (no relative labels,
+      no `found_at` fallback); web tests added. Not committed.
 - [ ] Local bullet tailoring is still shallow -- a model limit, not the checker: across 7 SourcingXPress probes on
       2026-10-09 (original prompt re-run + 5 prompt variants + final harness run) qwen2.5:7b returned 0-2 changed
       bullets of 18, and every change was a deletion or punctuation. The final run fell back to reorder-only. The 5
@@ -35,7 +37,10 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       (`ARCHITECTURE.md`), set `source` per platform. Keep the per-mode job limit and the 6h cache.
 - [ ] Decide the schedule: owner notes say "daily 7am IST", code runs Mon–Fri (`0 7 * * 1-5`). TODO: confirm.
 - [ ] Watch Apify Free-plan credit once a second actor runs (more results per run → more credit and more LLM calls).
-- [ ] UI Phase 2 (`docs/ui/UI_IMPLEMENTATION.md`): server-side pagination on Find Jobs; pipeline-status card once the
+- [x] 2026-10-13 (uncommitted) Find Jobs pagination, client-side, reusing the Applications pager + Rows per page (own
+      `jobagent.pageSize.findJobs`); `web/tests/findJobsPagination.test.mjs`. Not committed.
+- [ ] UI Phase 2 (`docs/ui/UI_IMPLEMENTATION.md`): server-side Find Jobs pagination (only if >200 jobs per filter becomes
+      normal -- the API caps a response at 200); pipeline-status card once the
       backend exposes the last run's outcome.
 - [ ] Show `master_resume_current: false` in the dashboard (API already returns it) for resumes built from an older master.
 - [ ] Consider loading prompts from `docs/prompts/*.md` instead of Python constants (suggestion only).

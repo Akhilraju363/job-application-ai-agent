@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { badge, loadable, menu, openDrawer, toast } from '../ui.js';
 import { navigate } from '../router.js';
-import { matchTone, relDay, safeHref, statusTone } from '../lib/format.js';
+import { formatPostedDate, matchTone, safeHref, statusTone } from '../lib/format.js';
 
 export const TRACKER_STATUSES = ['Not Applied', 'Applied', 'Interviewing', 'Offer', 'Rejected'];
 
@@ -105,7 +105,7 @@ function jobDetail(j, close) {
       h('button', { class: 'btn-icon', 'aria-label': 'Close', onClick: close }, icon('x', 18))),
     h('div', { class: 'detail-meta' }, matchBadge(j.match_pct), badge(j.state, statusTone(j.state)),
       j.score != null && h('span', { class: 'muted' }, `Pipeline score ${j.score}/10 (${j.qualified ? 'meets' : 'below'} the 8+ cutoff)`),
-      h('span', { class: 'muted' }, `Posted ${relDay(j.posted_date || j.found_at) || 'unknown'}`)),
+      h('span', { class: 'muted' }, `Posted ${formatPostedDate(j.posted_date) || 'unknown'}`)),
     j.reasoning && h('section', {}, h('h4', {}, 'Why this score'), h('p', {}, j.reasoning)),
     h('section', {}, h('h4', {}, 'Matched requirements'), chips(j.matched, 'green')),
     h('section', {}, h('h4', {}, 'Missing requirements'), chips(j.missing, 'red')),
@@ -140,7 +140,7 @@ export function jobsTable(jobs, onChange, { scroll = false } = {}) {
     h('tbody', {}, ...jobs.map((j) => h('tr', {},
       h('td', { class: 'cell-title' }, h('button', { class: 'link-btn', onClick: () => openJob(j) }, j.title || 'Untitled')),
       h('td', {}, j.company || '—'), h('td', {}, matchBadge(j.match_pct)), h('td', {}, j.location || '—'),
-      h('td', { class: 'nowrap' }, relDay(j.posted_date || j.found_at) || '—'), h('td', {}, j.source),
+      h('td', { class: 'nowrap' }, formatPostedDate(j.posted_date) || '—'), h('td', {}, j.source),
       h('td', {}, statusCell(j, onChange)), h('td', {}, jobActions(j, onChange)))))));
 }
 
