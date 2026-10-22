@@ -8,6 +8,7 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       UI redesign + `docs/ui/`, project docs). Not committed or pushed yet.
 
 ## Next
+- [x] 2026-10-21 (uncommitted) Fixed dashboard tracker append diagnostics and schema validation for `gws 0.22.5`; verified the configured sheet headers/range read-only and added mocked command, failure, payload, and canonical-link duplicate tests. No real append performed.
 - [x] First live scoped run (Auto_job_apply -> `--job-ids-file`), 2026-10-12 run `20261012T165349-8dd2834d`: 2 exported
       ids scored (local qwen2.5:7b, 4 LLM calls), 1 tailored + uploaded, nothing out of scope scored/tailored. It showed
       the scrape stage dropping earlier Naukri records from `raw_jobs.json` (`121026001994`, `121026001987`; their scores
