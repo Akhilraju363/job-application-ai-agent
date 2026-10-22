@@ -26,6 +26,7 @@ log = lc.get_logger("tracker")
 
 HEADERS = ["Job Title", "Company", "Job Link", "Fit Score", "Resume Path", "Status", "Timestamp",
            "Company Notes", "Source", "Status Updated", "Resume ID", "Match %"]
+TRACKER_RANGE = "Sheet1!A:L"
 # Columns I:L were added for the dashboard (where a row came from, when its status last changed
 # via the dashboard, which generated resume + JD match it came from). Older sheets only have
 # A:H -- ensure_extra_headers() adds the rest.
@@ -53,7 +54,12 @@ def gws(*args):
     # See format_resume_doc.py's gws() for why encoding="utf-8" is required on Windows.
     result = subprocess.run([*GWS_CMD, *args], capture_output=True, text=True, encoding="utf-8")
     if result.returncode != 0:
-        raise RuntimeError(f"gws {' '.join(args)} failed: {result.stderr}")
+        command = "gws " + " ".join(args)
+        raise RuntimeError("\n".join([
+            f"{command} failed (exit code {result.returncode})",
+            f"stdout: {result.stdout.rstrip()}",
+            f"stderr: {result.stderr.rstrip()}",
+        ]))
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
@@ -164,7 +170,7 @@ def build_new_rows(saved_jobs, existing_canonical, today):
 
 def read_tracker(sheet_id):
     """All tracker rows as dicts, each with its 1-based sheet row number."""
-    values = gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", "Sheet1!A:L").get("values", [])
+    values = gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", TRACKER_RANGE).get("values", [])
     rows = []
     for i, raw in enumerate(values[1:], start=2):
         cells = [str(c) for c in raw] + [""] * (len(HEADERS) - len(raw))
@@ -192,7 +198,10 @@ def update_range(sheet_id, a1_range, values):
 
 
 def append_rows(sheet_id, rows):
-    gws("sheets", "+append", "--spreadsheet", sheet_id, "--json-values", json.dumps(rows))
+    if not isinstance(rows, list) or any(not isinstance(row, list) or len(row) != len(HEADERS) for row in rows):
+        raise ValueError(f"tracker append rows must be lists of {len(HEADERS)} values")
+    gws("sheets", "+append", "--spreadsheet", sheet_id, "--json-values",
+        json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
 
 
 def set_status(sheet_id, row_number, status, today):

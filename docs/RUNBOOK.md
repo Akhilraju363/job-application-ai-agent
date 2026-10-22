@@ -58,7 +58,7 @@ Only one alert exists: `JOB-APPLY-AGENT — WHAT BROKE`, sent by `modal_app.run_
 | `score_jobs.py` | `scored 0/N jobs this run` = every provider failed for every job (quota/outage); or timeout | recover locally with Ollama |
 | `tailor_job.py` | a step crash or timeout (per-job failures are flagged, not raised) | re-run locally |
 | `company_research.py` | crash / timeout (per-company failures store `""` and retry next run) | re-run locally |
-| `write_sheet.py` | `gws` auth or Sheets error | check `gws` credentials / `google_sheet_id` |
+| `write_sheet.py` | `gws` auth or Sheets error; the error includes exit code, stdout and stderr | check `gws` credentials / `google_sheet_id`; confirm the append payload is a 12-column JSON array for `Sheet1!A:L` |
 | `post-run reconciliation` | `N/M qualified job(s) produced no saved resume` — steps exited 0 but a qualified job has no Drive resume | re-run `tailor_job.py` (+ research + sheet) locally |
 
 `TimeoutExpired` in the reason = that step's subprocess timeout (see `CONFIG.md`). No alert at all with a failed run in

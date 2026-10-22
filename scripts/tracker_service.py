@@ -29,8 +29,8 @@ class TrackerError(RuntimeError):
 
 
 def _short(exc):
-    return f"{type(exc).__name__}: {str(exc).strip().splitlines()[0][:200]}" if str(exc).strip() \
-        else type(exc).__name__
+    message = str(exc).strip()
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
 def _is_url(value):
@@ -94,7 +94,7 @@ class Tracker:
 
     def _find(self, rows, link):
         key = canonical_link(link)
-        return next((r for r in rows if canonical_link(r["link"]) == key), None)
+        return next((r for r in rows if key and canonical_link(r.get("link")) == key), None)
 
     def save_job(self, *, title, company, link, score, resume_path="", source="LinkedIn",
                  company_notes="", resume_id="", match_pct=None):
