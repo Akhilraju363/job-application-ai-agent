@@ -25,6 +25,7 @@ import resume_store
 from job_links import canonical_link
 
 STATUSES = ["Not Applied", "Applied", "Interviewing", "Offer", "Rejected"]
+SUITABILITIES = ["Not reviewed", "Shortlist", "Not Shortlist"]
 APPLIED_STATUSES = {"Applied", "Interviewing", "Offer"}
 INTERVIEW_STATUSES = {"Interviewing", "Offer"}
 QUALIFY_CUTOFF = 8
@@ -100,7 +101,9 @@ def build_jobs(raw, scored, tailored, tracker_rows):
             "tailored": bool(t), "resume_link": (t or {}).get("resume_link"),
             "drive_folder_link": (t or {}).get("drive_folder_link"),
             "tailored_at": (t or {}).get("tailored_at"), "company_notes": (t or {}).get("company_notes"),
-            "tracker_status": row["status"] if row else None, "state": state,
+            "tracker_status": row["status"] if row else None,
+            "suitability": row.get("suitability", "Not reviewed") if row else "Not reviewed",
+            "state": state,
         })
     jobs.sort(key=lambda j: (str(to_date(j["found_at"]) or to_date(j["posted_date"]) or ""),
                              j["score"] or 0), reverse=True)
@@ -211,12 +214,30 @@ def overview(jobs, resumes, tracker, p):
 
 def status_counts(tracker):
     counts = {s: 0 for s in STATUSES}
+    suitability_counts = {s: 0 for s in SUITABILITIES}
+    unknown_statuses = {}
+    unknown_suitabilities = {}
     for r in tracker["rows"]:
-        counts[r["status"] if r["status"] in counts else "Not Applied"] += 1
-    return {"statuses": [{"status": s, "count": counts[s]} for s in STATUSES],
-            "total": sum(counts.values()), "tracker": {"available": tracker["available"],
-                                                       "error": tracker["error"], "stale": tracker["stale"],
-                                                       "configured": tracker["configured"]}}
+        status = r.get("status", "")
+        if status in counts:
+            counts[status] += 1
+        else:
+            unknown_statuses[status or "(blank)"] = unknown_statuses.get(status or "(blank)", 0) + 1
+        suitability = r.get("suitability") or "Not reviewed"
+        if suitability in suitability_counts:
+            suitability_counts[suitability] += 1
+        else:
+            unknown_suitabilities[suitability] = unknown_suitabilities.get(suitability, 0) + 1
+    return {
+        "statuses": [{"status": s, "count": counts[s]} for s in STATUSES],
+        "suitabilities": [{"suitability": s, "count": suitability_counts[s]} for s in SUITABILITIES],
+        "total": len(tracker["rows"]),
+        "suitability_total": sum(suitability_counts.values()),
+        "unknown_statuses": unknown_statuses,
+        "unknown_suitabilities": unknown_suitabilities,
+        "tracker": {"available": tracker["available"], "error": tracker["error"], "stale": tracker["stale"],
+                    "configured": tracker["configured"]},
+    }
 
 
 def _period_json(p):

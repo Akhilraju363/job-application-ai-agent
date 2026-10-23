@@ -392,7 +392,7 @@ class TrackerSave(unittest.TestCase):
     def test_existing_pipeline_rows_are_unchanged_apart_from_trailing_columns(self):
         row = write_sheet.build_row({"title": "T", "company": "C", "link": "L", "score": 8, "resume_link": "R", "company_notes": "N"}, "2026-09-20")
         self.assertEqual(row[:8], ["T", "C", "L", "8", "R", "Not Applied", "2026-09-20", "N"])
-        self.assertEqual(row[8:], ["LinkedIn", "", "", ""])
+        self.assertEqual(row[8:], ["LinkedIn", "", "", "", "Not reviewed"])
 
 
 class OptionalCompany(unittest.TestCase):

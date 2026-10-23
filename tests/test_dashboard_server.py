@@ -564,8 +564,18 @@ class TrackerAndJobActions(ServerCase):
             self.assertEqual(self.call("PATCH", "/api/tracker/status", {"link": LINK, "status": "Applied"})[0], 200)
         ss.assert_called_once_with(LINK, "Applied")
 
+    def test_suitability_update_is_independent_and_validated(self):
+        self.assertEqual(self.call("PATCH", "/api/tracker/suitability",
+                                   {"link": LINK, "suitability": "Unknown"})[0], 400)
+        with mock.patch.object(srv.tracker, "set_suitability",
+                               return_value={"row": 2, "suitability": "Shortlist"}) as ss:
+            self.assertEqual(self.call("PATCH", "/api/tracker/suitability",
+                                       {"link": LINK, "suitability": "Shortlist"})[0], 200)
+        ss.assert_called_once_with(LINK, "Shortlist")
+
     def test_tracker_listing_and_status_filter(self):
         rows = [{"row": 2, "title": "A", "company": "X", "link": "l1", "score": "8", "resume_path": "", "status": "Applied",
+         "suitability": "Shortlist",
                  "timestamp": "2026-09-01", "company_notes": "", "source": "", "status_updated": ""},
                 {"row": 3, "title": "B", "company": "Y", "link": "l2", "score": "8", "resume_path": "", "status": "Offer",
                  "timestamp": "2026-09-01", "company_notes": "", "source": "", "status_updated": ""}]
@@ -573,6 +583,8 @@ class TrackerAndJobActions(ServerCase):
             self.assertEqual(self.call("GET", "/api/tracker")[2]["total"], 2)
             self.assertEqual([r["title"] for r in self.call("GET", "/api/tracker?status=Offer")[2]["rows"]], ["B"])
             self.assertEqual(self.call("GET", "/api/tracker?status=Nope")[0], 400)
+            self.assertEqual([r["title"] for r in self.call(
+                "GET", "/api/tracker?suitability=Not%20reviewed")[2]["rows"]], ["B"])
 
     FAKE_SHEET_ID = "FAKE_sheet_id_0123456789"
 

@@ -79,6 +79,12 @@ retried on the next run; `modal_app.reconcile_qualified` raises (→ Telegram) i
 
 ### 4. Google Sheet row (`write_sheet.build_row`) — see `CONFIG.md` for the column layout.
 
+The tracker stores two independent decisions: application progress (`Not Applied`, `Applied`,
+`Interviewing`, `Offer`, `Rejected`) in column F, and suitability (`Not reviewed`, `Shortlist`,
+`Not Shortlist`) in column M. A new row defaults to `Not Applied` and `Not reviewed`. Updating
+suitability never changes application status or its status-updated date; `Not Shortlist` is not
+the same as `Rejected`.
+
 ### Dashboard resume record — `output/generated_resumes/<resume_id>/meta.json`
 
 **Verified PDF artifact** (`scripts/resume_artifacts.py publish_verified_pdf`): for a version whose

@@ -84,6 +84,9 @@ test('tones', () => {
   assert.equal(matchTone(null), 'neutral');
   assert.equal(statusTone('Applied'), 'blue');
   assert.equal(statusTone('Interviewing'), 'orange');
+  assert.equal(statusTone('Shortlist'), 'green');
+  assert.equal(statusTone('Not Shortlist'), 'red');
+  assert.equal(statusTone('Not reviewed'), 'neutral');
   assert.equal(statusTone('whatever'), 'neutral');
 });
 

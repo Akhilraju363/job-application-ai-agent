@@ -39,6 +39,9 @@ export function overviewChart(series) {
 export const STATUS_KEYS = {
   'Not Applied': 'grey', 'Applied': 'blue', 'Interviewing': 'orange', 'Offer': 'green', 'Rejected': 'red',
 };
+export const SUITABILITY_KEYS = {
+  'Not reviewed': 'grey', 'Shortlist': 'green', 'Not Shortlist': 'red',
+};
 
 export function statusChart({ statuses, total }, onSelect) {
   const r = 70, sw = 28, size = 200, c = size / 2;
@@ -64,5 +67,32 @@ export function statusChart({ statuses, total }, onSelect) {
       h('span', { class: `dot dot-${STATUS_KEYS[s.status]}` }), h('span', { class: 'legend-name' }, s.status),
       h('span', { class: 'legend-count' }, `${s.count} (${percentOf(s.count, total)}%)`)))));
 
+  return h('div', { class: 'donut-wrap' }, donut, legend);
+}
+
+export function suitabilityChart({ suitabilities, suitability_total }, onSelect) {
+  const r = 70, sw = 28, size = 200, c = size / 2;
+  const arcs = donutArcs(suitabilities.map((s) => ({ key: s.suitability, value: s.count })), r);
+  const segments = arcs.filter((a) => a.value > 0).map((a) =>
+    svg('circle', {
+      class: `donut-seg seg-${SUITABILITY_KEYS[a.key]}`, cx: c, cy: c, r, fill: 'none', 'stroke-width': sw,
+      'stroke-dasharray': `${a.dash} ${a.gap}`, 'stroke-dashoffset': a.offset,
+      transform: `rotate(-90 ${c} ${c})`, tabindex: '0', role: 'link',
+      'aria-label': `${a.key}: ${a.value}. View applications`,
+      onClick: () => onSelect(a.key),
+      onKeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(a.key); } },
+    }, svg('title', {}, `${a.key}: ${a.value}`)));
+  const donut = svg('svg', { class: 'donut', viewBox: `0 0 ${size} ${size}`, role: 'img',
+    'aria-label': `${suitability_total} applications by suitability` },
+    svg('circle', { class: 'donut-track', cx: c, cy: c, r, fill: 'none', 'stroke-width': sw }),
+    ...segments,
+    svg('text', { class: 'donut-total', x: c, y: c + 4, 'text-anchor': 'middle' }, String(suitability_total)),
+    svg('text', { class: 'donut-sub', x: c, y: c + 24, 'text-anchor': 'middle' }, 'Total'));
+  const legend = h('ul', { class: 'legend' }, ...suitabilities.map((s) =>
+    h('li', {}, h('button', { class: 'legend-item', onClick: () => onSelect(s.suitability),
+      title: `View ${s.suitability} applications` },
+      h('span', { class: `dot dot-${SUITABILITY_KEYS[s.suitability]}` }),
+      h('span', { class: 'legend-name' }, s.suitability),
+      h('span', { class: 'legend-count' }, `${s.count} (${percentOf(s.count, suitability_total)}%)`)))));
   return h('div', { class: 'donut-wrap' }, donut, legend);
 }

@@ -30,7 +30,8 @@ first column are the conceptual names used in design discussions.
 - Exactly one per page, first in `<main>`; renders the page's only `h1`. At most one `.btn-primary` action.
 
 ### StatusBadge / ScoreBadge
-- Tracker statuses only: Not Applied, Applied, Interviewing, Offer, Rejected. Pipeline states (Qualified, Below
+- Application tracker statuses: Not Applied, Applied, Interviewing, Offer, Rejected. Suitability values are
+  Not reviewed, Shortlist, Not Shortlist. Pipeline states (Qualified, Below
   cutoff, Tailored, Unscored) use `badge(text, statusTone(text))`.
 - Always text + colour (+ dot). Score badges always print the number.
 

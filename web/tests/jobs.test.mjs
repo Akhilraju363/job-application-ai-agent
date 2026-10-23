@@ -14,7 +14,7 @@ import { installFakeDom, forbidBrowserStorage } from './fakeDom.mjs';
 installFakeDom();
 forbidBrowserStorage();
 
-const { jobsTable, TRACKER_STATUSES } = await import('../js/components/jobs.js');
+const { jobsTable, TRACKER_STATUSES, SUITABILITIES } = await import('../js/components/jobs.js');
 
 const respond = (status, body = {}) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
 
@@ -38,6 +38,7 @@ const baseJob = (over = {}) => ({
 });
 
 const selectIn = (table) => table.find((e) => e.tagName === 'SELECT' && (e.attributes.class || '').includes('status-select'));
+const suitabilityIn = (table) => table.find((e) => e.tagName === 'SELECT' && (e.attributes.class || '').includes('suitability-select'));
 const noteIn = (table) => table.find((e) => (e.attributes.class || '').includes('status-note'));
 const hintIn = (table) => table.find((e) => (e.attributes.class || '').includes('status-hint'));
 const optionValues = (sel) => sel.children.filter((c) => c.tagName === 'OPTION').map((o) => o.value);
@@ -69,6 +70,13 @@ test('the dropdown offers exactly the canonical five application statuses, in or
 test('a tracked job pre-selects its current status; an untracked job defaults to Not Applied', () => {
   assert.equal(selectedValue(selectIn(jobsTable([baseJob({ tracker_status: 'Interviewing' })], () => {}))), 'Interviewing');
   assert.equal(selectedValue(selectIn(jobsTable([baseJob({ tracker_status: null })], () => {}))), 'Not Applied');
+});
+
+test('the suitability dropdown has its own canonical values and defaults independently', () => {
+  const table = jobsTable([baseJob({ tracker_status: 'Applied', suitability: 'Shortlist' })], () => {});
+  assert.deepEqual(optionValues(suitabilityIn(table)), SUITABILITIES);
+  assert.equal(selectedValue(suitabilityIn(table)), 'Shortlist');
+  assert.equal(selectedValue(selectIn(table)), 'Applied');
 });
 
 test('the dropdown is a native <select> with an accessible label naming the job (keyboard-operable by default)', () => {
@@ -141,6 +149,18 @@ test('changing an already-tracked job skips the save call and only PATCHes the s
   assert.equal(fetch.calls.length, 1);
   assert.equal(fetch.calls[0].url, '/api/tracker/status');
   assert.deepEqual(fetch.calls[0].init.body, { link: 'https://x/2', status: 'Interviewing' });
+});
+
+test('changing suitability uses its own endpoint and preserves application status', async () => {
+  const fetch = recorder(respond(200, { row: 5, suitability: 'Not Shortlist' }));
+  globalThis.fetch = fetch;
+  const job = baseJob({ link: 'https://x/3', tracker_status: 'Applied', suitability: 'Shortlist' });
+  const sel = suitabilityIn(jobsTable([job], () => {}));
+  sel.value = 'Not Shortlist';
+  await sel.dispatch('change');
+  assert.deepEqual(fetch.calls.map((c) => c.url), ['/api/tracker/suitability']);
+  assert.deepEqual(fetch.calls[0].init.body, { link: 'https://x/3', suitability: 'Not Shortlist' });
+  assert.equal(job.tracker_status, 'Applied');
 });
 
 test('a below-cutoff job moved to Applied saves it to the tracker and persists the real status, keyed by link', async () => {

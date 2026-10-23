@@ -8,6 +8,7 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       UI redesign + `docs/ui/`, project docs). Not committed or pushed yet.
 
 ## Next
+- [x] 2026-10-23 Fixed the blank dashboard after restart: the new Suitability chart had one missing closing parenthesis in its ES-module legend expression. Root HTML/assets, browser console, APIs, startup command, frontend tests, and full backend tests verified.
 - [x] 2026-10-21 (uncommitted) Fixed dashboard tracker append diagnostics and schema validation for `gws 0.22.5`; verified the configured sheet headers/range read-only and added mocked command, failure, payload, and canonical-link duplicate tests. No real append performed.
 - [x] First live scoped run (Auto_job_apply -> `--job-ids-file`), 2026-10-12 run `20261012T165349-8dd2834d`: 2 exported
       ids scored (local qwen2.5:7b, 4 LLM calls), 1 tailored + uploaded, nothing out of scope scored/tailored. It showed
@@ -49,6 +50,9 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       owner chose to keep the current order for now.
 
 ## Done
+- [x] 2026-10-23 (uncommitted) Added independent tracker Suitability (`Not reviewed`, `Shortlist`, `Not Shortlist`) in Sheet column M,
+      with safe header/validation migration, dedicated API updates, independent Applications/Find Jobs controls and filters,
+      dashboard counts/chart, documentation, and mocked regression coverage. Existing application Status remains unchanged.
 - [x] 2026-10-12 (uncommitted) Removed the Job Tracker and Logs pages (old URLs redirect; backend APIs and logging kept).
 - [x] 2026-10-12 (uncommitted) Applications pagination (client-side; 10/20/50/100, default 10, remembered per browser).
       Browser-checked at 1600/820/390 in both themes against the real tracker (88 rows).

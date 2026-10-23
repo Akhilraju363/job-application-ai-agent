@@ -25,14 +25,16 @@ import logging_config as lc  # noqa: E402
 log = lc.get_logger("tracker")
 
 HEADERS = ["Job Title", "Company", "Job Link", "Fit Score", "Resume Path", "Status", "Timestamp",
-           "Company Notes", "Source", "Status Updated", "Resume ID", "Match %"]
-TRACKER_RANGE = "Sheet1!A:L"
+           "Company Notes", "Source", "Status Updated", "Resume ID", "Match %", "Suitability"]
+TRACKER_RANGE = "Sheet1!A:M"
 # Columns I:L were added for the dashboard (where a row came from, when its status last changed
 # via the dashboard, which generated resume + JD match it came from). Older sheets only have
 # A:H -- ensure_extra_headers() adds the rest.
 EXTRA_HEADERS = HEADERS[8:]
 SHEET_TITLE = "Job Application Tracker"
 STATUS_OPTIONS = ["Not Applied", "Applied", "Interviewing", "Offer", "Rejected"]
+SUITABILITY_OPTIONS = ["Not reviewed", "Shortlist", "Not Shortlist"]
+DEFAULT_SUITABILITY = SUITABILITY_OPTIONS[0]
 
 
 def _resolve_gws():
@@ -110,27 +112,12 @@ def get_or_create_sheet_id():
     sheet_id = created["spreadsheetId"]
 
     gws("sheets", "spreadsheets", "values", "update", "--params",
-        json.dumps({"spreadsheetId": sheet_id, "range": "Sheet1!A1:L1", "valueInputOption": "USER_ENTERED"}),
+        json.dumps({"spreadsheetId": sheet_id, "range": "Sheet1!A1:M1", "valueInputOption": "USER_ENTERED"}),
         "--json", json.dumps({"values": [HEADERS]}))
 
     gws("sheets", "spreadsheets", "batchUpdate", "--params",
         json.dumps({"spreadsheetId": sheet_id}),
-        "--json", json.dumps({"requests": [{
-            "setDataValidation": {
-                "range": {
-                    "sheetId": 0, "startRowIndex": 1, "endRowIndex": 1000,
-                    "startColumnIndex": 5, "endColumnIndex": 6,
-                },
-                "rule": {
-                    "condition": {
-                        "type": "ONE_OF_LIST",
-                        "values": [{"userEnteredValue": v} for v in STATUS_OPTIONS],
-                    },
-                    "showCustomUi": True,
-                    "strict": True,
-                },
-            }
-        }]}))
+        "--json", json.dumps({"requests": _validation_requests()}))
 
     _remember_sheet_id(sheet_id)
     log.info("Created new tracker sheet", extra={"sheet_title": SHEET_TITLE})
@@ -152,6 +139,7 @@ def build_row(job, today, source="LinkedIn"):
         str(job["score"]), resume_path, "Not Applied", today,
         job.get("company_notes", ""), source, "", job.get("resume_id", ""),
         "" if job.get("match_pct") in (None, "") else str(job["match_pct"]),
+        DEFAULT_SUITABILITY,
     ]
 
 
@@ -181,14 +169,53 @@ def read_tracker(sheet_id):
             "resume_path": cells[4], "status": cells[5] or "Not Applied", "timestamp": cells[6],
             "company_notes": cells[7], "source": cells[8], "status_updated": cells[9],
             "resume_id": cells[10], "match_pct": cells[11],
+            "suitability": cells[12] or DEFAULT_SUITABILITY,
         })
     return rows
 
 
 def ensure_extra_headers(sheet_id):
-    have = gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", "Sheet1!I1:L1").get("values") or [[]]
-    if [str(c) for c in have[0]][:len(EXTRA_HEADERS)] != EXTRA_HEADERS:
-        update_range(sheet_id, "Sheet1!I1:L1", [EXTRA_HEADERS])
+    have = gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", "Sheet1!A1:M1").get("values") or [[]]
+    current = [str(c) for c in have[0]] if have else []
+    expected_prefix = HEADERS[:8]
+    if current[:len(expected_prefix)] != expected_prefix:
+        raise RuntimeError("tracker header mismatch in Sheet1!A:H; refusing schema migration")
+    for index, header in enumerate(EXTRA_HEADERS, start=8):
+        existing = current[index] if index < len(current) else ""
+        if existing and existing != header:
+            raise RuntimeError(f"tracker column {index + 1} has unexpected header {existing!r}")
+        if not existing:
+            update_range(sheet_id, f"Sheet1!{_column_name(index)}1", [[header]])
+    gws("sheets", "spreadsheets", "batchUpdate", "--params",
+        json.dumps({"spreadsheetId": sheet_id}),
+        "--json", json.dumps({"requests": _validation_requests()}))
+
+
+def _column_name(index):
+    return chr(ord("A") + index)
+
+
+def _validation_rule(values):
+    return {
+        "condition": {"type": "ONE_OF_LIST", "values": [{"userEnteredValue": v} for v in values]},
+        "showCustomUi": True,
+        "strict": True,
+    }
+
+
+def _validation_requests():
+    return [
+        {"setDataValidation": {
+            "range": {"sheetId": 0, "startRowIndex": 1, "endRowIndex": 1000,
+                      "startColumnIndex": 5, "endColumnIndex": 6},
+            "rule": _validation_rule(STATUS_OPTIONS),
+        }},
+        {"setDataValidation": {
+            "range": {"sheetId": 0, "startRowIndex": 1, "endRowIndex": 1000,
+                      "startColumnIndex": 12, "endColumnIndex": 13},
+            "rule": _validation_rule(SUITABILITY_OPTIONS),
+        }},
+    ]
 
 
 def update_range(sheet_id, a1_range, values):
@@ -209,6 +236,12 @@ def set_status(sheet_id, row_number, status, today):
         raise ValueError(f"unknown status {status!r}")
     update_range(sheet_id, f"Sheet1!F{row_number}", [[status]])
     update_range(sheet_id, f"Sheet1!J{row_number}", [[today]])
+
+
+def set_suitability(sheet_id, row_number, suitability):
+    if suitability not in SUITABILITY_OPTIONS:
+        raise ValueError(f"unknown suitability {suitability!r}")
+    update_range(sheet_id, f"Sheet1!M{row_number}", [[suitability]])
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ log = lc.get_logger("tracker")
 TTL_SECONDS = 45
 FAILURE_TTL_SECONDS = 15  # don't re-run a failing `gws` call once per dashboard widget
 STATUSES = write_sheet.STATUS_OPTIONS
+SUITABILITIES = write_sheet.SUITABILITY_OPTIONS
 SHEET_ID_RE = re.compile(r"[A-Za-z0-9_-]{10,200}")  # Google spreadsheet ids; anything else gets no link
 
 
@@ -153,6 +154,31 @@ class Tracker:
         activity.log_event("status_changed", f"{row['title']} at {row['company']} marked {status}",
                            company=row["company"], title=row["title"], link=link or None, status=status)
         return {"row": row["row"], "status": status}
+
+    def set_suitability(self, link, suitability):
+        if suitability not in SUITABILITIES:
+            raise ValueError(f"suitability must be one of: {', '.join(SUITABILITIES)}")
+        try:
+            sid = self._lookup_sheet_id()
+            if not sid:
+                raise TrackerError("No tracker sheet is configured")
+            write_sheet.ensure_extra_headers(sid)
+            row = self._find(write_sheet.read_tracker(sid), link)
+            if not row:
+                raise LookupError("That job isn't in the tracker yet -- save it first")
+            write_sheet.set_suitability(sid, row["row"], suitability)
+            self.invalidate()
+        except (LookupError, ValueError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.error("Tracker suitability update failed", exc_info=True, extra={"suitability": suitability})
+            raise TrackerError(_short(e)) from e
+        log.info("Tracker row suitability updated", extra={"company": row["company"], "row": row["row"],
+                                                           "suitability": suitability})
+        activity.log_event("suitability_changed", f"{row['title']} at {row['company']} marked {suitability}",
+                           company=row["company"], title=row["title"], link=link or None,
+                           suitability=suitability)
+        return {"row": row["row"], "suitability": suitability}
 
 
 tracker = Tracker()

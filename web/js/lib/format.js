@@ -67,6 +67,7 @@ export function statusTone(status) {
   return ({
     'Applied': 'blue', 'Interviewing': 'orange', 'Offer': 'green', 'Rejected': 'red',
     'Not Applied': 'neutral', 'Tailored': 'purple', 'Qualified': 'green',
+    'Not reviewed': 'neutral', 'Shortlist': 'green', 'Not Shortlist': 'red',
     'Below cutoff': 'neutral', 'Unscored': 'neutral',
   })[status] || 'neutral';
 }

@@ -556,10 +556,15 @@ def resume_save(req):
 def tracker_list(req):
     tr = tracker.snapshot(force=req.q("refresh") == "1")
     status = req.q("status")
+    suitability = req.q("suitability")
     if status and status not in dd.STATUSES:
         raise ApiError(400, f"status must be one of: {', '.join(dd.STATUSES)}", "bad_status")
-    rows = [r for r in tr["rows"] if not status or r["status"] == status]
-    return {"rows": rows, "statuses": dd.STATUSES, "total": len(tr["rows"]),
+    if suitability and suitability not in dd.SUITABILITIES:
+        raise ApiError(400, f"suitability must be one of: {', '.join(dd.SUITABILITIES)}", "bad_suitability")
+    rows = [r for r in tr["rows"]
+            if (not status or r["status"] == status)
+            and (not suitability or r.get("suitability", "Not reviewed") == suitability)]
+    return {"rows": rows, "statuses": dd.STATUSES, "suitabilities": dd.SUITABILITIES, "total": len(tr["rows"]),
             "tracker": {**{k: tr[k] for k in ("available", "error", "stale", "configured")},
                         # only the browser link to the sheet the tracker already uses -- no credentials
                         "sheet_url": tracker.sheet_url() if tr["configured"] else None}}
@@ -574,6 +579,21 @@ def tracker_status(req):
         return tracker.set_status(link, status)
     except ValueError as e:
         raise ApiError(400, str(e), "bad_status") from None
+    except LookupError as e:
+        raise ApiError(404, str(e), "not_found") from None
+    except TrackerError as e:
+        raise ApiError(502, f"Tracker unavailable: {e}", "tracker_unavailable") from None
+
+
+@route("PATCH", "/api/tracker/suitability")
+def tracker_suitability(req):
+    link, suitability = req.body.get("link"), req.body.get("suitability")
+    if not isinstance(link, str) or not link:
+        raise ApiError(400, "link is required", "invalid_input")
+    try:
+        return tracker.set_suitability(link, suitability)
+    except ValueError as e:
+        raise ApiError(400, str(e), "bad_suitability") from None
     except LookupError as e:
         raise ApiError(404, str(e), "not_found") from None
     except TrackerError as e:

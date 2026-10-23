@@ -4,7 +4,7 @@ import { icon } from '../icons.js';
 import { loadable, pageHeader } from '../ui.js';
 import { navigate } from '../router.js';
 import { metricCard } from '../components/metricCard.js';
-import { overviewChart, statusChart } from '../components/charts.js';
+import { overviewChart, statusChart, suitabilityChart } from '../components/charts.js';
 import { quickActions } from '../components/quickActions.js';
 import { jobsTable } from '../components/jobs.js';
 import { recentActivity } from '../components/activity.js';
@@ -59,7 +59,10 @@ export function dashboardPage(root, { profile }) {
     isEmpty: (d) => d.total === 0 && d.tracker.available,
     empty: { title: 'No applications yet', text: 'Jobs you save or tailor a resume for appear in your tracker.', iconName: 'send' },
     render: (d, reload) => (d.tracker.available
-      ? h('div', {}, statusChart(d, (s) => navigate(`/applications?status=${encodeURIComponent(s)}`)),
+      ? h('div', {}, h('h3', { class: 'card-head' }, 'Application Status'),
+        statusChart(d, (s) => navigate(`/applications?status=${encodeURIComponent(s)}`)),
+        h('h3', { class: 'card-head' }, 'Suitability'),
+        suitabilityChart(d, (s) => navigate(`/applications?suitability=${encodeURIComponent(s)}`)),
         d.tracker.stale && h('p', { class: 'muted small' }, 'Showing cached data — the tracker is temporarily unreachable.'))
       : h('div', { class: 'state state-error' }, h('p', {}, `Tracker unavailable: ${d.tracker.error}`),
         h('button', { class: 'btn btn-outline btn-sm', onClick: reload }, 'Retry'))),
@@ -112,4 +115,3 @@ export function dashboardPage(root, { profile }) {
         card(h('div', { class: 'card-head-row' }, 'Recent Activity'), activityHost),
         card(h('div', { class: 'card-head-row' }, 'Configured Sources', h('a', { class: 'link', href: '/job-alerts', 'data-link': true }, 'Edit')), sourcesHost))));
 }
-
