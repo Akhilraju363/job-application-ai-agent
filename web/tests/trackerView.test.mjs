@@ -293,7 +293,7 @@ test('Applications: the column is headed Date (shown uppercase) and cells are MM
     row(4, { title: 'Undated', timestamp: '' }), row(5, { title: 'US', timestamp: '9/2/2026' })] });
   const root = await renderPage(applicationsPage);
   const heads = root.findAll((e) => e.tagName === 'TH').map((th) => th.textContent);
-  assert.deepEqual(heads, ['Role', 'Company', 'Fit', 'Status', 'Resume', 'Date', 'Source', '']);
+  assert.deepEqual(heads, ['Role', 'Company', 'Fit', 'Status', 'Suitability', 'Resume', 'Date', 'Source', '']);
   assert.ok(!heads.includes('Logged'));
   const dates = byClass(root, 'cell-date').map((td) => td.textContent);
   assert.deepEqual(dates, [`${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(0, 4)}`, '09/02/2026', '01/05/2026', '—']);

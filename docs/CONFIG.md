@@ -81,7 +81,7 @@ Dashboard overrides for keywords / location / date window / limit live in `outpu
 the Modal cron never has that file and uses the defaults. Plan: Apify Free (~$5/month credit; runs are blocked when it
 runs out) — per the project owner; TODO: confirm the current plan.
 
-## Google Sheet — "Job Application Tracker", `Sheet1!A:L`
+## Google Sheet — "Job Application Tracker", `Sheet1!A:M`
 
 | Col | Header | Written by `write_sheet.build_row` |
 |---|---|---|
@@ -97,5 +97,9 @@ runs out) — per the project owner; TODO: confirm the current plan.
 | J | Status Updated | set when the dashboard changes the status |
 | K | Resume ID | dashboard resume id |
 | L | Match % | dashboard JD match |
+| M | Suitability | starts `"Not reviewed"`; then one of Not reviewed, Shortlist, Not Shortlist |
 
-Columns I–L were added for the dashboard; `ensure_extra_headers()` adds them to older sheets.
+Columns I–M were added for the dashboard; `ensure_extra_headers()` adds missing headers and strict
+validation to older sheets without overwriting existing A:L data. Blank or absent M cells are read as
+`Not reviewed`. Suitability is independent of the application `Status` in column F and does not update
+`Status Updated` in column J.

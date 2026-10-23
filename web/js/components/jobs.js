@@ -7,6 +7,7 @@ import { navigate } from '../router.js';
 import { formatPostedDate, matchTone, safeHref, statusTone } from '../lib/format.js';
 
 export const TRACKER_STATUSES = ['Not Applied', 'Applied', 'Interviewing', 'Offer', 'Rejected'];
+export const SUITABILITIES = ['Not reviewed', 'Shortlist', 'Not Shortlist'];
 
 export const matchBadge = (pct) => (pct == null ? h('span', { class: 'muted' }, '—') : badge(`${pct}%`, matchTone(pct), 'badge-match'));
 
@@ -28,10 +29,24 @@ async function persistStatus(job, status) {
   job.tracker_status = status;
 }
 
+async function persistSuitability(job, suitability) {
+  if (!job.tracker_status) await api.post(`/api/jobs/${job.key}/save`, {});
+  await api.patch('/api/tracker/suitability', { link: job.link, suitability });
+  job.suitability = suitability;
+}
+
 export async function setJobStatus(job, status, onChange) {
   try {
     await persistStatus(job, status);
     toast(`Marked ${status}`, 'success');
+    onChange?.();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+export async function setJobSuitability(job, suitability, onChange) {
+  try {
+    await persistSuitability(job, suitability);
+    toast(`Marked ${suitability}`, 'success');
     onChange?.();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -73,6 +88,7 @@ function statusCell(job, onChange) {
         sel.disabled = false;
         note.hidden = true;
       }
+
     },
   },
   showPlaceholder && h('option', { value: job.state, selected: true }, job.state),
@@ -80,6 +96,32 @@ function statusCell(job, onChange) {
   // Other pipeline states ("Qualified", "Tailored", "Unscored") aren't an application status
   // either, but -- unlike "Below cutoff" -- reading them as "Not Applied" isn't misleading, so
   // the dropdown just shows "Not Applied" with no separate hint.
+  return h('div', { class: 'status-cell' }, sel, note);
+}
+
+function suitabilityCell(job, onChange) {
+  const current = job.suitability || 'Not reviewed';
+  const note = h('span', { class: 'muted small status-note', hidden: true }, 'Saving…');
+  const sel = h('select', {
+    class: 'input input-sm suitability-select',
+    'aria-label': `Suitability for ${job.title || 'this job'}`,
+    onChange: async (e) => {
+      const chosen = e.target.value;
+      sel.disabled = true;
+      note.hidden = false;
+      try {
+        await persistSuitability(job, chosen);
+        toast(`Marked ${chosen}`, 'success');
+        onChange?.();
+      } catch (err) {
+        sel.value = current;
+        toast(err.message, 'error');
+      } finally {
+        sel.disabled = false;
+        note.hidden = true;
+      }
+    },
+  }, ...SUITABILITIES.map((s) => h('option', { value: s, selected: s === current }, s)));
   return h('div', { class: 'status-cell' }, sel, note);
 }
 
@@ -136,11 +178,11 @@ export function jobActions(job, onChange) {
 export function jobsTable(jobs, onChange, { scroll = false } = {}) {
   const th = (t) => h('th', { scope: 'col' }, t);
   return h('div', { class: scroll ? 'table-wrap table-wrap-scroll' : 'table-wrap' }, h('table', { class: 'table' },
-    h('thead', {}, h('tr', {}, ...['Job Title', 'Company', 'Match', 'Location', 'Posted', 'Source', 'Status', 'Action'].map(th))),
+    h('thead', {}, h('tr', {}, ...['Job Title', 'Company', 'Match', 'Location', 'Posted', 'Source', 'Status', 'Suitability', 'Action'].map(th))),
     h('tbody', {}, ...jobs.map((j) => h('tr', {},
       h('td', { class: 'cell-title' }, h('button', { class: 'link-btn', onClick: () => openJob(j) }, j.title || 'Untitled')),
       h('td', {}, j.company || '—'), h('td', {}, matchBadge(j.match_pct)), h('td', {}, j.location || '—'),
       h('td', { class: 'nowrap' }, formatPostedDate(j.posted_date) || '—'), h('td', {}, j.source),
-      h('td', {}, statusCell(j, onChange)), h('td', {}, jobActions(j, onChange)))))));
+      h('td', {}, statusCell(j, onChange)), h('td', {}, suitabilityCell(j, onChange)),
+      h('td', {}, jobActions(j, onChange)))))));
 }
-

@@ -89,7 +89,8 @@ export-matching fonts (see `UI_MASTER_RESUME.md`) and are exempt from this scale
 - **Dropdown menu** `.menu`: `--surface`, `--r-lg`, `--shadow-lg`, items 32px.
 - **Badges** `.badge` pill, 12px/600, tones `neutral | blue | green | orange | red | purple`; `.badge-dot` adds a leading dot.
 - **Status indicators** `statusBadge(status)` (tones from `lib/format.js statusTone`, pinned by `web/tests/lib.test.mjs`):
-  Not Applied → neutral, Applied → blue, Interviewing → orange, Offer → green, Rejected → red. Always dot + text.
+  Not Applied → neutral, Applied → blue, Interviewing → orange, Offer → green, Rejected → red.
+  Suitability: Not reviewed → neutral, Shortlist → green, Not Shortlist → red. Always dot + text.
 - **Score badges** `matchBadge(pct)` / `scoreBadge(score)`: ≥80 green, ≥60 orange, else red; always print the number.
 - **Tooltips**: native `title` (icon-only buttons, collapsed sidebar). No custom tooltip layer.
 - **Dialogs** `.dialog` (`--r-xl`, max 520px) and **drawers** `.drawer` (right, max 560px), both `--shadow-lg` over a dimmed overlay.

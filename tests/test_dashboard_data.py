@@ -141,7 +141,10 @@ class Charts(unittest.TestCase):
         c = dd.status_counts(tracker(rows))
         self.assertEqual(c["total"], 4)
         self.assertEqual({s["status"]: s["count"] for s in c["statuses"]},
-                         {"Not Applied": 1, "Applied": 2, "Interviewing": 0, "Offer": 1, "Rejected": 0})
+                         {"Not Applied": 0, "Applied": 2, "Interviewing": 0, "Offer": 1, "Rejected": 0})
+        self.assertEqual(c["unknown_statuses"], {"Weird": 1})
+        self.assertEqual({s["suitability"]: s["count"] for s in c["suitabilities"]},
+                         {"Not reviewed": 4, "Shortlist": 0, "Not Shortlist": 0})
 
 
 class Activity(unittest.TestCase):
