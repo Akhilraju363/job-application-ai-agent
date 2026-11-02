@@ -36,7 +36,7 @@ ITERATIONS = 600_000          # OWASP 2023 guidance for PBKDF2-HMAC-SHA256
 MIN_ITERATIONS = 100_000      # a stored hash weaker than this is treated as a configuration error
 MAX_ITERATIONS = 10_000_000
 SALT_BYTES = 16
-MIN_PASSWORD_LENGTH = 10
+MIN_PASSWORD_LENGTH = 8
 MAX_INPUT_LENGTH = 1024
 
 COOKIE_NAME = "jobagent_session"
@@ -105,6 +105,12 @@ def password_problem(password):
     """Why a *new* password isn't acceptable (None when it is). Used by the setup/reset utilities."""
     if len(password) < MIN_PASSWORD_LENGTH:
         return f"Use at least {MIN_PASSWORD_LENGTH} characters."
+    if not re.search(r"[A-Za-z]", password):
+        return "Include at least one letter (A-Z or a-z)."
+    if not re.search(r"[0-9]", password):
+        return "Include at least one number (0-9)."
+    if not any(not char.isalnum() and not char.isspace() for char in password):
+        return "Include at least one special character."
     if password.strip() != password or len(set(password)) < 4:
         return "Avoid leading/trailing spaces and repeated-character passwords."
     return None
