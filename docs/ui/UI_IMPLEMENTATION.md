@@ -43,6 +43,9 @@ metric cards label-first, 2×2 on phones; Find Jobs sort; Applications client-si
 actions; Settings in six sections; Tailor Resume workflow stepper driven by real task stages; resume previews no
 longer add a second `h1`.
 
-Phase 2 (open): server-side pagination on Find Jobs only if more than 200 jobs per filter becomes normal (client-side paging
-shipped 2026-10-13; the API already accepts `offset`); a compact pipeline-status card on
-the dashboard once the backend exposes the last run's outcome.
+Phase 2 (in progress): Interviews has a dedicated responsive searchable list page, CRUD drawer, and
+dashboard summary backed by the configured spreadsheet's `Interviews` worksheet. Local
+`output/interviews.json` is retained only as an explicit migration source; reminder preferences are
+stored but delivery is not enabled by the current scheduler. Server-side pagination on Find Jobs remains deferred until
+more than 200 jobs per filter becomes normal (client-side paging shipped 2026-10-13; the API already
+accepts `offset`); a compact pipeline-status card remains open until the backend exposes the last run's outcome.

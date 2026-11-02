@@ -7,6 +7,8 @@ Answer “What is happening with my job search?” on one screen, with a path to
 1. PageHeader — “Good morning / afternoon / evening, {first name}”, subtitle “Here's where your job search stands.”,
    actions **Find New Jobs** (primary; the existing find flow) and **Tailor Resume** (outline link).
 2. KPI row (four MetricCards, range-aware): Jobs Found, Resumes Tailored (resume matches), Applications Sent, Interviews.
+   The Interviews card is complemented by the dashboard Interviews section, which reads persisted interview records
+   and shows upcoming, this-week and completed counts without deriving them from application Status.
 3. Middle row: Pipeline overview chart (range select; series Found, Qualified (8+), Tailored, Applications,
    Interviews) · Application status donut (Not Applied, Applied, Interviewing, Offer, Rejected; click → Applications
    filtered) · Quick actions.

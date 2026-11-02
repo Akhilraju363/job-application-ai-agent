@@ -2,6 +2,8 @@
 
 Newest first. One line per change. Entries up to 2026-09-28 come from `git log`; 2026-09-29 entries are uncommitted.
 
+- 2026-11-02 fix(security): write Interview Tracker values with Google Sheets `RAW` semantics to prevent formula interpretation; retain existing tracker write behavior
+- 2026-11-02 fix(interviews): keep search input mounted while filtering, strictly normalize reminder booleans, add mocked CRUD route coverage, sanitize storage errors, and re-resolve unique IDs immediately before positional row deletion; document the residual Sheets race
 - 2026-10-23 (uncommitted) fix(ui): close the Suitability chart legend's ES-module expression so the dashboard initializes after restart; verified root HTML/assets, browser console, APIs, frontend tests, and backend suite
 - 2026-10-23 (uncommitted) feat: add independent tracker Suitability (`Not reviewed`, `Shortlist`, `Not Shortlist`) in Sheet column M, with migration/validation, API updates, frontend controls/filters, dashboard counts, and regression coverage; application Status remains unchanged
 - 2026-10-21 (uncommitted) fix: tracker appends use the verified `gws sheets +append --json-values` schema, validate the 12-column `Sheet1!A:L` row contract, expose subprocess exit code/stdout/stderr, and preserve canonical LinkedIn URL duplicate prevention; mock coverage added
