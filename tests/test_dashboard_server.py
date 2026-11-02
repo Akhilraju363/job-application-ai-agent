@@ -661,6 +661,27 @@ class TrackerAndJobActions(ServerCase):
             self.assertEqual(self.call("PATCH", "/api/tracker/status", {"link": LINK, "status": "Applied"})[0], 200)
         ss.assert_called_once_with(LINK, "Applied")
 
+    def test_application_delete_uses_stable_job_key_and_preserves_scope(self):
+        rows = [{"row": 2, "title": "A", "company": "X", "link": LINK}]
+        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(rows)), \
+                mock.patch.object(srv.tracker, "delete_job", return_value={"deleted": True}) as delete:
+            status, _, body = self.call("DELETE", f"/api/tracker/{srv.dd.job_key(LINK)}")
+        self.assertEqual((status, body["deleted"]), (200, True))
+        delete.assert_called_once_with(LINK)
+
+    def test_application_delete_rejects_missing_or_invalid_identifier(self):
+        self.assertEqual(self.call("DELETE", "/api/tracker/not-a-key")[0], 404)
+        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state([])):
+            self.assertEqual(self.call("DELETE", "/api/tracker/abcdef123456")[0], 404)
+
+    def test_application_delete_reports_ambiguous_stable_identifier(self):
+        rows = [{"row": 2, "title": "A", "company": "X", "link": LINK}]
+        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(rows)), \
+                mock.patch.object(srv.tracker, "delete_job",
+                                  side_effect=srv.TrackerConflict("Multiple tracker rows match this job; no row was deleted")):
+            status, _, result = self.call("DELETE", f"/api/tracker/{srv.dd.job_key(LINK)}")
+        self.assertEqual((status, result["error"]["code"]), (409, "tracker_conflict"))
+
     def test_suitability_update_is_independent_and_validated(self):
         self.assertEqual(self.call("PATCH", "/api/tracker/suitability",
                                    {"link": LINK, "suitability": "Unknown"})[0], 400)

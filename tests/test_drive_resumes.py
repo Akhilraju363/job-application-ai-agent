@@ -243,7 +243,7 @@ class SheetValue(DriveCase):
     def test_a_legacy_local_path_in_an_existing_row_is_replaced_by_the_drive_url(self):
         self.rows = [{"row": 5, "title": "T", "company": "C", "link": "https://x.example/1", "resume_path": self.LOCAL, "status": "Applied"}]
         self.assertEqual(self.tr.save_job(title="T", company="C", link="https://x.example/1", score=8, resume_path=PDF_URL)["result"], "exists")
-        self.assertEqual((self.appended, self.updates), ([], [("Sheet1!E5", [[PDF_URL]])]))
+        self.assertEqual((self.appended, self.updates), ([], [("Jobs!E5", [[PDF_URL]])]))
 
     def test_an_existing_drive_link_is_not_overwritten(self):
         self.rows = [{"row": 5, "title": "T", "company": "C", "link": "https://x.example/1", "resume_path": PDF_URL, "status": "Applied"}]

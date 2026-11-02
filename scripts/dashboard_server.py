@@ -63,7 +63,7 @@ import resume_role  # noqa: E402
 import resume_store  # noqa: E402
 import scrape_jobs  # noqa: E402
 import tailoring_service  # noqa: E402
-from tracker_service import TrackerError, tracker  # noqa: E402
+from tracker_service import TrackerConflict, TrackerError, tracker  # noqa: E402
 
 logger = lc.get_logger("dashboard")
 auth_log = lc.get_logger("auth")
@@ -583,7 +583,7 @@ def tracker_list(req):
         raise ApiError(400, f"status must be one of: {', '.join(dd.STATUSES)}", "bad_status")
     if suitability and suitability not in dd.SUITABILITIES:
         raise ApiError(400, f"suitability must be one of: {', '.join(dd.SUITABILITIES)}", "bad_suitability")
-    rows = [r for r in tr["rows"]
+    rows = [{**r, "key": dd.job_key(r.get("link"))} for r in tr["rows"]
             if (not status or r["status"] == status)
             and (not suitability or r.get("suitability", "Not reviewed") == suitability)]
     return {"rows": rows, "statuses": dd.STATUSES, "suitabilities": dd.SUITABILITIES, "total": len(tr["rows"]),
@@ -618,6 +618,24 @@ def tracker_suitability(req):
         raise ApiError(400, str(e), "bad_suitability") from None
     except LookupError as e:
         raise ApiError(404, str(e), "not_found") from None
+    except TrackerError as e:
+        raise ApiError(502, f"Tracker unavailable: {e}", "tracker_unavailable") from None
+
+
+@route("DELETE", "/api/tracker/(?P<key>[0-9a-f]{12})")
+def tracker_delete(req):
+    tr = tracker.snapshot(force=True)
+    row = next((r for r in tr["rows"] if dd.job_key(r.get("link")) == req.params["key"]), None)
+    if not row:
+        raise ApiError(404, "Application not found", "not_found")
+    try:
+        return tracker.delete_job(row["link"])
+    except TrackerConflict as e:
+        raise ApiError(409, str(e), "tracker_conflict") from None
+    except LookupError as e:
+        raise ApiError(404, str(e), "not_found") from None
+    except ValueError as e:
+        raise ApiError(400, str(e), "invalid_input") from None
     except TrackerError as e:
         raise ApiError(502, f"Tracker unavailable: {e}", "tracker_unavailable") from None
 
