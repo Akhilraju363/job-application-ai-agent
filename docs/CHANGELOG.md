@@ -2,11 +2,30 @@
 
 Newest first. One line per change. Entries up to 2026-09-28 come from `git log`; 2026-09-29 entries are uncommitted.
 
-- 2026-11-02 fix(security): write Interview Tracker values with Google Sheets `RAW` semantics to prevent formula interpretation; retain existing tracker write behavior
-- 2026-11-02 fix(interviews): keep search input mounted while filtering, strictly normalize reminder booleans, add mocked CRUD route coverage, sanitize storage errors, and re-resolve unique IDs immediately before positional row deletion; document the residual Sheets race
-- 2026-10-23 (uncommitted) fix(ui): close the Suitability chart legend's ES-module expression so the dashboard initializes after restart; verified root HTML/assets, browser console, APIs, frontend tests, and backend suite
-- 2026-10-23 (uncommitted) feat: add independent tracker Suitability (`Not reviewed`, `Shortlist`, `Not Shortlist`) in Sheet column M, with migration/validation, API updates, frontend controls/filters, dashboard counts, and regression coverage; application Status remains unchanged
-- 2026-10-21 (uncommitted) fix: tracker appends use the verified `gws sheets +append --json-values` schema, validate the 12-column `Sheet1!A:L` row contract, expose subprocess exit code/stdout/stderr, and preserve canonical LinkedIn URL duplicate prevention; mock coverage added
+- 2026-11-02 (merged PR #25) fix(security): write Interview Tracker values with Google Sheets `RAW` semantics to prevent formula interpretation; retain existing tracker write behavior
+- 2026-11-02 (merged PR #25) fix(interviews): keep search input mounted while filtering, strictly normalize reminder booleans, add mocked CRUD route coverage, sanitize storage errors, and re-resolve unique IDs immediately before positional row deletion; document the residual Sheets race
+- 2026-10-23 (merged PR #25) fix(ui): correct Interview Calendar weekday offsets and local date-only handling; add today/interview markers,
+  leap-year/year-boundary helpers, and deterministic calendar regression tests
+- 2026-10-23 (merged PR #25) fix(ui): remove the unused Interview Tracker calendar and custom round-name field; preserve
+  legacy round values, add a full-width searchable list, and align dashboard interview cards responsively
+- 2026-10-23 (merged PR #25) fix(interviews): verify Sheets deletion by stable ID and dynamic worksheet row after the
+  delete operation without modifying Jobs or local migration data
+- 2026-10-23 (merged PR #25) fix(tracker): use the renamed `Jobs` worksheet consistently and resolve its sheet ID
+  dynamically for row deletion; remove stale tracker range documentation
+- 2026-10-23 (merged PR #25) fix: rename the tracker worksheet to `Jobs` in place (sheetId 0 preserved); add ID-scoped
+  interview deduplication, legacy-safe Interview Round dropdowns, responsive interview summaries, and collapsible Recent Activity
+- 2026-10-23 (merged PR #25) feat: add visible, confirmed Delete actions for Applications and labeled Edit/Delete actions for Interviews;
+  delete Applications by revalidated canonical-link key and one Google Sheets row without touching resumes, interviews, Suitability, or unrelated data
+- 2026-10-23 (merged PR #25) feat: store Interview Tracker records in the existing configured spreadsheet's idempotent
+  `Interviews` worksheet; preserve local JSON for migration, import existing IDs safely, and surface Sheets failures without local fallback
+- 2026-10-23 (merged PR #25) fix(ui): expose ID-scoped Interview edit/delete actions in dashboard upcoming/recent rows,
+  include application ID in the edit drawer, and make delete confirmation identify the exact record
+- 2026-10-23 (merged PR #25) fix(ui): close the unmatched Interview Tracker DOM expression; the dashboard module graph now parses and mounts
+- 2026-10-23 (merged PR #25) feat: persistent Interview Tracker with authenticated CRUD/filter APIs, dashboard upcoming/recent summary,
+  responsive calendar/list UI, add/edit drawer, status/outcome management, and stored-but-disabled reminder preferences
+- 2026-10-23 (merged PR #24) fix(ui): close the Suitability chart legend's ES-module expression so the dashboard initializes after restart; verified root HTML/assets, browser console, APIs, frontend tests, and backend suite
+- 2026-10-23 (merged PR #24) feat: add independent tracker Suitability (`Not reviewed`, `Shortlist`, `Not Shortlist`) in Sheet column M, with migration/validation, API updates, frontend controls/filters, dashboard counts, and regression coverage; application Status remains unchanged
+- 2026-10-21 (merged PR #23) fix: tracker appends use the verified `gws sheets +append --json-values` schema, validate the tracker row contract, expose subprocess exit code/stdout/stderr, and preserve canonical LinkedIn URL duplicate prevention; mock coverage added
 - 2026-10-13 (uncommitted) feat(ui): Find Jobs pagination -- client-side over the loaded `/api/jobs` result (filter/search server-side -> sort -> page); Applications' `pager` + Rows-per-page select moved to shared `web/js/components/pagination.js`; `loadPageSize`/`savePageSize` take a key (`PAGE_SIZE_KEYS.findJobs` = `jobagent.pageSize.findJobs`); sort no longer refetches; status change keeps (clamped) page; dashboard Latest Job Matches unchanged. `web/tests/findJobsPagination.test.mjs` (11), fake DOM gains `classList`/`querySelectorAll`; web 129 passed. No backend change
 - 2026-10-13 (uncommitted) ui: Find Jobs / dashboard jobs table **Posted** column (and job drawer) shows `posted_date` as `MM/DD/YYYY` (`formatPostedDate` in `web/js/lib/format.js`) instead of relative labels ("yesterday"); no timezone shift; missing/invalid -> `—`, no more `found_at` fallback; sorting/filtering unchanged. Tests in `web/tests/lib.test.mjs` + `jobs.test.mjs`; web 118 passed
 - 2026-10-12 (uncommitted) fix(scrape): earlier Naukri records stay in `raw_jobs.json` -- each handoff is merged in (`merge_naukri_history`: canonical link + `source_job_id`; same job refreshed in place keeping the earliest `found_at`; identity conflicts move the earlier record to append-only `output/raw_jobs_conflicts.jsonl`; an unreadable file is copied aside) instead of replacing every Naukri record with the current run's. LinkedIn cache rules unchanged; what gets scored/tailored is still only the run's scope. `tests/test_naukri_history.py` (18, incl. real scrape/score/tailor scripts in a temp repo); suite 651 passed, web 112 passed
