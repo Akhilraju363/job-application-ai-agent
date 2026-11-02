@@ -19,7 +19,7 @@ const { applicationsPage, sheetAction } = await import('../js/pages/applications
 const FAKE_SHEET = 'https://docs.google.com/spreadsheets/d/FAKE_sheet_id_0123456789/edit';
 
 const row = (n, over = {}) => ({
-  row: n, title: `Role ${n}`, company: `Company ${n}`, link: `https://example.com/jobs/${n}`, score: '8',
+  row: n, key: `abcdef12345${n}`, title: `Role ${n}`, company: `Company ${n}`, link: `https://example.com/jobs/${n}`, score: '8',
   resume_path: '', status: 'Not Applied', timestamp: '2026-09-01', company_notes: '', source: 'LinkedIn',
   status_updated: '', ...over,
 });
@@ -153,7 +153,7 @@ function fakeServer({ rows = ROWS, tracker = {} } = {}) {
   const calls = [];
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url, method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : undefined });
-    if ((init.method || 'GET') === 'PATCH') return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    if ((init.method || 'GET') === 'PATCH' || init.method === 'DELETE') return { ok: true, status: 200, json: async () => ({ ok: true }) };
     const wanted = new URL(url, 'http://x').searchParams.get('status');
     return { ok: true, status: 200, json: async () => ({
       rows: rows.filter((r) => !wanted || r.status === wanted), total: rows.length,
@@ -242,6 +242,16 @@ test('Applications: a status change still PATCHes the tracker and reloads; the s
   assert.equal(storage.data.get(SORT_KEYS.applications), 'role');
 });
 
+test('Applications: every row exposes visible Open and Delete actions', async () => {
+  fakeServer();
+  const root = await renderPage(applicationsPage);
+  const actions = byClass(root, 'row-actions');
+  assert.equal(actions.length, ROWS.length);
+  assert.ok(actions.every((cell) => cell.findAll((e) => e.tagName === 'BUTTON' && e.textContent === 'Delete').length === 1));
+  assert.ok(actions.every((cell) => cell.findAll((e) => e.tagName === 'A' && e.textContent === 'Open').length === 1));
+  assert.equal(root.findAll((e) => e.tagName === 'TH').at(-1).textContent, 'Actions');
+});
+
 // ---- DATE column (MM/DD/YYYY) -----------------------------------------------------------------
 
 test('dates format as MM/DD/YYYY with leading zeros', () => {
@@ -293,7 +303,7 @@ test('Applications: the column is headed Date (shown uppercase) and cells are MM
     row(4, { title: 'Undated', timestamp: '' }), row(5, { title: 'US', timestamp: '9/2/2026' })] });
   const root = await renderPage(applicationsPage);
   const heads = root.findAll((e) => e.tagName === 'TH').map((th) => th.textContent);
-  assert.deepEqual(heads, ['Role', 'Company', 'Fit', 'Status', 'Suitability', 'Resume', 'Date', 'Source', '']);
+  assert.deepEqual(heads, ['Role', 'Company', 'Fit', 'Status', 'Suitability', 'Resume', 'Date', 'Source', 'Actions']);
   assert.ok(!heads.includes('Logged'));
   const dates = byClass(root, 'cell-date').map((td) => td.textContent);
   assert.deepEqual(dates, [`${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(0, 4)}`, '09/02/2026', '01/05/2026', '—']);

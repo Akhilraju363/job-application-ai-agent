@@ -26,7 +26,7 @@ Template: `.env.example`.
 | `NAUKRI_JOBS_PATH` | `.env` only (local) | Naukri jobs exported by the separate Auto_job_apply project (`exports/naukri_jobs.json`, already in the raw-job format) | unset = no Naukri jobs; never set on Modal |
 | `artifact_sync` | `.env` | `0` disables the Drive mirror of stage JSON | on |
 | `PIPELINE_DATE` | `.env` | recover an earlier day's artifacts (`YYYY-MM-DD`) | today |
-| `google_sheet_id` | `.env`, `job-apply-agent-secrets` | the "Job Application Tracker" sheet | lookup by name → create, if unset |
+| `google_sheet_id` | `.env`, `job-apply-agent-secrets` | the existing Job Application Tracker spreadsheet; the Interview Tracker uses its `Interviews` tab | lookup by name → create, if unset |
 | `google_drive_folder_id` | `.env`, `job-apply-agent-secrets` | parent Drive folder (per-job folders + `pipeline-artifacts/`) | required for uploads |
 | `RESUME_CONTACT_LINE` | `.env`, `job-apply-agent-secrets` | private contact row added at export (never in the repo) | exports warn / refuse without it |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `.env`, `job-apply-agent-secrets` | failure alerts | optional; the alert is skipped with a warning if unset |
@@ -81,7 +81,7 @@ Dashboard overrides for keywords / location / date window / limit live in `outpu
 the Modal cron never has that file and uses the defaults. Plan: Apify Free (~$5/month credit; runs are blocked when it
 runs out) — per the project owner; TODO: confirm the current plan.
 
-## Google Sheet — "Job Application Tracker", `Sheet1!A:M`
+## Google Sheet — "Job Application Tracker", `Jobs!A:M`
 
 | Col | Header | Written by `write_sheet.build_row` |
 |---|---|---|

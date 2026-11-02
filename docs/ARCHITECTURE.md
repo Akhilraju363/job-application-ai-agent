@@ -201,8 +201,10 @@ real bold headers/bullets/italics — **never use `gws docs +write`** with raw m
 inserts `#`/`##`/`-` as literal characters instead of formatting), exports to PDF into
 `~/Desktop/{company}-{slug}/Akhil Dalali Resume.pdf`, and deletes the intermediate Doc.
 `scripts/write_sheet.py` then logs each `status: "saved"` entry from `output/tailored_jobs.json` to
-the "Job Application Tracker" Google Sheet (id cached in `.env` as `google_sheet_id`), deduped by
-job link, with `Status` starting at `"Not Applied"` for manual tracking.
+the "Job Application Tracker" Google Sheet (id cached in `.env` as `google_sheet_id`), with
+`Status` starting at `"Not Applied"` for manual tracking. Interview Tracker records use a separate
+`Interviews` tab and are written as raw cell values so user text cannot be interpreted as formulas.
+Application rows are deduplicated by job link; interviews use stable IDs.
 
 Two `gws` gotchas worth knowing: `files` is a sub-resource of `drive`, not top-level
 (`gws drive files export/delete`, not `gws files ...`), and `--output` for `gws drive files export`

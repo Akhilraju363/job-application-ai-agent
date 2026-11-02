@@ -364,7 +364,7 @@ class TrackerSave(unittest.TestCase):
         out = self.tr.save_job(title="Java Dev", company="Acme", link="https://acme.example/1?trackingId=NEW", score=8, resume_path="https://drive.google.com/file/d/P1/view")
         self.assertEqual(out["result"], "exists")
         self.assertEqual(self.appended, [])
-        self.assertEqual(self.updates, [("Sheet1!E5", [["https://drive.google.com/file/d/P1/view"]])])
+        self.assertEqual(self.updates, [("Jobs!E5", [["https://drive.google.com/file/d/P1/view"]])])
 
     def test_sheet_failure_is_a_tracker_error_with_a_useful_message(self):
         with mock.patch.object(write_sheet, "append_rows", side_effect=RuntimeError("gws sheets +append failed: not signed in")):

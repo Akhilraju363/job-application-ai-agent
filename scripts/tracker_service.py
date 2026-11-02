@@ -29,6 +29,10 @@ class TrackerError(RuntimeError):
     pass
 
 
+class TrackerConflict(TrackerError):
+    pass
+
+
 def _short(exc):
     message = str(exc).strip()
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
@@ -97,6 +101,37 @@ class Tracker:
         key = canonical_link(link)
         return next((r for r in rows if key and canonical_link(r.get("link")) == key), None)
 
+    def delete_job(self, link):
+        """Delete exactly the tracker row matching the canonical job link."""
+        key = canonical_link(link)
+        if not key:
+            raise ValueError("job link is required")
+        try:
+            sid = self._lookup_sheet_id()
+            if not sid:
+                raise TrackerError("No tracker sheet is configured")
+            matches = [r for r in write_sheet.read_tracker(sid) if canonical_link(r.get("link")) == key]
+            if not matches:
+                raise LookupError("That job isn't in the tracker")
+            if len(matches) != 1:
+                raise TrackerConflict("Multiple tracker rows match this job; no row was deleted")
+            row = matches[0]
+            write_sheet.delete_row(sid, row["row"], expected_link=key)
+            self.invalidate()
+        except TrackerConflict:
+            raise
+        except write_sheet.AmbiguousTrackerRowError as e:
+            raise TrackerConflict(str(e)) from e
+        except (LookupError, ValueError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.error("Tracker row delete failed", exc_info=True)
+            raise TrackerError(_short(e)) from e
+        log.info("Tracker row deleted", extra={"company": row["company"], "row": row["row"]})
+        activity.log_event("tracker_deleted", f"Removed {row['title']} at {row['company']} from the tracker",
+                           company=row["company"], title=row["title"], link=row["link"])
+        return {"deleted": True}
+
     def save_job(self, *, title, company, link, score, resume_path="", source="LinkedIn",
                  company_notes="", resume_id="", match_pct=None):
         """Add one row (status "Not Applied"), or return the existing one -- never a duplicate.
@@ -110,7 +145,7 @@ class Tracker:
             existing = self._find(rows, link)
             if existing:
                 if resume_path and not _is_url(existing["resume_path"]):  # blank, or a legacy local path
-                    write_sheet.update_range(sid, f"Sheet1!E{existing['row']}", [[resume_path]])
+                    write_sheet.update_range(sid, f"{write_sheet.TRACKER_TAB}!E{existing['row']}", [[resume_path]])
                     existing["resume_path"] = resume_path
                     log.info("Tracker row updated", extra={"resume_id": resume_id, "company": company, "row": existing["row"]})
                 else:

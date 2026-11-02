@@ -167,7 +167,7 @@ python scripts/dashboard_server.py --open      # http://127.0.0.1:8765
 ```
 
 Pages: Dashboard, Find Jobs, **Tailor Resume** (`/tailor-resume`), Master Resume, Applications,
-Job Alerts (search preferences), Settings. No new dependencies and no build step (stdlib server +
+Interviews (`/interviews`), Job Alerts (search preferences), Settings. No new dependencies and no build step (stdlib server +
 plain ES modules).
 
 **JD -> tailored resume.** Paste any job description (or pick a scraped job and click Tailor). Both

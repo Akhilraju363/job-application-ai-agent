@@ -17,13 +17,14 @@ function jsFiles(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? jsFiles(new URL(`${d.name}/`, dir)) : d.name.endsWith('.js') ? [new URL(d.name, dir)] : []));
 }
 
-test('the sidebar has exactly the seven remaining pages, in order and group', () => {
+test('the sidebar has the current pages, in order and group', () => {
   assert.deepEqual(entries.map((e) => [e.path, e.label, e.group]), [
     ['/', 'Dashboard', 'Workspace'],
     ['/find-jobs', 'Find Jobs', 'Workspace'],
     ['/tailor-resume', 'Tailor Resume', 'Workspace'],
     ['/master-resume', 'Master Resume', 'Workspace'],
     ['/applications', 'Applications', 'Tracking'],
+    ['/interviews', 'Interviews', 'Tracking'],
     ['/job-alerts', 'Job Alerts', 'Tracking'],
     ['/settings', 'Settings', 'System'],
   ]);

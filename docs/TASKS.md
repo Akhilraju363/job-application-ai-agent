@@ -50,6 +50,11 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       owner chose to keep the current order for now.
 
 ## Done
+- [x] 2026-11-02 Preserve Interview Tracker search focus by rerendering only results; validate reminder booleans consistently;
+      add mocked CRUD API coverage with generic storage errors; re-resolve unique Sheets row identifiers before deletion and document
+      the remaining external-edit race; correct storage documentation and consolidate interview toolbar CSS.
+- [x] 2026-11-02 Prevented Interview Tracker text from being interpreted as Google Sheets formulas by
+      using `RAW` for interview inserts and updates; existing Jobs tracker writes retain `USER_ENTERED`.
 - [x] 2026-10-23 (uncommitted) Added independent tracker Suitability (`Not reviewed`, `Shortlist`, `Not Shortlist`) in Sheet column M,
       with safe header/validation migration, dedicated API updates, independent Applications/Find Jobs controls and filters,
       dashboard counts/chart, documentation, and mocked regression coverage. Existing application Status remains unchanged.

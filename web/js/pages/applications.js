@@ -4,7 +4,7 @@
 import { h, mount } from '../dom.js';
 import { api, qs } from '../api.js';
 import { icon } from '../icons.js';
-import { emptyState, errorState, loadable, pageHeader, scoreBadge, searchInput, statusBadge, toast } from '../ui.js';
+import { confirmDialog, emptyState, errorState, loadable, pageHeader, scoreBadge, searchInput, statusBadge, toast } from '../ui.js';
 import { navigate } from '../router.js';
 import { safeHref } from '../lib/format.js';
 import { SUITABILITIES, TRACKER_STATUSES } from '../components/jobs.js';
@@ -43,6 +43,22 @@ function resumeCell(row) {
   const href = safeHref(row.resume_path);
   if (href) return h('a', { class: 'link', href, target: '_blank', rel: 'noopener noreferrer' }, 'Open resume');
   return row.resume_path ? h('span', { class: 'muted small', title: row.resume_path }, 'Local file') : h('span', { class: 'muted' }, '—');
+}
+
+const deleting = new Set();
+async function deleteApplication(row, reload) {
+  if (deleting.has(row.key)) return;
+  if (!await confirmDialog({
+    title: 'Delete job?',
+    body: `Delete the application record for ${row.title} at ${row.company}? Only this Google Sheets tracker row will be deleted; resumes, job artifacts, interviews, and unrelated records will remain.`,
+    confirmLabel: 'Delete Job', tone: 'red',
+  })) return;
+  deleting.add(row.key);
+  try {
+    await api.delete(`/api/tracker/${row.key}`);
+    toast('Job deleted', 'success');
+    reload();
+  } catch (e) { toast(e.message, 'error'); } finally { deleting.delete(row.key); }
 }
 
 const trackerBanner = (t) => (t.stale ? h('p', { class: 'notice notice-warn' }, `Showing cached data — the tracker is temporarily unreachable (${t.error}).`) : null);
@@ -110,14 +126,18 @@ export function applicationsPage(root, { query }) {
     return h('div', {}, trackerBanner(d.tracker),
       h('p', { class: 'result-count', role: 'status' }, pg.pages > 1 ? `Showing ${pg.start + 1}–${pg.end} of ${pg.total} ${noun}` : `${pg.total} ${noun}`),
       h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
-        h('thead', {}, h('tr', {}, ...['Role', 'Company', 'Fit', 'Status', 'Suitability', 'Resume', 'Date', 'Source', ''].map((t) => h('th', { scope: 'col' }, t)))),
+        h('thead', {}, h('tr', {}, ...['Role', 'Company', 'Fit', 'Status', 'Suitability', 'Resume', 'Date', 'Source', 'Actions'].map((t) => h('th', { scope: 'col' }, t)))),
         h('tbody', {}, ...rows.map((r) => {
           const href = safeHref(r.link);
           return h('tr', {}, h('td', { class: 'cell-title' }, r.title), h('td', {}, r.company),
             h('td', {}, scoreBadge(r.score || null)), h('td', {}, statusSelect(r, () => list.reload())),
             h('td', {}, suitabilitySelect(r, () => list.reload())),
             h('td', {}, resumeCell(r)), h('td', { class: 'nowrap cell-date' }, formatDateMMDDYYYY(r.timestamp) || '—'), h('td', {}, r.source || 'LinkedIn'),
-            h('td', {}, href ? h('a', { class: 'btn-icon', href, target: '_blank', rel: 'noopener noreferrer', 'aria-label': `Open ${r.title}`, title: 'Open job posting' }, icon('ext', 16)) : null));
+            h('td', { class: 'row-actions' },
+              href && h('a', { class: 'btn btn-outline btn-sm', href, target: '_blank', rel: 'noopener noreferrer',
+                'aria-label': `Open ${r.title}`, title: 'Open job posting' }, icon('ext', 14), 'Open'),
+              h('button', { class: 'btn btn-danger btn-sm', type: 'button', onClick: () => deleteApplication(r, list.reload) },
+                icon('trash', 14), 'Delete')));
         })))),
       pg.pages > 1 && pager(pg, st.go, 'Applications pages'));
   };

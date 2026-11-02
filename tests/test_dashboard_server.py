@@ -20,6 +20,7 @@ import dashboard_data as dd
 import dashboard_server as srv
 import dashboard_tasks as tasks
 import drive_resumes
+import interview_store
 import paths
 import resume_store
 
@@ -548,6 +549,102 @@ class ResumeActions(ServerCase):
         self.assertTrue(all(c.kwargs["resume_path"].startswith("https://drive.google.com/") for c in save.call_args_list))
 
 
+class InterviewEndpoints(ServerCase):
+    interview_id = "abcdef1234567890"
+
+    def body(self):
+        return {
+            "company": "Acme", "job_title": "Java Engineer", "interview_date": "2026-11-05",
+            "interview_time": "10:30", "interview_round": "Technical Round", "mode": "Online",
+        }
+
+    def test_interview_list_and_detail_routes(self):
+        row = {"id": self.interview_id, "company": "Acme"}
+        with mock.patch.object(srv.interview_store, "list_interviews", return_value=[row]) as list_rows:
+            status, _, result = self.call("GET", "/api/interviews?company=Acme&date_from=2026-11-01")
+        self.assertEqual((status, result["interviews"]), (200, [row]))
+        list_rows.assert_called_once_with(status="", company="Acme", date_from="2026-11-01",
+                                          date_to="", application_id="")
+
+        with mock.patch.object(srv.interview_store, "get_interview", return_value=row) as get_row:
+            status, _, result = self.call("GET", f"/api/interviews/{self.interview_id}")
+        self.assertEqual((status, result), (200, row))
+        get_row.assert_called_once_with(self.interview_id)
+
+    def test_interview_create_update_and_delete_routes(self):
+        with mock.patch.object(srv.interview_store, "create_interview", return_value={"id": self.interview_id}) as create:
+            status, _, result = self.call("POST", "/api/interviews", self.body())
+        self.assertEqual((status, result["id"]), (200, self.interview_id))
+        create.assert_called_once_with(self.body())
+
+        changed = {"id": self.interview_id, "status": "Completed"}
+        with mock.patch.object(srv.interview_store, "update_interview", return_value=changed) as update:
+            status, _, result = self.call("PATCH", f"/api/interviews/{self.interview_id}", {"status": "Completed"})
+        self.assertEqual((status, result), (200, changed))
+        update.assert_called_once_with(self.interview_id, {"status": "Completed"})
+
+        with mock.patch.object(srv.interview_store, "delete_interview") as delete:
+            status, _, result = self.call("DELETE", f"/api/interviews/{self.interview_id}")
+        self.assertEqual((status, result), (200, {"deleted": True, "id": self.interview_id}))
+        delete.assert_called_once_with(self.interview_id)
+
+    def test_interview_boolean_values_are_normalized_through_create_api(self):
+        cases = ((True, True), (False, False), ("true", True), ("false", False),
+                 (1, True), (0, False), ("1", True), ("0", False), ("", False), (None, False))
+        with mock.patch.object(srv.interview_store, "_spreadsheet_id", return_value="test-sheet"), \
+                mock.patch.object(srv.interview_store, "_read_rows", return_value=[]), \
+                mock.patch.object(srv.interview_store, "_append"):
+            for value, expected in cases:
+                with self.subTest(value=value):
+                    body = {**self.body(), "reminder_enabled": value, "reminder_minutes_before": 60}
+                    status, _, result = self.call("POST", "/api/interviews", body)
+                    self.assertEqual(status, 200)
+                    self.assertIs(result["reminder_enabled"], expected)
+
+            body = self.body()
+            status, _, result = self.call("POST", "/api/interviews", body)
+            self.assertEqual(status, 200)
+            self.assertFalse(result["reminder_enabled"])
+
+    def test_interview_routes_reject_invalid_payloads_and_missing_ids(self):
+        status, _, body = self.call("POST", "/api/interviews", ["not", "an", "object"])
+        self.assertEqual((status, body["error"]["code"]), (400, "bad_json"))
+
+        with mock.patch.object(srv.interview_store, "_spreadsheet_id", return_value="test-sheet"), \
+                mock.patch.object(srv.interview_store, "_read_rows", return_value=[]), \
+                mock.patch.object(srv.interview_store, "_append"):
+            status, _, body = self.call("POST", "/api/interviews",
+                                        {**self.body(), "reminder_enabled": "sometimes"})
+        self.assertEqual((status, body["error"]["code"]), (400, "invalid_input"))
+        self.assertIn("reminder_enabled must be a boolean", body["error"]["message"])
+
+        with mock.patch.object(srv.interview_store, "get_interview", return_value=None):
+            self.assertEqual(self.call("GET", f"/api/interviews/{self.interview_id}")[0], 404)
+        with mock.patch.object(srv.interview_store, "update_interview", side_effect=KeyError(self.interview_id)):
+            self.assertEqual(self.call("PATCH", f"/api/interviews/{self.interview_id}", {"status": "Completed"})[0], 404)
+        with mock.patch.object(srv.interview_store, "delete_interview", side_effect=KeyError(self.interview_id)):
+            self.assertEqual(self.call("DELETE", f"/api/interviews/{self.interview_id}")[0], 404)
+        self.assertEqual(self.call("GET", "/api/interviews/not-an-id")[0], 404)
+
+    def test_interview_storage_errors_are_generic_for_all_routes(self):
+        sensitive = "Google token=PRIVATE_TOKEN internal-path=C:\\private\\file"
+        checks = (
+            ("GET", "/api/interviews", None, "list_interviews"),
+            ("GET", f"/api/interviews/{self.interview_id}", None, "get_interview"),
+            ("POST", "/api/interviews", self.body(), "create_interview"),
+            ("PATCH", f"/api/interviews/{self.interview_id}", {"status": "Completed"}, "update_interview"),
+            ("DELETE", f"/api/interviews/{self.interview_id}", None, "delete_interview"),
+        )
+        for method, path, body, name in checks:
+            with self.subTest(method=method, path=path), \
+                    mock.patch.object(srv.interview_store, name, side_effect=interview_store.StorageError(sensitive)):
+                status, _, result = self.call(method, path, body)
+                self.assertEqual(status, 503)
+                self.assertEqual(result["error"]["message"], "Interview storage is unavailable")
+                self.assertNotIn("PRIVATE_TOKEN", json.dumps(result))
+                self.assertNotIn("C:\\private", json.dumps(result))
+
+
 class TrackerAndJobActions(ServerCase):
     def test_save_scraped_job_to_tracker(self):
         with mock.patch.object(srv.tracker, "save_job", return_value={"result": "added", "row": None}) as save:
@@ -563,6 +660,27 @@ class TrackerAndJobActions(ServerCase):
         with mock.patch.object(srv.tracker, "set_status", return_value={"row": 2, "status": "Applied"}) as ss:
             self.assertEqual(self.call("PATCH", "/api/tracker/status", {"link": LINK, "status": "Applied"})[0], 200)
         ss.assert_called_once_with(LINK, "Applied")
+
+    def test_application_delete_uses_stable_job_key_and_preserves_scope(self):
+        rows = [{"row": 2, "title": "A", "company": "X", "link": LINK}]
+        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(rows)), \
+                mock.patch.object(srv.tracker, "delete_job", return_value={"deleted": True}) as delete:
+            status, _, body = self.call("DELETE", f"/api/tracker/{srv.dd.job_key(LINK)}")
+        self.assertEqual((status, body["deleted"]), (200, True))
+        delete.assert_called_once_with(LINK)
+
+    def test_application_delete_rejects_missing_or_invalid_identifier(self):
+        self.assertEqual(self.call("DELETE", "/api/tracker/not-a-key")[0], 404)
+        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state([])):
+            self.assertEqual(self.call("DELETE", "/api/tracker/abcdef123456")[0], 404)
+
+    def test_application_delete_reports_ambiguous_stable_identifier(self):
+        rows = [{"row": 2, "title": "A", "company": "X", "link": LINK}]
+        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(rows)), \
+                mock.patch.object(srv.tracker, "delete_job",
+                                  side_effect=srv.TrackerConflict("Multiple tracker rows match this job; no row was deleted")):
+            status, _, result = self.call("DELETE", f"/api/tracker/{srv.dd.job_key(LINK)}")
+        self.assertEqual((status, result["error"]["code"]), (409, "tracker_conflict"))
 
     def test_suitability_update_is_independent_and_validated(self):
         self.assertEqual(self.call("PATCH", "/api/tracker/suitability",

@@ -1,7 +1,7 @@
 import { h, mount } from '../dom.js';
 import { api, qs } from '../api.js';
 import { icon } from '../icons.js';
-import { loadable, pageHeader } from '../ui.js';
+import { confirmDialog, loadable, pageHeader, statusBadge, toast } from '../ui.js';
 import { navigate } from '../router.js';
 import { metricCard } from '../components/metricCard.js';
 import { overviewChart, statusChart, suitabilityChart } from '../components/charts.js';
@@ -11,6 +11,7 @@ import { recentActivity } from '../components/activity.js';
 import { configuredSources } from '../components/sources.js';
 import { runPipelineFlow } from '../components/pipelineRunner.js';
 import { todayISO } from '../lib/format.js';
+import { openInterviewForm } from './interviews.js';
 
 const KPIS = [
   { id: 'jobs_found', label: 'Jobs Found', iconName: 'search', tone: 'blue' },
@@ -35,6 +36,7 @@ export function dashboardPage(root, { profile }) {
   const jobsHost = h('div', {});
   const activityHost = h('div', {});
   const sourcesHost = h('div', {});
+  const interviewsHost = h('div', {});
 
   // Every section loads independently: one failing (e.g. Google Sheet offline) shows its own
   // error + retry and never blanks the page.
@@ -81,8 +83,45 @@ export function dashboardPage(root, { profile }) {
     render: (d) => recentActivity(d.events),
   });
   const sources = loadable(sourcesHost, { load: () => api.get('/api/dashboard/sources'), render: configuredSources });
+  const interviews = loadable(interviewsHost, {
+    load: () => api.get('/api/dashboard/interviews'),
+    isEmpty: (d) => !d.upcoming.length && !d.recent.length,
+    empty: { title: 'No interviews yet', text: 'Add an interview when a company schedules one.', iconName: 'calendar',
+      action: h('a', { class: 'btn btn-primary btn-sm', href: '/interviews', 'data-link': true }, icon('plus', 14), 'Add interview') },
+    render: (d) => {
+      const rows = [...new Map([...d.upcoming, ...d.recent].filter((r) => r?.id).map((r) => [r.id, r])).values()].slice(0, 6);
+      return h('div', {},
+        h('div', { class: 'interview-metrics' }, ...[['upcoming', 'Upcoming'], ['this_week', 'This week'], ['completed', 'Completed']].map(([key, label]) =>
+          h('div', {}, h('strong', {}, String(d.metrics[key])), h('span', {}, label)))),
+        h('div', { class: 'interview-list' }, ...rows.map((r) => interviewRow(r, refreshAll))),
+        h('a', { class: 'link', href: '/interviews', 'data-link': true }, 'View all interviews'));
+    },
+  });
 
-  function refreshAll() { kpi.reload(); overview.reload(); status.reload(); jobs.reload(); activity.reload(); }
+  function interviewRow(row, refresh) {
+    return h('div', { class: 'interview-item compact' },
+      h('div', { class: 'interview-date' }, h('strong', {}, row.interview_date || '—'), h('span', {}, row.interview_time || '—')),
+      h('div', { class: 'interview-details' }, h('strong', {}, row.company), h('span', {}, row.job_title)),
+      h('div', { class: 'interview-actions' }, statusBadge(row.status),
+        h('div', { class: 'inline-actions' },
+          h('button', { class: 'btn btn-outline btn-sm', 'aria-label': `Edit ${row.company} interview`,
+            onClick: () => openInterviewForm(row, refresh) }, icon('edit', 14), 'Edit'),
+          h('button', { class: 'btn btn-danger btn-sm', 'aria-label': `Delete ${row.company} interview`,
+            onClick: () => deleteInterview(row, refresh) }, icon('trash', 14), 'Delete'))));
+  }
+
+  async function deleteInterview(row, refresh) {
+    if (!await confirmDialog({ title: 'Delete interview?',
+      body: `Delete the interview for ${row.company} — ${row.job_title} on ${row.interview_date}? This only deletes this interview record; applications and other interviews are not affected.`,
+      confirmLabel: 'Delete', tone: 'red' })) return;
+    try {
+      await api.delete(`/api/interviews/${row.id}`);
+      toast('Interview deleted', 'success');
+      refresh();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  function refreshAll() { kpi.reload(); overview.reload(); status.reload(); jobs.reload(); activity.reload(); interviews.reload(); }
 
   const customFields = h('div', { class: 'range-custom', hidden: true },
     h('input', { type: 'date', class: 'input input-sm', 'aria-label': 'From date', max: todayISO(), onChange: (e) => { range.from = e.target.value; } }),
@@ -112,6 +151,7 @@ export function dashboardPage(root, { profile }) {
     h('div', { class: 'grid-bottom' },
       card(h('div', { class: 'card-head-row' }, 'Latest Job Matches', h('a', { class: 'link', href: '/find-jobs', 'data-link': true }, 'View all')), jobsHost),
       h('div', { class: 'stack' },
+        card(h('div', { class: 'card-head-row' }, 'Interviews', h('a', { class: 'link', href: '/interviews', 'data-link': true }, 'Manage')), interviewsHost),
         card(h('div', { class: 'card-head-row' }, 'Recent Activity'), activityHost),
         card(h('div', { class: 'card-head-row' }, 'Configured Sources', h('a', { class: 'link', href: '/job-alerts', 'data-link': true }, 'Edit')), sourcesHost))));
 }

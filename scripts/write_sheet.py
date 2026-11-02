@@ -26,7 +26,9 @@ log = lc.get_logger("tracker")
 
 HEADERS = ["Job Title", "Company", "Job Link", "Fit Score", "Resume Path", "Status", "Timestamp",
            "Company Notes", "Source", "Status Updated", "Resume ID", "Match %", "Suitability"]
-TRACKER_RANGE = "Sheet1!A:M"
+TRACKER_TAB = "Jobs"
+LEGACY_TRACKER_TAB = "Sheet1"
+TRACKER_RANGE = f"{TRACKER_TAB}!A:M"
 # Columns I:L were added for the dashboard (where a row came from, when its status last changed
 # via the dashboard, which generated resume + JD match it came from). Older sheets only have
 # A:H -- ensure_extra_headers() adds the rest.
@@ -35,6 +37,39 @@ SHEET_TITLE = "Job Application Tracker"
 STATUS_OPTIONS = ["Not Applied", "Applied", "Interviewing", "Offer", "Rejected"]
 SUITABILITY_OPTIONS = ["Not reviewed", "Shortlist", "Not Shortlist"]
 DEFAULT_SUITABILITY = SUITABILITY_OPTIONS[0]
+
+
+def rename_tracker_tab(sheet_id):
+    """Rename the existing first tracker tab in place, preserving its sheetId and data."""
+    metadata = gws("sheets", "spreadsheets", "get", "--params", json.dumps({
+        "spreadsheetId": sheet_id, "fields": "sheets.properties",
+    }))
+    sheets = metadata.get("sheets", [])
+    for sheet in sheets:
+        props = sheet.get("properties", {})
+        if props.get("title") == TRACKER_TAB:
+            return props["sheetId"]
+    source = next((s for s in sheets if s.get("properties", {}).get("title", "").strip() == TRACKER_TAB), None)
+    if source:
+        sheet_id_value = source["properties"]["sheetId"]
+        gws("sheets", "spreadsheets", "batchUpdate", "--params", json.dumps({
+            "spreadsheetId": sheet_id,
+        }), "--json", json.dumps({"requests": [{"updateSheetProperties": {
+            "properties": {"sheetId": sheet_id_value, "title": TRACKER_TAB},
+            "fields": "title",
+        }}]}))
+        return sheet_id_value
+    source = next((s for s in sheets if s.get("properties", {}).get("title") == LEGACY_TRACKER_TAB), None)
+    if not source:
+        raise RuntimeError("Jobs worksheet not found; refusing to create or rename a replacement")
+    sheet_id_value = source["properties"]["sheetId"]
+    gws("sheets", "spreadsheets", "batchUpdate", "--params", json.dumps({
+        "spreadsheetId": sheet_id,
+    }), "--json", json.dumps({"requests": [{"updateSheetProperties": {
+        "properties": {"sheetId": sheet_id_value, "title": TRACKER_TAB},
+        "fields": "title",
+    }}]}))
+    return sheet_id_value
 
 
 def _resolve_gws():
@@ -99,20 +134,23 @@ def get_or_create_sheet_id():
     import os
     sheet_id = os.environ.get("google_sheet_id", "").strip()
     if sheet_id:
+        rename_tracker_tab(sheet_id)
         return sheet_id
 
     sheet_id = find_sheet_by_title()
     if sheet_id:
         _remember_sheet_id(sheet_id)
+        rename_tracker_tab(sheet_id)
         log.info("Reusing existing tracker sheet", extra={"sheet_title": SHEET_TITLE})
         return sheet_id
 
     created = gws("sheets", "spreadsheets", "create", "--json",
                    json.dumps({"properties": {"title": SHEET_TITLE}}))
     sheet_id = created["spreadsheetId"]
+    rename_tracker_tab(sheet_id)
 
     gws("sheets", "spreadsheets", "values", "update", "--params",
-        json.dumps({"spreadsheetId": sheet_id, "range": "Sheet1!A1:M1", "valueInputOption": "USER_ENTERED"}),
+        json.dumps({"spreadsheetId": sheet_id, "range": f"{TRACKER_TAB}!A1:M1", "valueInputOption": "USER_ENTERED"}),
         "--json", json.dumps({"values": [HEADERS]}))
 
     gws("sheets", "spreadsheets", "batchUpdate", "--params",
@@ -125,7 +163,7 @@ def get_or_create_sheet_id():
 
 
 def get_existing_links(sheet_id):
-    result = gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", "Sheet1!C:C")
+    result = gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", f"{TRACKER_TAB}!C:C")
     values = result.get("values", [])
     return {row[0] for row in values[1:] if row}
 
@@ -175,17 +213,17 @@ def read_tracker(sheet_id):
 
 
 def ensure_extra_headers(sheet_id):
-    have = gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", "Sheet1!A1:M1").get("values") or [[]]
+    have = gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", f"{TRACKER_TAB}!A1:M1").get("values") or [[]]
     current = [str(c) for c in have[0]] if have else []
     expected_prefix = HEADERS[:8]
     if current[:len(expected_prefix)] != expected_prefix:
-        raise RuntimeError("tracker header mismatch in Sheet1!A:H; refusing schema migration")
+        raise RuntimeError(f"tracker header mismatch in {TRACKER_TAB}!A:H; refusing schema migration")
     for index, header in enumerate(EXTRA_HEADERS, start=8):
         existing = current[index] if index < len(current) else ""
         if existing and existing != header:
             raise RuntimeError(f"tracker column {index + 1} has unexpected header {existing!r}")
         if not existing:
-            update_range(sheet_id, f"Sheet1!{_column_name(index)}1", [[header]])
+            update_range(sheet_id, f"{TRACKER_TAB}!{_column_name(index)}1", [[header]])
     gws("sheets", "spreadsheets", "batchUpdate", "--params",
         json.dumps({"spreadsheetId": sheet_id}),
         "--json", json.dumps({"requests": _validation_requests()}))
@@ -218,9 +256,9 @@ def _validation_requests():
     ]
 
 
-def update_range(sheet_id, a1_range, values):
+def update_range(sheet_id, a1_range, values, value_input_option="USER_ENTERED"):
     gws("sheets", "spreadsheets", "values", "update", "--params",
-        json.dumps({"spreadsheetId": sheet_id, "range": a1_range, "valueInputOption": "USER_ENTERED"}),
+        json.dumps({"spreadsheetId": sheet_id, "range": a1_range, "valueInputOption": value_input_option}),
         "--json", json.dumps({"values": values}))
 
 
@@ -234,14 +272,50 @@ def append_rows(sheet_id, rows):
 def set_status(sheet_id, row_number, status, today):
     if status not in STATUS_OPTIONS:
         raise ValueError(f"unknown status {status!r}")
-    update_range(sheet_id, f"Sheet1!F{row_number}", [[status]])
-    update_range(sheet_id, f"Sheet1!J{row_number}", [[today]])
+    update_range(sheet_id, f"{TRACKER_TAB}!F{row_number}", [[status]])
+    update_range(sheet_id, f"{TRACKER_TAB}!J{row_number}", [[today]])
 
 
 def set_suitability(sheet_id, row_number, suitability):
     if suitability not in SUITABILITY_OPTIONS:
         raise ValueError(f"unknown suitability {suitability!r}")
-    update_range(sheet_id, f"Sheet1!M{row_number}", [[suitability]])
+    update_range(sheet_id, f"{TRACKER_TAB}!M{row_number}", [[suitability]])
+
+
+class AmbiguousTrackerRowError(ValueError):
+    pass
+
+
+def delete_row(sheet_id, row_number, expected_link):
+    """Re-resolve the unique canonical link immediately before positional row deletion.
+
+    Google Sheets only deletes dimensions by row index, so an external edit can still
+    race the final read and batchUpdate.
+    """
+    if not isinstance(row_number, int) or row_number < 2:
+        raise ValueError("tracker row must be a data row number")
+    metadata = gws("sheets", "spreadsheets", "get", "--params", json.dumps({
+        "spreadsheetId": sheet_id, "fields": "sheets.properties",
+    }))
+    sheet = next((s.get("properties", {}) for s in metadata.get("sheets", [])
+                  if s.get("properties", {}).get("title") == TRACKER_TAB), None)
+    if not sheet:
+        raise RuntimeError(f"{TRACKER_TAB} worksheet not found")
+    key = canonical_link(expected_link)
+    if not key:
+        raise ValueError("expected tracker job link is required")
+    matches = [row for row in read_tracker(sheet_id) if canonical_link(row.get("link")) == key]
+    if not matches:
+        raise LookupError("That job isn't in the tracker")
+    if len(matches) != 1:
+        raise AmbiguousTrackerRowError("Multiple tracker rows match this job; no row was deleted")
+    row_number = matches[0]["row"]
+    gws("sheets", "spreadsheets", "batchUpdate", "--params",
+        json.dumps({"spreadsheetId": sheet_id}),
+        "--json", json.dumps({"requests": [{"deleteDimension": {
+            "range": {"sheetId": sheet["sheetId"], "dimension": "ROWS",
+                      "startIndex": row_number - 1, "endIndex": row_number}
+        }}]}))
 
 
 if __name__ == "__main__":
