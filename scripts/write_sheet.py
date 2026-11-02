@@ -218,9 +218,9 @@ def _validation_requests():
     ]
 
 
-def update_range(sheet_id, a1_range, values):
+def update_range(sheet_id, a1_range, values, value_input_option="USER_ENTERED"):
     gws("sheets", "spreadsheets", "values", "update", "--params",
-        json.dumps({"spreadsheetId": sheet_id, "range": a1_range, "valueInputOption": "USER_ENTERED"}),
+        json.dumps({"spreadsheetId": sheet_id, "range": a1_range, "valueInputOption": value_input_option}),
         "--json", json.dumps({"values": values}))
 
 

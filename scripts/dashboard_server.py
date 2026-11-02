@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
@@ -55,6 +56,7 @@ import drive_resumes  # noqa: E402
 import jd_analysis  # noqa: E402
 import log_reader  # noqa: E402
 import master_resume  # noqa: E402
+import interview_store  # noqa: E402
 import logging_config as lc  # noqa: E402
 import no_fabrication as nf  # noqa: E402
 import resume_role  # noqa: E402
@@ -243,6 +245,26 @@ def dash_overview(req):
 @route("GET", "/api/dashboard/status")
 def dash_status(req):
     return dd.status_counts(tracker.snapshot(force=req.q("refresh") == "1"))
+
+
+@route("GET", "/api/dashboard/interviews")
+def dash_interviews(req):
+    try:
+        rows = interview_store.list_interviews()
+    except interview_store.StorageError:
+        raise ApiError(503, "Interview storage is unavailable", "interviews_unavailable") from None
+    except interview_store.InterviewError:
+        raise ApiError(503, "Interview storage is unavailable", "interviews_unavailable") from None
+    rows = list({row["id"]: row for row in rows if row.get("id")}.values())
+    today = date.today().isoformat()
+    upcoming = [r for r in rows if r.get("interview_date", "") >= today and
+                r.get("status") not in ("Cancelled", "No Show")]
+    week_end = (date.today() + timedelta(days=6)).isoformat()
+    this_week = [r for r in upcoming if r.get("interview_date", "") <= week_end]
+    completed = [r for r in rows if r.get("status") == "Completed"]
+    return {"upcoming": upcoming[:5], "recent": list(reversed(rows))[:5],
+            "metrics": {"upcoming": len(upcoming), "this_week": len(this_week), "completed": len(completed)},
+            "reminders_enabled": False}
 
 
 @route("GET", "/api/dashboard/jobs")
@@ -598,6 +620,81 @@ def tracker_suitability(req):
         raise ApiError(404, str(e), "not_found") from None
     except TrackerError as e:
         raise ApiError(502, f"Tracker unavailable: {e}", "tracker_unavailable") from None
+
+
+# ---------------------------------------------------------------------------
+# interviews (separate from the application tracker)
+# ---------------------------------------------------------------------------
+
+def _interview_error(exc):
+    if isinstance(exc, interview_store.InterviewError):
+        raise ApiError(400, str(exc), "invalid_input") from None
+    raise exc
+
+
+@route("GET", "/api/interviews")
+def interviews_list(req):
+    try:
+        status = req.q("status", "")
+        if status and status not in interview_store.STATUSES:
+            raise ApiError(400, f"status must be one of: {', '.join(interview_store.STATUSES)}", "bad_status")
+        rows = interview_store.list_interviews(status=status, company=req.q("company", ""),
+                                                date_from=req.q("date_from", ""), date_to=req.q("date_to", ""),
+                                                application_id=req.q("application_id", ""))
+    except ApiError:
+        raise
+    except interview_store.StorageError:
+        raise ApiError(503, "Interview storage is unavailable", "interviews_unavailable") from None
+    except interview_store.InterviewError:
+        raise ApiError(503, "Interview storage is unavailable", "interviews_unavailable") from None
+    return {"interviews": rows, "statuses": list(interview_store.STATUSES),
+            "outcomes": list(interview_store.OUTCOMES), "reminder_minutes": list(interview_store.REMINDER_MINUTES)}
+
+
+@route("GET", "/api/interviews/(?P<id>[0-9a-f]{16})")
+def interview_get(req):
+    try:
+        row = interview_store.get_interview(req.params["id"])
+    except interview_store.StorageError:
+        raise ApiError(503, "Interview storage is unavailable", "interviews_unavailable") from None
+    except interview_store.InterviewError:
+        raise ApiError(503, "Interview storage is unavailable", "interviews_unavailable") from None
+    if not row:
+        raise ApiError(404, "Interview not found", "not_found")
+    return row
+
+
+@route("POST", "/api/interviews")
+def interview_create(req):
+    try:
+        return interview_store.create_interview(req.body)
+    except interview_store.StorageError:
+        raise ApiError(503, "Interview storage is unavailable", "interviews_unavailable") from None
+    except interview_store.InterviewError as e:
+        raise ApiError(400, str(e), "invalid_input") from None
+
+
+@route("PATCH", "/api/interviews/(?P<id>[0-9a-f]{16})")
+def interview_update(req):
+    try:
+        return interview_store.update_interview(req.params["id"], req.body)
+    except KeyError:
+        raise ApiError(404, "Interview not found", "not_found") from None
+    except interview_store.StorageError:
+        raise ApiError(503, "Interview storage is unavailable", "interviews_unavailable") from None
+    except interview_store.InterviewError as e:
+        raise ApiError(400, str(e), "invalid_input") from None
+
+
+@route("DELETE", "/api/interviews/(?P<id>[0-9a-f]{16})")
+def interview_delete(req):
+    try:
+        interview_store.delete_interview(req.params["id"])
+    except KeyError:
+        raise ApiError(404, "Interview not found", "not_found") from None
+    except interview_store.InterviewError:
+        raise ApiError(503, "Interview storage is unavailable", "interviews_unavailable") from None
+    return {"deleted": True, "id": req.params["id"]}
 
 
 # ---------------------------------------------------------------------------

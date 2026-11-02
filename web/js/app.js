@@ -16,6 +16,7 @@ import { masterResumePage } from './pages/masterResume.js';
 import { applicationsPage } from './pages/applications.js';
 import { alertsPage } from './pages/alerts.js';
 import { settingsPage } from './pages/settings.js';
+import { interviewsPage } from './pages/interviews.js';
 
 const NAV = [
   { path: '/', label: 'Dashboard', icon: 'home', page: dashboardPage, group: 'Workspace' },
@@ -23,6 +24,7 @@ const NAV = [
   { path: '/tailor-resume', label: 'Tailor Resume', icon: 'wand', page: tailorPage, group: 'Workspace' },
   { path: '/master-resume', label: 'Master Resume', icon: 'user', page: masterResumePage, group: 'Workspace' },
   { path: '/applications', label: 'Applications', icon: 'send', page: applicationsPage, group: 'Tracking' },
+  { path: '/interviews', label: 'Interviews', icon: 'calendar', page: interviewsPage, group: 'Tracking' },
   { path: '/job-alerts', label: 'Job Alerts', icon: 'bell', page: alertsPage, group: 'Tracking' },
   { path: '/settings', label: 'Settings', icon: 'settings', page: settingsPage, group: 'System' },
 ];

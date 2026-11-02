@@ -19,6 +19,17 @@ class GwsCommandTests(unittest.TestCase):
             write_sheet.set_suitability("sheet", 7, "Shortlist")
         update.assert_called_once_with("sheet", "Sheet1!M7", [["Shortlist"]])
 
+    def test_update_range_keeps_user_entered_default_and_supports_raw(self):
+        with mock.patch.object(write_sheet, "gws") as gws:
+            write_sheet.update_range("sheet", "Interviews!A2:U2", [["=1+1"]], value_input_option="RAW")
+        params = json.loads(gws.call_args.args[5])
+        self.assertEqual(params["valueInputOption"], "RAW")
+
+        with mock.patch.object(write_sheet, "gws") as gws:
+            write_sheet.update_range("sheet", "Jobs!A2:M2", [["=1+1"]])
+        params = json.loads(gws.call_args.args[5])
+        self.assertEqual(params["valueInputOption"], "USER_ENTERED")
+
     def test_schema_migration_adds_only_missing_suitability_header_and_validation(self):
         with mock.patch.object(write_sheet, "gws", side_effect=[
             {"values": [write_sheet.HEADERS[:12]]}, {},
