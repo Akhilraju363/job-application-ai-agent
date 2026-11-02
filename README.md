@@ -284,6 +284,9 @@ Browser -> Login page -> POST /api/auth/login {username, password}
 - **Credentials** live in the Modal secret `job-apply-agent-dashboard-secrets`: `DASHBOARD_USERNAME`,
   `DASHBOARD_PASSWORD_HASH` (a salted PBKDF2-SHA256 hash, 600k rounds — never the password) and
   `DASHBOARD_ALLOWED_HOSTS`. Nothing is committed; nothing is stored in the browser except the session cookie.
+- **New passwords** must be at least 8 characters and include an ASCII letter, an ASCII digit, and a
+  non-whitespace special character. Uppercase is not required. Leading/trailing whitespace and passwords
+  with fewer than four distinct characters are also rejected.
 - **Sessions** are server-side (the cookie is an opaque random id; only its SHA-256 is stored), last 12 hours
   (`DASHBOARD_SESSION_HOURS` to change), survive a scale-to-zero restart (mirrored to the Volume) and are
   signed out by Logout or by changing the password. The cookie is `HttpOnly`, `Secure` (`__Host-` prefixed on

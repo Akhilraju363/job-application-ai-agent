@@ -25,6 +25,7 @@ import reset_dashboard_password as reset_script
 from test_dashboard_server import ServerCase
 
 WRONG = "definitely-not-the-password"
+VALID_POLICY_PASSWORD = "lowercase123!"
 
 
 class Hashing(unittest.TestCase):
@@ -67,8 +68,14 @@ class Hashing(unittest.TestCase):
     def test_password_policy(self):
         self.assertIsNotNone(da.password_problem("short"))
         self.assertIsNotNone(da.password_problem("aaaaaaaaaaaaaa"))
+        self.assertIsNone(da.password_problem("aB1!cdef"))
+        self.assertIsNone(da.password_problem("lowercase123!"))
+        self.assertIsNotNone(da.password_problem("ab1!xyz"))
+        self.assertIsNotNone(da.password_problem("1234567!"))
+        self.assertIsNotNone(da.password_problem("abcdefg!"))
+        self.assertIsNotNone(da.password_problem("abcdefg1"))
         self.assertIsNotNone(da.password_problem(" leading-space-password"))
-        self.assertIsNone(da.password_problem(AUTH_PASSWORD))
+        self.assertIsNone(da.password_problem(VALID_POLICY_PASSWORD))
 
 
 class Configuration(unittest.TestCase):
@@ -259,17 +266,17 @@ class Utilities(unittest.TestCase):
         return (lambda _p: user), (lambda _p: next(answers))
 
     def test_collect_credentials_hashes_a_confirmed_password(self):
-        ask_user, ask_pw = self.prompts("akhil", AUTH_PASSWORD, AUTH_PASSWORD)
+        ask_user, ask_pw = self.prompts("akhil", VALID_POLICY_PASSWORD, VALID_POLICY_PASSWORD)
         user, phash = da.collect_credentials(ask_user, ask_pw)
         self.assertEqual(user, "akhil")
-        self.assertTrue(da.verify_password(AUTH_PASSWORD, phash))
-        self.assertNotIn(AUTH_PASSWORD, phash)
+        self.assertTrue(da.verify_password(VALID_POLICY_PASSWORD, phash))
+        self.assertNotIn(VALID_POLICY_PASSWORD, phash)
 
     def test_collect_credentials_rejects_mismatch_weak_and_bad_usernames(self):
-        for user, pws, message in (("akhil", (AUTH_PASSWORD, "different-password-9"), "do not match"),
-                                   ("akhil", ("short", "short"), "at least"),
-                                   ("", (AUTH_PASSWORD, AUTH_PASSWORD), "username"),
-                                   ("a:b", (AUTH_PASSWORD, AUTH_PASSWORD), "username")):
+        for user, pws, message in (("akhil", (VALID_POLICY_PASSWORD, "different-password-9"), "do not match"),
+                                   ("akhil", ("ab1!xyz", "ab1!xyz"), "at least"),
+                                   ("", (VALID_POLICY_PASSWORD, VALID_POLICY_PASSWORD), "username"),
+                                   ("a:b", (VALID_POLICY_PASSWORD, VALID_POLICY_PASSWORD), "username")):
             ask_user, ask_pw = self.prompts(user, *pws)
             with self.assertRaisesRegex(ValueError, message):
                 da.collect_credentials(ask_user, ask_pw)
@@ -283,29 +290,35 @@ class Utilities(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_create_script_prints_username_and_hash_but_never_the_password(self):
-        code, out, err = self.run_main(create_script, ["akhil", AUTH_PASSWORD, AUTH_PASSWORD])
+        code, out, err = self.run_main(create_script, ["akhil", VALID_POLICY_PASSWORD, VALID_POLICY_PASSWORD])
         self.assertEqual(code, 0)
         self.assertIn("DASHBOARD_USERNAME=akhil", out)
         (phash,) = re.findall(r"^DASHBOARD_PASSWORD_HASH=(\S+)$", out, re.M)
-        self.assertTrue(da.verify_password(AUTH_PASSWORD, phash))
-        self.assertNotIn(AUTH_PASSWORD, out + err)
+        self.assertTrue(da.verify_password(VALID_POLICY_PASSWORD, phash))
+        self.assertNotIn(VALID_POLICY_PASSWORD, out + err)
 
     def test_create_script_fails_cleanly_on_mismatch(self):
-        code, out, err = self.run_main(create_script, ["akhil", AUTH_PASSWORD, "another-password-2"])
+        code, out, err = self.run_main(create_script, ["akhil", VALID_POLICY_PASSWORD, "different-password-9"])
         self.assertEqual(code, 1)
         self.assertNotIn("DASHBOARD_PASSWORD_HASH", out)
-        self.assertNotIn(AUTH_PASSWORD, out + err)
+        self.assertNotIn(VALID_POLICY_PASSWORD, out + err)
 
     def test_reset_script_prints_the_update_command_and_redeploy_steps(self):
-        code, out, err = self.run_main(reset_script, ["akhil", AUTH_PASSWORD, AUTH_PASSWORD], ["--host", "ws--x.modal.run"])
+        code, out, err = self.run_main(reset_script, ["akhil", VALID_POLICY_PASSWORD, VALID_POLICY_PASSWORD], ["--host", "ws--x.modal.run"])
         self.assertEqual(code, 0)
         self.assertIn("modal secret create job-apply-agent-dashboard-secrets", out)
         self.assertIn("DASHBOARD_USERNAME=akhil", out)
         self.assertIn("DASHBOARD_ALLOWED_HOSTS=ws--x.modal.run", out)
         self.assertIn("--force", out)
         self.assertIn("modal deploy modal_app.py", out)
-        self.assertNotIn(AUTH_PASSWORD, out + err)
+        self.assertNotIn(VALID_POLICY_PASSWORD, out + err)
         self.assertNotIn("job-apply-agent-secrets ", out)  # the pipeline's secret is never touched
+
+    def test_reset_script_rejects_a_password_that_fails_the_shared_policy(self):
+        code, out, err = self.run_main(reset_script, ["akhil", "abcdefg1", "abcdefg1"],
+                                       ["--host", "ws--x.modal.run"])
+        self.assertEqual(code, 1)
+        self.assertNotIn("modal secret create", out + err)
 
     def test_apply_uses_a_temp_json_file_that_is_removed_and_never_contains_the_password(self):
         seen = {}
@@ -316,14 +329,14 @@ class Utilities(unittest.TestCase):
             seen["path"] = path
             return mock.Mock(returncode=0)
 
-        values = reset_script.secret_values("akhil", da.hash_password(AUTH_PASSWORD, iterations=1000), "ws--x.modal.run")
+        values = reset_script.secret_values("akhil", da.hash_password(VALID_POLICY_PASSWORD, iterations=1000), "ws--x.modal.run")
         with mock.patch("shutil.which", return_value="/usr/bin/modal"):
             reset_script.apply_to_modal(values, runner=fake_run)
         self.assertTrue(seen["existed"])
         self.assertFalse(seen["path"].exists())  # deleted straight away
         self.assertEqual(set(seen["json"]), {"DASHBOARD_USERNAME", "DASHBOARD_PASSWORD_HASH", "DASHBOARD_ALLOWED_HOSTS"})
         self.assertIn("--force", seen["cmd"])
-        self.assertNotIn(AUTH_PASSWORD, json.dumps(seen["json"]) + " ".join(seen["cmd"]))
+        self.assertNotIn(VALID_POLICY_PASSWORD, json.dumps(seen["json"]) + " ".join(seen["cmd"]))
 
     def test_apply_fails_clearly_when_modal_is_missing_or_errors(self):
         values = reset_script.secret_values("a", "h", "x")
