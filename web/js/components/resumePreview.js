@@ -9,13 +9,15 @@ import { atsValidation } from './atsValidation.js';
 import { safeHref } from '../lib/format.js';
 
 const KIND_LABEL = { generated: 'Generated', regenerated: 'Regenerated', edited: 'Edited', conservative: 'Reorder-only' };
+const SECTION_TITLES = { SUMMARY: 'PROFESSIONAL SUMMARY', SKILLS: 'TECHNICAL SKILLS', EXPERIENCE: 'PROFESSIONAL EXPERIENCE' };
 
 export function resumePaper(markdown) {
   const nodes = groupBullets(parseResume(markdown)).map((b) => {
     switch (b.type) {
       case 'name': return h('p', { class: 'paper-name', role: 'heading', 'aria-level': '2' }, b.text);
       case 'tagline': return h('p', { class: 'paper-tagline' }, b.text);
-      case 'section': return h('h2', {}, b.text);
+      case 'contact': return h('p', { class: 'paper-contact' }, b.text);
+      case 'section': return h('h2', {}, SECTION_TITLES[b.text.toUpperCase()] || b.text.toUpperCase());
       case 'role': return h('h3', {}, b.text);
       case 'date': return h('p', { class: 'paper-date' }, b.text);
       case 'bullets': return h('ul', {}, ...b.items.map((t) => h('li', {}, t)));
@@ -112,7 +114,7 @@ export function resumePreview(initialRec, { onRegenerate, onRecord }) {
         `Fit score ${score}/10 is below the pipeline’s 8+ cutoff. The automated pipeline would not have tailored this job — you’re overriding that manually.`),
       s.editing
         ? h('textarea', { class: 'editor', 'aria-label': 'Edit resume markdown', spellcheck: 'false', rows: 24, value: s.draft, onInput: (e) => { s.draft = e.target.value; } })
-        : resumePaper(v.markdown),
+        : resumePaper(v.preview_markdown || v.markdown),
       s.note && h('p', { class: 'muted', role: 'status' }, s.note),
       trackerNote && h('p', { class: 'muted' }, icon('check', 14), ' ', trackerNote),
       driveHref && h('p', { class: 'muted' }, icon('check', 14), ' ',

@@ -139,7 +139,7 @@ Jan 2022 - Jun 2024 | Chennai
 
 test('resume markdown parses into the same block types the exports use', () => {
   const blocks = parseResume(SAMPLE);
-  assert.deepEqual(blocks.map((b) => b.type), ['name', 'tagline', 'text', 'section', 'text', 'section', 'role', 'date', 'bullet', 'bullet', 'role', 'bullet']);
+  assert.deepEqual(blocks.map((b) => b.type), ['name', 'tagline', 'contact', 'section', 'text', 'section', 'role', 'date', 'bullet', 'bullet', 'role', 'bullet']);
   assert.equal(blocks[0].text, 'Jane Roe');
   assert.equal(blocks[1].text, 'Software Engineer | Java');
   assert.equal(blocks[7].text, 'Jan 2022 - Jun 2024 | Chennai');

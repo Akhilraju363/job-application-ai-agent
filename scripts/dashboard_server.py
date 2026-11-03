@@ -165,8 +165,13 @@ def _int(value, default, lo, hi):
 
 
 def _resume_public(meta):
-    """Resume record for the UI: full version list incl. markdown."""
-    return meta
+    """Resume record for the UI: stored markdown plus the exact export-rendered preview."""
+    import copy
+    import tailor_job
+    result = copy.deepcopy(meta)
+    for version in result.get("versions", []):
+        version["preview_markdown"] = tailor_job.render_markdown(version.get("markdown", ""))
+    return result
 
 
 # ---------------------------------------------------------------------------
