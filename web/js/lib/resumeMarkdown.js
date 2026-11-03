@@ -17,6 +17,7 @@ export function parseResume(md) {
     else if (line.startsWith('### ')) block = { type: 'role', text: line.slice(4).trim() };
     else if (line.startsWith('- ')) block = { type: 'bullet', text: line.slice(2).trim() };
     else if (prev === 'name') block = { type: 'tagline', text: line.trim() };
+    else if (prev === 'tagline' && !line.startsWith('## ')) block = { type: 'contact', text: line.trim() };
     else if (prev === 'role' && DATE_RE.test(line)) block = { type: 'date', text: line.trim() };
     else block = { type: 'text', text: line.trim() };
     blocks.push(block);

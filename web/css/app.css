@@ -375,11 +375,14 @@ select.input { appearance: auto; padding-right: var(--s-2); }
 .warnings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s-1); color: var(--orange); font-size: var(--fs-secondary); } .warnings li { display: flex; gap: 6px; align-items: center; }
 .checks { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; } .check { display: flex; gap: var(--s-2); align-items: flex-start; font-size: var(--fs-secondary); }
 .check-green { color: var(--green); } .check-orange { color: var(--orange); } .check-red { color: var(--red); } .check span { color: var(--text); }
-.paper { background: #fff; color: #111827; border: 1px solid var(--border); border-radius: var(--r-md); padding: 36px 44px; max-width: 820px; margin: 0 auto var(--s-4);
-  box-shadow: var(--shadow-sm); font-family: Georgia, "Times New Roman", serif; font-size: 13.5px; line-height: 1.45; }
-.paper h1, .paper-name { font-size: 24px; font-weight: 700; line-height: 1.3; margin-bottom: 2px; letter-spacing: 0; } .paper-tagline { color: #374151; margin-bottom: 4px; }
-.paper h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; border-bottom: 1.5px solid #111827; padding-bottom: 2px; margin: 16px 0 8px; }
-.paper h3 { font-size: 14px; margin: 10px 0 0; } .paper-date { font-style: italic; color: #4b5563; margin-bottom: 4px; } .paper ul { margin: 4px 0 6px 20px; padding: 0; } .paper li { margin-bottom: 3px; }
+.paper { box-sizing: border-box; background: #fff; color: #111827; border: 1px solid var(--border); border-radius: var(--r-md); padding: 26pt 40pt; width: min(100%, 595.28pt); min-height: 841.89pt; margin: 0 auto var(--s-4);
+  box-shadow: var(--shadow-sm); font-family: Arial, Helvetica, sans-serif; font-size: 9pt; line-height: 1.04; }
+.paper p { margin: 0; }
+.paper-name { font-size: 20pt; font-weight: 700; line-height: 1.15; margin-bottom: 2pt !important; letter-spacing: 0; text-align: center; overflow-wrap: anywhere; }
+.paper-tagline { font-size: 12pt; text-align: center; margin-bottom: 2pt !important; overflow-wrap: anywhere; }
+.paper-contact { font-size: 9pt; color: #374151; text-align: center; margin-bottom: 2pt !important; overflow-wrap: anywhere; }
+.paper h2 { font-size: 13pt; letter-spacing: 0; text-transform: uppercase; border-bottom: .75pt solid #c0c0c0; padding-bottom: 2pt; margin: 6pt 0 3pt; }
+.paper h3 { font-size: 9pt; margin: 3pt 0 0; } .paper-date { font-style: italic; color: #4b5563; margin-bottom: 4pt; } .paper ul { margin: 0; padding: 0; list-style-position: inside; } .paper li { margin-bottom: 0; }
 .editor { width: 100%; min-height: 420px; padding: 14px; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text);
   font: 13px/1.5 var(--font-mono); margin-bottom: 14px; }
 .preview-actions { display: flex; gap: var(--s-2); flex-wrap: wrap; }
