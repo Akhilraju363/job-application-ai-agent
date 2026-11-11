@@ -151,6 +151,14 @@ class Filename(unittest.TestCase):
         self.assertEqual(rr.resume_filename(legacy, "pdf"), "Akhil_Dalali_Java_Developer.pdf")
         self.assertEqual(rr.resume_filename(REAL_BASE, "pdf"), "Akhil_Dalali.pdf")   # generic headline adds nothing
 
+    def test_role_symbols_and_unicode_remain_readable_in_export_filenames(self):
+        self.assertEqual(rr.resume_filename(REAL_BASE, "pdf", role="C++ Developer"),
+                         "Akhil_Dalali_C++_Developer.pdf")
+        self.assertEqual(rr.resume_filename(REAL_BASE, "pdf", role="C# Developer"),
+                         "Akhil_Dalali_C#_Developer.pdf")
+        self.assertEqual(rr.resume_filename(REAL_BASE, "docx", role="Développeur 東京"),
+                         "Akhil_Dalali_Développeur_東京.docx")
+
 
 class TailoredOutput(unittest.TestCase):
     def test_every_role_gets_the_same_header_and_its_own_filename(self):

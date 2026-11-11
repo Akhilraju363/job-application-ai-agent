@@ -297,7 +297,6 @@ if __name__ == "__main__":
 
     tailored_dir = ROOT / "output" / "tailored"
     tailored_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir = Path("/tmp/tailor_job")
     out_path = ROOT / "output" / "tailored_jobs.json"
 
     # A prior run (e.g. the Modal cron before OpenRouter failed) may have already
