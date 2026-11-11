@@ -294,6 +294,9 @@ select.input { appearance: auto; padding-right: var(--s-2); }
 .cell-title .link-btn:hover { color: var(--primary); text-decoration: none; }
 .cell-sub { display: block; font-weight: 400; font-size: var(--fs-caption); color: var(--muted); }
 .row-actions { display: flex; align-items: center; gap: var(--s-1); flex-wrap: nowrap; white-space: nowrap; }
+.table th.application-actions-header, .table td.application-row-actions { min-width: 172px; text-align: right; }
+.application-row-actions { justify-content: flex-end; }
+.application-open-slot { width: 74px; flex: 0 0 74px; display: flex; align-items: center; justify-content: flex-start; }
 .status-select { min-width: 124px; }
 .status-cell { display: flex; flex-direction: column; gap: 2px; }
 .status-note { font-style: italic; }
