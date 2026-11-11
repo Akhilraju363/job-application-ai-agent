@@ -18,6 +18,8 @@ export class FakeElement extends FakeBase {
     this.dataset = {};
     this.style = {};
     this.value = '';
+    this.checked = false;
+    this.indeterminate = false;
     this.disabled = false;
     this.focused = false;
   }

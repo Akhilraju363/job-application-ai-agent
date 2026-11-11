@@ -331,6 +331,61 @@ def delete_row(sheet_id, row_number, expected_link):
         }}]}))
 
 
+def delete_rows(sheet_id, expected_links):
+    """Delete unique tracker rows in one batch, resolving each canonical link from the live Sheet.
+
+    Requests are ordered from the last row upward so deleting one row cannot shift the next
+    requested row. As with delete_row(), an external edit can still race the final read and write.
+    """
+    if not isinstance(expected_links, list) or not expected_links:
+        raise ValueError("at least one tracker job link is required")
+    keys = [canonical_link(link) for link in expected_links]
+    if any(not key for key in keys):
+        raise ValueError("every tracker job link must be valid")
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate tracker job links are not allowed")
+
+    metadata = gws("sheets", "spreadsheets", "get", "--params", json.dumps({
+        "spreadsheetId": sheet_id, "fields": "sheets.properties",
+    }))
+    sheet = next((s.get("properties", {}) for s in metadata.get("sheets", [])
+                  if s.get("properties", {}).get("title") == TRACKER_TAB), None)
+    if not sheet:
+        raise RuntimeError(f"{TRACKER_TAB} worksheet not found")
+
+    rows = read_tracker(sheet_id)
+    outcomes = {}
+    targets = []
+    for key in keys:
+        matches = [row for row in rows if canonical_link(row.get("link")) == key]
+        if not matches:
+            outcomes[key] = {"status": "failed", "code": "not_found",
+                             "message": "Application not found"}
+        elif len(matches) != 1:
+            outcomes[key] = {"status": "failed", "code": "tracker_conflict",
+                             "message": "Multiple tracker rows match this application"}
+        elif not isinstance(matches[0].get("row"), int) or matches[0]["row"] < 2:
+            outcomes[key] = {"status": "failed", "code": "tracker_conflict",
+                             "message": "Tracker row position is invalid"}
+        else:
+            targets.append((key, matches[0]))
+
+    if targets:
+        requests = [{"deleteDimension": {
+            "range": {"sheetId": sheet["sheetId"], "dimension": "ROWS",
+                      "startIndex": row["row"] - 1, "endIndex": row["row"]}
+        }} for _, row in sorted(targets, key=lambda item: item[1]["row"], reverse=True)]
+        gws("sheets", "spreadsheets", "batchUpdate", "--params",
+            json.dumps({"spreadsheetId": sheet_id}),
+            "--json", json.dumps({"requests": requests}))
+        for key, row in targets:
+            outcomes[key] = {"status": "deleted", "row": row["row"],
+                             "title": row.get("title", ""), "company": row.get("company", ""),
+                             "link": row.get("link", "")}
+
+    return [outcomes[key] for key in keys]
+
+
 if __name__ == "__main__":
     lc.configure_logging("pipeline")
     import artifacts

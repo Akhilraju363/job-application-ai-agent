@@ -171,6 +171,46 @@ class GwsCommandTests(unittest.TestCase):
         delete_request = json.loads(gws.call_args_list[-1].args[6])["requests"][0]["deleteDimension"]
         self.assertEqual(delete_request["range"]["startIndex"], 3)
 
+    def test_delete_rows_resolves_stable_links_and_batches_descending_positions(self):
+        first = "https://example.com/jobs/first"
+        second = "https://example.com/jobs/second"
+        missing = "https://example.com/jobs/missing"
+        rows = [
+            {"row": 2, "title": "Unrelated", "company": "Keep", "link": "https://example.com/jobs/keep"},
+            {"row": 4, "title": "First", "company": "A", "link": first},
+            {"row": 9, "title": "Second", "company": "B", "link": second},
+        ]
+        metadata = {"sheets": [{"properties": {"title": "Jobs", "sheetId": 702182959}}]}
+        with mock.patch.object(write_sheet, "gws", side_effect=[metadata, {}]) as gws, \
+                mock.patch.object(write_sheet, "read_tracker", return_value=rows):
+            outcomes = write_sheet.delete_rows("sheet", [first, second, missing])
+        requests = json.loads(gws.call_args_list[-1].args[6])["requests"]
+        ranges = [request["deleteDimension"]["range"] for request in requests]
+        self.assertEqual([r["startIndex"] for r in ranges], [8, 3])
+        self.assertTrue(all(r["sheetId"] == 702182959 and r["dimension"] == "ROWS" for r in ranges))
+        self.assertEqual([outcome["status"] for outcome in outcomes], ["deleted", "deleted", "failed"])
+        self.assertEqual(outcomes[-1]["code"], "not_found")
+        self.assertEqual([outcome["title"] for outcome in outcomes[:2]], ["First", "Second"])
+        self.assertEqual(gws.call_count, 2)
+
+    def test_delete_rows_reports_missing_and_ambiguous_without_mutating(self):
+        first = "https://www.linkedin.com/jobs/view/123"
+        missing = "https://example.com/jobs/missing"
+        metadata = {"sheets": [{"properties": {"title": "Jobs", "sheetId": 12}}]}
+        rows = [{"row": 2, "link": first}, {"row": 3, "link": first + "?trackingId=duplicate"}]
+        with mock.patch.object(write_sheet, "gws", return_value=metadata) as gws, \
+                mock.patch.object(write_sheet, "read_tracker", return_value=rows):
+            outcomes = write_sheet.delete_rows("sheet", [missing, first])
+        self.assertEqual([result["code"] for result in outcomes], ["not_found", "tracker_conflict"])
+        self.assertEqual(gws.call_count, 1)
+
+    def test_delete_rows_rejects_empty_or_duplicate_links(self):
+        with mock.patch.object(write_sheet, "gws") as gws:
+            for links in ([], ["https://example.com/jobs/1", "https://example.com/jobs/1?utm_source=x"]):
+                with self.assertRaises(ValueError):
+                    write_sheet.delete_rows("sheet", links)
+        gws.assert_not_called()
+
     def test_schema_migration_adds_only_missing_suitability_header_and_validation(self):
         with mock.patch.object(write_sheet, "gws", side_effect=[
             {"values": [write_sheet.HEADERS[:12]]}, {},
@@ -266,6 +306,31 @@ class GwsCommandTests(unittest.TestCase):
                 ]):
             with self.assertRaises(TrackerConflict):
                 tracker.delete_job(link)
+
+    def test_tracker_bulk_delete_invalidates_after_success_and_preserves_partial_outcomes(self):
+        tracker = tracker_service.Tracker()
+        tracker._cache = (1, [{"link": "old"}])
+        links = ["https://example.com/jobs/1", "https://example.com/jobs/2"]
+        outcomes = [
+            {"status": "deleted", "row": 2, "title": "Role 1", "company": "A", "link": links[0]},
+            {"status": "failed", "code": "not_found", "message": "Application not found"},
+        ]
+        with mock.patch.dict("os.environ", {"google_sheet_id": "spreadsheet-id"}), \
+                mock.patch.object(write_sheet, "delete_rows", return_value=outcomes) as delete, \
+                mock.patch("activity.log_event") as event:
+            result = tracker.delete_jobs(links)
+        delete.assert_called_once_with("spreadsheet-id", links)
+        self.assertEqual(result, outcomes)
+        self.assertIsNone(tracker._cache)
+        event.assert_called_once()
+
+    def test_tracker_bulk_delete_fails_closed_when_tracker_is_unavailable(self):
+        tracker = tracker_service.Tracker()
+        with mock.patch.dict("os.environ", {"google_sheet_id": "spreadsheet-id"}), \
+                mock.patch.object(write_sheet, "delete_rows", side_effect=RuntimeError("offline")) as delete:
+            with self.assertRaises(tracker_service.TrackerError):
+                tracker.delete_jobs(["https://example.com/jobs/1"])
+        delete.assert_called_once()
 
 
 if __name__ == "__main__":

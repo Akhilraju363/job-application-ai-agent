@@ -134,6 +134,36 @@ class Tracker:
                            company=row["company"], title=row["title"], link=row["link"])
         return {"deleted": True}
 
+    def delete_jobs(self, links):
+        """Delete multiple uniquely matched tracker rows with one Sheets batch update."""
+        if not isinstance(links, list) or not links:
+            raise ValueError("at least one application is required")
+        keys = [canonical_link(link) for link in links]
+        if any(not key for key in keys):
+            raise ValueError("every application must have a valid job link")
+        if len(set(keys)) != len(keys):
+            raise ValueError("duplicate applications are not allowed")
+        try:
+            sid = self._lookup_sheet_id()
+            if not sid:
+                raise TrackerError("No tracker sheet is configured")
+            outcomes = write_sheet.delete_rows(sid, keys)
+        except Exception as e:  # noqa: BLE001 -- Google/GWS may fail for several reasons
+            log.error("Tracker bulk delete failed", exc_info=True)
+            raise TrackerError("The tracker could not complete the bulk delete") from e
+
+        deleted = [outcome for outcome in outcomes if outcome["status"] == "deleted"]
+        if deleted:
+            self.invalidate()
+        for outcome in deleted:
+            log.info("Tracker row deleted", extra={"company": outcome["company"], "row": outcome["row"]})
+            activity.log_event(
+                "tracker_deleted",
+                f"Removed {outcome['title']} at {outcome['company']} from the tracker",
+                company=outcome["company"], title=outcome["title"], link=outcome["link"],
+            )
+        return outcomes
+
     def save_job(self, *, title, company, link, score, resume_path="", source="LinkedIn",
                  company_notes="", resume_id="", match_pct=None):
         """Add one row (status "Not Applied"), or return the existing one -- never a duplicate.

@@ -496,6 +496,7 @@ class RouteProtection(AuthCase):
             checked.append((method, path))
         self.assertGreater(len(checked), 25)
         self.assertIn(("GET", "/api/logs"), checked)
+        self.assertIn(("POST", "/api/tracker/bulk-delete"), checked)
         for name in ("/api/tracker", "/api/settings", "/api/preferences", "/api/tailor", "/api/resumes", "/api/jobs", "/api/me"):
             self.assertTrue(any(p == name for _, p in checked), name)
 

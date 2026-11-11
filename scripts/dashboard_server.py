@@ -676,6 +676,77 @@ def tracker_delete(req):
         raise ApiError(502, f"Tracker unavailable: {e}", "tracker_unavailable") from None
 
 
+@route("POST", "/api/tracker/bulk-delete")
+def tracker_bulk_delete(req):
+    ids = req.body.get("ids")
+    if not isinstance(ids, list) or not ids:
+        raise ApiError(400, "ids must be a non-empty list", "invalid_input")
+    if any(not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{12}", key) for key in ids):
+        raise ApiError(400, "Each application ID must be a 12-character lowercase hexadecimal key", "invalid_input")
+    if len(set(ids)) != len(ids):
+        raise ApiError(400, "Duplicate application IDs are not allowed", "invalid_input")
+
+    def failed(key, code, message):
+        return {"id": key, "status": "failed", "code": code, "message": message}
+
+    def response(results):
+        records = [results[key] for key in ids]
+        deleted_count = sum(result["status"] == "deleted" for result in records)
+        failed_count = len(records) - deleted_count
+        status = "completed" if not failed_count else "partial" if deleted_count else "failed"
+        return {"status": status, "deleted_count": deleted_count,
+                "failed_count": failed_count, "results": records}
+
+    snapshot = tracker.snapshot(force=True)
+    if not snapshot["configured"] or not snapshot["available"] or snapshot["stale"]:
+        results = {key: failed(key, "tracker_unavailable", "Tracker is unavailable; no applications were deleted")
+                   for key in ids}
+        summary = response(results)
+        raise ApiError(502, "Tracker unavailable; no applications were deleted",
+                       "tracker_unavailable", details=summary)
+
+    matches = {key: [] for key in ids}
+    for row in snapshot["rows"]:
+        link = row.get("link")
+        if not isinstance(link, str) or not link.strip():
+            continue
+        key = dd.job_key(link)
+        if key in matches:
+            matches[key].append(row)
+
+    results = {}
+    candidates = []
+    for key in ids:
+        rows = matches[key]
+        if not rows:
+            results[key] = failed(key, "not_found", "Application not found")
+        elif len(rows) != 1:
+            results[key] = failed(key, "tracker_conflict",
+                                  "Multiple tracker rows match this application; none were deleted")
+        else:
+            candidates.append((key, rows[0]["link"]))
+
+    if candidates:
+        try:
+            outcomes = tracker.delete_jobs([link for _, link in candidates])
+            if len(outcomes) != len(candidates):
+                raise TrackerError("The tracker returned an incomplete bulk delete result")
+        except TrackerError:
+            for key, _ in candidates:
+                results[key] = failed(key, "tracker_unavailable",
+                                      "Tracker is unavailable; this application was not deleted")
+            summary = response(results)
+            raise ApiError(502, "Tracker unavailable; no applications were deleted",
+                           "tracker_unavailable", details=summary) from None
+        for (key, _), outcome in zip(candidates, outcomes):
+            if outcome["status"] == "deleted":
+                results[key] = {"id": key, "status": "deleted"}
+            else:
+                results[key] = failed(key, outcome["code"], outcome["message"])
+
+    return response(results)
+
+
 # ---------------------------------------------------------------------------
 # interviews (separate from the application tracker)
 # ---------------------------------------------------------------------------
