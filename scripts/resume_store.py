@@ -143,6 +143,16 @@ def mark_drive(rid, n, fmt, info):
         _write_meta(rid, meta)
 
 
+def mark_storage(rid, n, fmt, info):
+    """Record a non-Drive artifact backend outcome for one format."""
+    with _lock:
+        meta = get(rid, with_markdown=False)
+        for v in meta["versions"]:
+            if v["n"] == int(n):
+                v.setdefault("storage", {})[fmt] = info
+        _write_meta(rid, meta)
+
+
 def list_all():
     out = []
     root = _root()

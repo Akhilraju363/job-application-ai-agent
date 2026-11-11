@@ -49,7 +49,7 @@ step — the rest are logged as rejected but never tailored, never touch the She
 **Prerequisites:**
 - Python 3.12+
 - The [`gws` CLI](https://github.com/googleworkspace/cli) — see [`GWS_SETUP.md`](GWS_SETUP.md) for
-  the full walkthrough (Google Cloud project, OAuth, first login)
+  service-account setup or the explicitly selected legacy OAuth compatibility path
 - An [Apify](https://apify.com) account (free tier)
 - A [Groq](https://console.groq.com) API key (free, no credit card) — the primary LLM provider.
   Optionally also [OpenRouter](https://openrouter.ai) and/or [Google AI Studio](https://aistudio.google.com/apikey)
@@ -65,6 +65,9 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+`requirements.txt` includes `google-cloud-storage` for private GCS artifacts and `reportlab` plus
+`python-docx` for local PDF/DOCX rendering.
+
 **Environment:**
 
 ```bash
@@ -73,12 +76,15 @@ cp .env.example .env
 # a deeper failover chain — see .env.example for where to get each)
 ```
 
-`google_drive_folder_id` — create a folder in Drive and paste its id (from the URL). It holds
-the per-job resume folders and the `pipeline-artifacts/` sync folder.
+`google_sheet_id` — set this to the existing master "Job Application Tracker" spreadsheet ID.
+It is required: the app never searches for or creates another spreadsheet.
 
-`google_sheet_id` — set this to the ID of the single master "Job Application Tracker"
-spreadsheet. This is recommended for both local and Modal runs so every execution
-uses the same spreadsheet deterministically.
+For service-account storage, set `GOOGLE_AUTH_MODE=service_account`,
+`GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`, `ARTIFACT_STORAGE_BACKEND=gcs`, `GCS_BUCKET`, and
+`ARTIFACT_PUBLIC_BASE_URL` (the stable HTTPS dashboard origin). The bucket stays private; new
+resume URLs go through the authenticated dashboard. `google_drive_folder_id` is unused in GCS
+mode. Existing Drive URLs remain untouched and are not migrated.
+See [`GWS_SETUP.md`](GWS_SETUP.md) for credential setup, read-only validation, and migration/rollback details.
 
 `RESUME_CONTACT_LINE` — your email and location, e.g. `name@example.com | Bengaluru, India`.
 `resume/base_resume.md` is public, so it has no contact details. `scripts/contact.py` adds this
@@ -89,15 +95,10 @@ For Modal, `google_sheet_id` must be provided through the
 `job-apply-agent-secrets` secret because the Modal container does not have a
 persistent `.env`.
 
-If `google_sheet_id` is not configured, `write_sheet.py` falls back to searching
-Drive for an existing "Job Application Tracker" and creates one only if none
-exists.
-
-Lookup priority is:
-
-configured `google_sheet_id`
-→ existing tracker found in Drive
-→ create tracker only if none exists.
+Keep `GOOGLE_SHEETS_WRITE_ENABLED=false` while validating access. Run
+`python scripts/google_auth.py` to perform read-only checks against the configured spreadsheet
+and `Jobs!A1:M1`, plus the GCS bucket. Only after the tracker read succeeds should the service
+account be granted edit access and the write opt-in be explicitly enabled.
 
 ### LLM providers (free only)
 
@@ -176,8 +177,8 @@ existing provider chain) -> match against `resume/base_resume.md` in code -> tai
 pipeline's own prompt -> verify -> store. Verification (`scripts/no_fabrication.py`) rejects any
 invented technology, employer, title, date, number or leadership claim, and any technology moved
 between employers. If the model's rewrite fails twice, a reorder-only version of the master resume
-is produced instead (clearly labelled). PDF/DOCX come from the same Google Doc export the pipeline
-uses (needs `gws` auth); Markdown is always available. Results live in `output/generated_resumes/`.
+is produced instead (clearly labelled). In GCS mode, PDF/DOCX are rendered locally without
+creating a Google Doc; Markdown remains available. Results live in `output/generated_resumes/`.
 
 **Entry point:** `tailoring_service.tailor_resume(job_description, job_title, company, job_url, source, job_id, user_id)`
 returns `{status, job, jd_analysis, match_analysis, resume, ats_validation, verification}`; also served at
@@ -204,28 +205,21 @@ Regenerate always creates a new version (v2, v3...). The Sheet gets two extra co
 
 ## Deploying (daily automatic run)
 
-```bash
-modal secret create job-apply-agent-secrets \
-  apify_api_key=... GROQ_API_KEY=... \
-  OPENROUTER_API_KEY=... GEMINI_API_KEY=... \
-  google_drive_folder_id=... google_sheet_id=... \
-  RESUME_CONTACT_LINE="name@example.com | Bengaluru, India" \
-  TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=...
-
-modal secret create gws-credentials \
-  client_id=... client_secret=... refresh_token=... type=...
-
-modal deploy modal_app.py
-```
+Configure the existing Modal secrets through the protected Modal secret manager according to
+[`GWS_SETUP.md`](GWS_SETUP.md). For service-account mode, keep `GOOGLE_SHEETS_WRITE_ENABLED=false`
+until the read-only check is confirmed; place `GOOGLE_SERVICE_ACCOUNT_JSON` in the protected
+`gws-credentials` secret and configure private GCS. Do not pass the JSON key on a command line.
+This implementation does not change production secrets or deploy the application. Explicit legacy
+OAuth compatibility remains available only when `GOOGLE_AUTH_MODE=oauth` is selected.
 
 `GROQ_API_KEY` is the minimum LLM requirement; `OPENROUTER_API_KEY` and `GEMINI_API_KEY` are
 optional extra links in the failover chain. Runs at 7am Asia/Kolkata (IST), Monday–Friday (`0 7 * * 1-5`). See
-[`GWS_SETUP.md`](GWS_SETUP.md) for the `gws-credentials` values and the Telegram section for the
-bot token.
+[`GWS_SETUP.md`](GWS_SETUP.md) for credential setup and the Telegram section for the bot token.
 
-**`google_sheet_id` must be in the secret** (not just `.env`). The Modal container has no
-persistent `.env`, so without it in the secret `write_sheet.py` falls back to a Drive lookup by
-name on every run. Get the id once from your master "Job Application Tracker" sheet's URL
+**`google_sheet_id` must be in protected settings** (not just `.env`). It is required for both
+Applications and Interviews. The Modal container has no persistent `.env`, and the app never
+searches Drive or creates a replacement when the ID is missing. Get the ID from the master
+"Job Application Tracker" sheet's URL
 (`docs.google.com/spreadsheets/d/<ID>/edit`) and set it. **Never put `llm_base_url` in the
 secret** — Modal must use the cloud provider chain, and `modal_app.py` refuses to start if it
 finds `llm_base_url` set.
@@ -260,12 +254,13 @@ modal deploy modal_app.py   # also (re)deploys the daily cron, code unchanged
 
 - **Persistence:** the `job-apply-agent-dashboard` Volume is mounted at `/app/output` (generated
   resumes, activity log, preferences), committed every 30s. The cron does **not** mount it and stays
-  stateless. Exported PDF/DOCX files live in Google Drive; the tracker links the Drive URL.
+  stateless. New PDF/DOCX artifacts live in private GCS; the tracker links to an authenticated
+  dashboard download route. Historical Drive links remain unchanged.
 - **One container:** `max_containers=1` with scale-to-zero (`scaledown_window=900`). Background
   tailoring/export tasks are held in memory, so a container restart or redeploy while a task is
-  running loses that task — just re-run it (results already saved to Drive/Sheet are unaffected).
-- **Google access:** the same `gws-credentials` secret and `materialize_gws_credentials()` helper
-  as the cron.
+  running loses that task — just re-run it (results already saved to GCS/Sheet are unaffected).
+- **Google access:** the same explicitly selected identity and GCS settings as the cron. See
+  [`GWS_SETUP.md`](GWS_SETUP.md) for read-only validation, the Sheets write opt-in, migration and rollback.
 - Local use is unchanged: `python scripts/dashboard_server.py` on `127.0.0.1:8765`.
 
 ## Dashboard authentication
@@ -353,7 +348,7 @@ code -> Python logging -+-> stderr  -> Modal runtime logs   (always; survives a 
   dashboard no longer has a Logs page (removed 2026-10-12); call the API while signed in, or read the files.
 - **Ids** — every dashboard response carries `X-Request-ID` (a safe client-supplied one is kept); the
   same id, plus the background `task_id`, `resume_id` and `job_id` when known, appears on the related
-  log lines, so one request can be followed from the HTTP call to the LLM call to the Drive upload.
+  log lines, so one request can be followed from the HTTP call to the LLM call to the artifact upload.
 - **Rotation** — `RotatingFileHandler`, 10 MB x 5 backups per file by default
   (`LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`); only log files rotate — resumes and the activity log are never
   touched. Other settings: `LOG_LEVEL` (default `INFO`), `LOG_DIR`, `LOG_TO_FILE=0`.
@@ -393,12 +388,11 @@ python3 scripts/write_sheet.py       # appends only jobs not already in the Shee
 
 To recover an **earlier** day's failed run, set `PIPELINE_DATE=YYYY-MM-DD` in `.env` first.
 
-How it works: every stage mirrors its artifact to a `pipeline-artifacts` subfolder of your
-`google_drive_folder_id` Drive folder, date-stamped (`scored_jobs-2026-09-06.json`). A local run
-pulls the newest copy before starting and pushes its progress back, so Modal and your laptop
-share the same state. Jobs are identified by their URL throughout, so nothing is scored, tailored,
-researched, or logged twice — every recovery run converges on the same Sheet. Set `artifact_sync=0`
-to turn the Drive mirror off (pure-local development without Google auth still works).
+How it works: with `ARTIFACT_STORAGE_BACKEND=gcs`, every stage mirrors its date-stamped artifact
+to the private bucket's `pipeline-artifacts/` prefix. A local run pulls the newest copy before
+starting and pushes its progress back, so Modal and your laptop share the same state. Jobs are
+identified by their URL throughout, so nothing is scored, tailored, researched, or logged twice —
+every recovery run converges on the same Sheet. Set `artifact_sync=0` to disable the mirror.
 
 ### Local startup
 
@@ -449,7 +443,7 @@ Two ways to run this pipeline:
 | Jobs/run | 10 (`JOB_LIMIT`) | 50 (`LOCAL_JOB_LIMIT`) by default |
 | LLM provider | Groq → OpenRouter `:free` → Gemini | Ollama only, no cloud calls, no fallback |
 | Why the different job count | OpenRouter's free-tier ~50-req/day cap (score+tailor+research share it — see [`scripts/llm.py`](scripts/llm.py) COST NOTES) | No such cap — Ollama has no daily quota; the real ceiling is your machine's compute time |
-| Drive / Sheet | Same `pipeline-artifacts` mirror, same master "Job Application Tracker" | Same — identical dedup by job URL, no separate sheet or folder tree |
+| Artifact storage / Sheet | Same configured artifact mirror, same master "Job Application Tracker" | Same — identical dedup by job URL, no separate sheet or folder tree |
 
 Local mode is for scraping and processing more jobs per day than the cloud path's free-tier
 LLM quota allows, entirely on your own hardware — not just Modal-run recovery (though it works
@@ -504,9 +498,9 @@ Ollama model 'qwen2.5:7b' is not available. Run:
 
 It's still resume-safe at any scale — if a 50-job local run stops partway (e.g. after 27/50
 scored), rerunning `scripts/run_pipeline.py` picks up exactly where it left off (same
-`output/*.json` artifacts, same Drive mirror, same job-URL dedup as the cloud path — see
+`output/*.json` artifacts, same configured storage mirror, same job-URL dedup as the cloud path — see
 [Recovering a failed daily run](#recovering-a-failed-daily-run)) instead of redoing completed work
-or creating duplicate Sheet rows / Drive folders.
+or creating duplicate Sheet rows / artifact objects.
 
 To force a fresh Apify scrape instead of reusing today's cached `raw_jobs.json` (the default,
 6-hour cache still applies — see `scrape_jobs.py`), set `FORCE_SCRAPE=true` or pass `--force`.
@@ -536,15 +530,12 @@ won't message you.
   against the `gws` CLI's sandbox check) — fixed in `scripts/tailor_job.py`.
 - Telegram alerting is wired into `modal_app.py` but needs your own bot token (above) to actually
   fire.
-- Early Modal runs created a new "Job Application Tracker" sheet every day because the container's
-  `.env` write doesn't persist — fixed in `scripts/write_sheet.py` (configured `google_sheet_id`
-  first, then a Drive lookup by name, then create) and by putting `google_sheet_id` in the Modal
-  secret.
-- `tailor_job.py` used to re-tailor every qualifying job (and create duplicate Drive folders) on
-  every run — now it reuses resumes already marked `saved` and only tailors what's missing, keyed
-  by job URL. Combined with `scripts/artifacts.py` (the Drive artifact mirror), a day where every
-  free provider is throttled can be finished locally with Ollama without redoing work or
-  duplicating Sheet rows.
+- The configured `google_sheet_id` is now required; Sheets access uses the explicitly selected
+  identity and never searches for or creates a replacement spreadsheet.
+- `tailor_job.py` used to re-tailor every qualifying job on every run — now it reuses resumes already
+  marked `saved` and only tailors what's missing, keyed by job URL. Combined with the configured
+  artifact mirror, a day where every free provider is throttled can be finished locally with
+  Ollama without redoing work or duplicating Sheet rows.
 
 ## After the Sheet Is Ready — Applying
 

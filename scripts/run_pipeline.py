@@ -78,6 +78,20 @@ def main():
         llm.validate_local_setup()
         log.info("Job limit configured", extra={"job_limit": os.environ.get("LOCAL_JOB_LIMIT", "50")})
 
+        stage["name"] = "Google service preflight"
+        import google_auth
+        import write_sheet
+        google_status = google_auth.health_check(write_sheet.gws)
+        required = ("sheets", "artifact_storage")
+        failures = [f"{key}: {google_status[key]['category']} - {google_status[key]['message']}"
+                    for key in required if google_status[key]["status"] != "available"]
+        if failures:
+            raise RuntimeError("Google preflight failed: " + "; ".join(failures))
+        if google_auth.is_service_account() and \
+                os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+            raise RuntimeError("Google Sheets read-only preflight passed, but writes remain disabled; "
+                               "set GOOGLE_SHEETS_WRITE_ENABLED=true only after verifying the tracker read")
+
         force_scrape = os.environ.get("FORCE_SCRAPE", "").strip().lower() in ("1", "true", "yes", "on")
 
         stage["name"] = "scrape_jobs.py"

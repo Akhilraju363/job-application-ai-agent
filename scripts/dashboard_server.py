@@ -53,10 +53,13 @@ import dashboard_auth as da  # noqa: E402
 import dashboard_data as dd  # noqa: E402
 import dashboard_tasks as tasks  # noqa: E402
 import drive_resumes  # noqa: E402
+import artifact_storage  # noqa: E402
+import google_auth  # noqa: E402
 import jd_analysis  # noqa: E402
 import log_reader  # noqa: E402
 import master_resume  # noqa: E402
 import interview_store  # noqa: E402
+import write_sheet  # noqa: E402
 import logging_config as lc  # noqa: E402
 import no_fabrication as nf  # noqa: E402
 import resume_role  # noqa: E402
@@ -292,6 +295,26 @@ def dash_sources(req):
     return dd.sources()
 
 
+@route("GET", "/api/health/google")
+def google_health(req):
+    """Independent read-only health checks; diagnostics never include credential paths."""
+    return google_auth.health_check(write_sheet.gws)
+
+
+@route("GET", "/api/artifacts/(?P<key>generated_resumes/[0-9a-f]{12}/[A-Za-z0-9_-]+/v[1-9][0-9]*/(?:[A-Za-z0-9_.-]|%[0-9A-Fa-f]{2})+\\.(?:pdf|docx))")
+def artifact_download(req):
+    """Serve private GCS resume artifacts through the dashboard's authenticated session."""
+    try:
+        artifact_storage.check_configuration()
+        key = artifact_storage.decode_resume_object_key(req.params["key"])
+        body = artifact_storage.download_bytes(key)
+    except artifact_storage.ArtifactStorageError:
+        logger.exception("Private artifact retrieval failed")
+        raise ApiError(502, "Resume artifact is temporarily unavailable", "artifact_unavailable") from None
+    content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+    return FileResponse(body, content_type, Path(key).name, disposition="inline")
+
+
 # ---------------------------------------------------------------------------
 # jobs (Find Jobs)
 # ---------------------------------------------------------------------------
@@ -475,15 +498,20 @@ def resume_export(req):
         _export_local(rid, n, fmt)
         task.result = {"resume_id": rid, "version": n, "format": fmt}
         task.set_stage("upload")
-        try:  # Drive is the persistent copy; the local export above already succeeded and stays downloadable
+        try:
             up = drive_resumes.upload_and_record(rid, n, fmt)
-            task.result["drive"] = {"status": "uploaded", "url": up["url"], "reused": up["reused"]}
+            stored = {"status": "uploaded", "backend": up.get("backend", "drive"),
+                      "url": up["url"], "reused": up["reused"]}
+            task.result["storage"] = stored
+            task.result["drive"] = stored
         except drive_resumes.DriveUploadError as e:
-            task.result["drive"] = {"status": "failed", "error": str(e)}
+            failed = {"status": "failed", "error": str(e)}
+            task.result["storage"] = failed
+            task.result["drive"] = failed
 
     label = "PDF" if fmt == "pdf" else "Word document"
-    return {"task_id": tasks.start("export", [("export", f"Building {label} via Google Docs"),
-                                              ("upload", "Saving to Google Drive")], work).id}
+    return {"task_id": tasks.start("export", [("export", f"Building {label}"),
+                                              ("upload", "Saving resume artifact")], work).id}
 
 
 def _export_local(rid, n, fmt):
@@ -502,8 +530,11 @@ def _export_local(rid, n, fmt):
     except Exception as e:  # noqa: BLE001 -- gws missing / not signed in / Docs API error
         tailoring_log.error("Resume export failed", exc_info=True, extra=ctx)
         detail = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
-        raise RuntimeError(f"{'PDF' if fmt == 'pdf' else 'DOCX'} generation failed: {detail}. "
-                           "Check that the Google Workspace CLI (gws) is signed in, or download the Markdown.") from e
+        backend = artifact_storage.backend()
+        hint = ("Check that local resume renderer dependencies are installed."
+                if backend == "gcs" else
+                "Check that the Google Workspace CLI (gws) is signed in, or download the Markdown.")
+        raise RuntimeError(f"{'PDF' if fmt == 'pdf' else 'DOCX'} generation failed: {detail}. {hint}") from e
     resume_store.mark_export(rid, n, fmt)
     tailoring_log.info(f"{fmt.upper()} export completed", extra=ctx)
 
@@ -866,8 +897,8 @@ def logs_list(req):
 # ---------------------------------------------------------------------------
 
 class FileResponse:
-    def __init__(self, data, content_type, filename):
-        self.data, self.content_type, self.filename = data, content_type, filename
+    def __init__(self, data, content_type, filename, disposition="attachment"):
+        self.data, self.content_type, self.filename, self.disposition = data, content_type, filename, disposition
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1005,7 +1036,7 @@ class Handler(BaseHTTPRequestHandler):
             out = fn(Request(self, match.groupdict(), parse_qs(url.query)))
             if isinstance(out, FileResponse):
                 return self._send(200, out.data, out.content_type, {
-                    "Content-Disposition": f'attachment; filename="{out.filename}"; '
+                    "Content-Disposition": f'{out.disposition}; filename="{out.filename}"; '
                                            f"filename*=UTF-8''{quote(out.filename)}"})
             return self._json(200, out)
         raise ApiError(405 if path_matched else 404, "Method not allowed" if path_matched else "Not found",

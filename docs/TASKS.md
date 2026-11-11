@@ -3,6 +3,9 @@
 No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come from the owner's notes and recent work.
 
 ## In progress
+- [x] 2026-11-11 pre-commit audit: enforce the Sheets write gate for interview appends and all mutating GWS Sheets operations; require explicit spreadsheet IDs without Drive lookup; support encoded readable GCS filenames; redact GWS diagnostics; restore the fixed `AKHIL DALALI` master header. Mocked regression coverage added; no live Google or Modal changes.
+- [ ] Run the operator-owned read-only Google health check with the configured service-account credentials; keep
+      `GOOGLE_SHEETS_WRITE_ENABLED=false` until the existing tracker read and permissions are confirmed.
 - [ ] Review and commit the uncommitted 2026-09-29 work on branch `fix/fixed-resume-header-contact-dedupe`
       (master resume from PDF + export layout, stricter no-fabrication, verified pipeline tailoring, Master Resume editor,
       UI redesign + `docs/ui/`, project docs). Not committed or pushed yet.
@@ -30,7 +33,7 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       -> "managing" stays blocked by design. Same on the new master (2026-10-09 live runs): a Java/Spring Boot JD
       got 0 changed bullets -> reorder-only (`conservative`, verified; Skills still re-ordered for the JD); an
       Angular/Python JD got 2 accepted rewrites + 1 rejected (`generated`, verified).
-- [ ] Naukri on Modal: needs the handoff file mirrored through Drive (`artifacts.py`); not implemented -- local only.
+- [ ] Naukri on Modal: needs the handoff file mirrored through configured artifact storage (`artifacts.py`); not implemented -- local only.
 - [ ] (title, company) dedupe across sources: the same posting on LinkedIn and Naukri has two links and is scored twice.
 - [ ] Test `agentx/all-jobs-scraper` (platforms Naukri, foundit; country India) with `limit=2`; record its input params and
       output field names in `CONFIG.md`.
@@ -50,6 +53,25 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       owner chose to keep the current order for now.
 
 ## Done
+- [x] 2026-11-11 Made resume path components Windows-safe and temporary Drive upload copies OS-temp-scoped; RunLoyal colon case, reserved names, length limits, collision resistance, and cleanup are covered. Focused path (9), resume-role (18), artifact/storage/renderer/Drive tests, and frontend (145) pass. Full Python suite passed: 730 tests; an initial transient `ConnectionAbortedError` in dashboard auth did not recur on the full-suite retry or isolated 81-test run.
+- [x] 2026-11-11 Diagnosed the local bulk-delete 404: the current HTTP dispatcher registers and reaches
+      `POST /api/tracker/bulk-delete`; the generic not-found response therefore indicates a stale/different server
+      process without that route. Confirmed the local launcher targets `scripts/dashboard_server.py`; added POST
+      unknown-route and bulk-path method-mismatch assertions. No Google or deletion behavior changed.
+- [x] 2026-11-11 Added confirmed bulk deletion to Applications using stable tracker IDs and a single descending-row
+      Google Sheets batch update; missing/ambiguous IDs fail per-record, tracker/auth failures fail closed, and no
+      resumes, artifacts, interviews, source history, or unrelated rows are deleted. Frontend (144) and full Python
+      regression (721) tests pass; no live Sheets/Drive writes or deployment performed.
+- [x] 2026-11-11 Implemented personal-Gmail storage architecture: service-account Sheets with explicit write opt-in and
+      existing-sheet-only access; private GCS for new resume/stage artifacts; authenticated dashboard retrieval;
+      preserved historical Drive URLs; local PDF/DOCX rendering; setup, migration, and rollback documentation.
+      Full backend tests (712), focused storage/auth/dashboard tests (277), and frontend tests (136) pass. Live
+      service-account access remains unverified pending owner-provided credentials; no production secrets, Drive
+      files, or deployment were changed.
+- [x] 2026-11-02 Updated shared dashboard password validation to require 8+ characters, an ASCII letter, an ASCII digit,
+      and a non-whitespace special character; uppercase remains optional. Creation and reset use the same validator.
+- [x] 2026-11-02 Deployed Modal production app `job-apply-agent` as v34 from `origin/main` commit `30e00a3`;
+      verified the dashboard returned HTTP 200 and confirmed no pipeline-start event after deployment.
 - [x] 2026-11-02 Preserve Interview Tracker search focus by rerendering only results; validate reminder booleans consistently;
       add mocked CRUD API coverage with generic storage errors; re-resolve unique Sheets row identifiers before deletion and document
       the remaining external-edit race; correct storage documentation and consolidate interview toolbar CSS.

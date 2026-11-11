@@ -175,6 +175,21 @@ def run_pipeline(mode, on_done=None):
     steps = PIPELINES[mode]
 
     def work(task):
+        if mode == "full":
+            import google_auth
+            import write_sheet
+            task.set_stage("Google service preflight")
+            task.logs.append("--- Google service preflight ---")
+            health = google_auth.health_check(write_sheet.gws)
+            required = ("sheets", "artifact_storage")
+            failures = [f"{key}: {health[key]['category']} - {health[key]['message']}"
+                        for key in required if health[key]["status"] != "available"]
+            if failures:
+                raise RuntimeError("Google preflight failed: " + "; ".join(failures))
+            if google_auth.is_service_account() and \
+                    os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+                raise RuntimeError("Google Sheets read-only preflight passed, but writes remain disabled; "
+                                   "set GOOGLE_SHEETS_WRITE_ENABLED=true only after verifying the tracker read")
         for script, _label in steps:
             task.set_stage(script)
             task.logs.append(f"--- {script} ---")

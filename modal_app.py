@@ -60,7 +60,7 @@ GWS_URL = (
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("curl")
-    .pip_install("requests", "python-dotenv")
+    .pip_install("requests", "python-dotenv", "google-cloud-storage", "reportlab", "python-docx")
     .run_commands(
         f"curl -fsSL {GWS_URL} -o /tmp/gws.tar.gz",
         "tar -xzf /tmp/gws.tar.gz -C /usr/local/bin",
@@ -81,20 +81,47 @@ DASHBOARD_PORT = 8765
 
 
 def materialize_gws_credentials():
-    """gws credentials are Keychain-encrypted locally; a container has no Keychain, so write the
-    plain credentials file gws also supports and keep its token cache on disk."""
+    """Materialize only the explicitly selected Google identity; never fall back between modes."""
     import json
     import os
+    import tempfile
 
+    auth_mode = os.environ.get("GOOGLE_AUTH_MODE", "service_account").strip().lower()
+    if auth_mode not in ("service_account", "oauth"):
+        raise RuntimeError("GOOGLE_AUTH_MODE must be service_account or oauth")
     os.environ["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
-    config_dir = Path.home() / ".config" / "gws"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "credentials.json").write_text(json.dumps({
-        "client_id": os.environ["client_id"],
-        "client_secret": os.environ["client_secret"],
-        "refresh_token": os.environ["refresh_token"],
-        "type": os.environ["type"],
-    }))
+    service_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if auth_mode == "service_account":
+        if not service_json.strip():
+            raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON is required for service-account mode")
+        try:
+            data = json.loads(service_json)
+        except json.JSONDecodeError:
+            raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON must contain valid JSON") from None
+        if not isinstance(data, dict) or data.get("type") != "service_account":
+            raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON must contain service-account credentials")
+        if not all(isinstance(data.get(k), str) and data[k].strip()
+                   for k in ("client_email", "private_key", "token_uri")):
+            raise RuntimeError("Service-account credentials are missing required fields")
+        credential_json = service_json
+    else:
+        required = ("client_id", "client_secret", "refresh_token", "type")
+        if not all(os.environ.get(k) for k in required):
+            raise RuntimeError("OAuth mode requires client_id, client_secret, refresh_token, and type")
+        if os.environ.get("type") != "authorized_user":
+            raise RuntimeError("OAuth credentials must have type authorized_user")
+        credential_json = json.dumps({k: os.environ[k] for k in required})
+    config_dir = Path(tempfile.mkdtemp(prefix="job-agent-google-")).resolve()
+    config_dir.chmod(0o700)
+    credential_path = config_dir / "credentials.json"
+    credential_path.write_text(credential_json, encoding="utf-8")
+    credential_path.chmod(0o600)
+    os.environ["GOOGLE_AUTH_MODE"] = auth_mode
+    os.environ["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(credential_path)
+    os.environ["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] = str(config_dir / "gws-config")
+    # The file is now the selected source; do not pass the raw secret JSON to child processes.
+    os.environ.pop("GOOGLE_SERVICE_ACCOUNT_JSON", None)
+    return config_dir
 
 
 def validate_dashboard_config(env):
@@ -138,6 +165,7 @@ def validate_dashboard_config(env):
 def run_pipeline(force: bool = False):
     import json
     import os
+    import shutil
     import subprocess
     import time
     from pathlib import Path
@@ -166,10 +194,11 @@ def run_pipeline(force: bool = False):
             log.warning("Telegram alert failed to send", extra={"reason": f"{type(alert_error).__name__}: {alert_error}"})
 
     stage = {"name": "startup"}
+    credential_dir = None
     log.info("Pipeline started", extra={"mode": "cron", "force": force})
 
     try:
-        materialize_gws_credentials()
+        credential_dir = materialize_gws_credentials()
 
         workdir = Path("/app")
         (workdir / "output").mkdir(exist_ok=True)
@@ -187,6 +216,21 @@ def run_pipeline(force: bool = False):
             raise RuntimeError("no free LLM provider key in the Modal secret -- set at least "
                                "GROQ_API_KEY (see scripts/llm.py).")
         log.info("LLM providers available", extra={"providers": ",".join(provider_keys)})
+
+        # Read-only Google dependency check before scraping/scoring/tailoring spend resources.
+        stage["name"] = "Google service preflight"
+        import google_auth
+        import write_sheet
+        google_status = google_auth.health_check(write_sheet.gws)
+        required = ("sheets", "artifact_storage")
+        failures = [f"{key}: {google_status[key]['category']} - {google_status[key]['message']}"
+                    for key in required if google_status[key]["status"] != "available"]
+        if failures:
+            raise RuntimeError("Google preflight failed: " + "; ".join(failures))
+        if os.environ.get("GOOGLE_AUTH_MODE") == "service_account" and \
+                os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+            raise RuntimeError("Google Sheets read-only preflight passed, but writes remain disabled; "
+                               "set GOOGLE_SHEETS_WRITE_ENABLED=true only after verifying the tracker read")
 
         def run(script, timeout, args=None):
             stage["name"] = script
@@ -241,6 +285,9 @@ def run_pipeline(force: bool = False):
             f"Reason: {type(e).__name__}: {e}"
         )
         raise
+    finally:
+        if credential_dir:
+            shutil.rmtree(credential_dir, ignore_errors=True)
 
 
 @app.function(

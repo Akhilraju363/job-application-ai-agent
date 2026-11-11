@@ -9,6 +9,101 @@ import tracker_service
 
 
 class GwsCommandTests(unittest.TestCase):
+    def test_sheets_mutation_classifier_covers_api_and_gws_write_forms(self):
+        writes = (
+            ("sheets", "+append", "--spreadsheet", "sid"),
+            ("sheets", "spreadsheets", "values", "append"),
+            ("sheets", "spreadsheets", "values", "update"),
+            ("sheets", "spreadsheets", "values", "batchUpdate"),
+            ("sheets", "spreadsheets", "values", "clear"),
+            ("sheets", "spreadsheets", "values", "batchClear"),
+            ("sheets", "spreadsheets", "batchUpdate"),  # includes row and sheet deletion requests
+            ("sheets", "spreadsheets", "create"),
+        )
+        for command in writes:
+            with self.subTest(command=command):
+                self.assertTrue(write_sheet.is_sheets_write_operation(command))
+        for command in (("sheets", "+read", "--spreadsheet", "sid"),
+                        ("sheets", "spreadsheets", "get"),
+                        ("drive", "files", "create")):
+            with self.subTest(command=command):
+                self.assertFalse(write_sheet.is_sheets_write_operation(command))
+
+    def test_all_service_account_sheets_mutations_are_blocked_when_opt_in_is_false(self):
+        writes = (
+            ("sheets", "+append", "--spreadsheet", "sid"),
+            ("sheets", "spreadsheets", "values", "append"),
+            ("sheets", "spreadsheets", "values", "update"),
+            ("sheets", "spreadsheets", "values", "batchUpdate"),
+            ("sheets", "spreadsheets", "values", "clear"),
+            ("sheets", "spreadsheets", "batchUpdate"),
+        )
+        with mock.patch.object(write_sheet.google_auth, "is_service_account", return_value=True), \
+                mock.patch.object(write_sheet.subprocess, "run") as run, \
+                mock.patch.dict("os.environ", {"GOOGLE_SHEETS_WRITE_ENABLED": "false"}):
+            for command in writes:
+                with self.subTest(command=command), self.assertRaisesRegex(RuntimeError, "writes are disabled"):
+                    write_sheet.gws(*command)
+        run.assert_not_called()
+
+    def test_service_account_reads_work_with_writes_disabled(self):
+        command = subprocess.CompletedProcess([], 0, stdout='{"values": []}', stderr="")
+        with mock.patch.object(write_sheet.google_auth, "is_service_account", return_value=True), \
+                mock.patch.object(write_sheet.subprocess, "run", return_value=command) as run, \
+                mock.patch.dict("os.environ", {"GOOGLE_SHEETS_WRITE_ENABLED": "false"}):
+            self.assertEqual(write_sheet.gws("sheets", "+read", "--spreadsheet", "sid"), {"values": []})
+        run.assert_called_once()
+
+    def test_oauth_compatibility_writes_are_not_gated_by_service_account_opt_in(self):
+        command = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
+        with mock.patch.object(write_sheet.google_auth, "is_service_account", return_value=False), \
+                mock.patch.object(write_sheet.subprocess, "run", return_value=command) as run, \
+                mock.patch.dict("os.environ", {"GOOGLE_SHEETS_WRITE_ENABLED": "false"}):
+            write_sheet.gws("sheets", "spreadsheets", "values", "append")
+        run.assert_called_once()
+
+    def test_service_account_writes_require_explicit_opt_in_and_read_verification(self):
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(tuple(command))
+            return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+        with mock.patch.object(write_sheet, "_SERVICE_ACCOUNT_SHEETS_READ_VERIFIED", False), \
+                mock.patch.object(write_sheet.google_auth, "is_service_account", return_value=True), \
+                mock.patch.object(write_sheet.subprocess, "run", side_effect=fake_run), \
+                mock.patch.dict("os.environ", {"google_sheet_id": "existing-sheet",
+                                               "GOOGLE_SHEETS_WRITE_ENABLED": "true"}):
+            write_sheet.gws("sheets", "+append", "--spreadsheet", "existing-sheet", "--json-values", "[]")
+        calls = [c[len(write_sheet.GWS_CMD):] for c in calls]
+        self.assertEqual(calls[0][:3], ("sheets", "spreadsheets", "get"))
+        self.assertEqual(calls[1][:2], ("sheets", "+read"))
+        self.assertEqual(calls[2][:2], ("sheets", "+append"))
+        self.assertIn("Jobs!A1:M1", calls[1])
+
+    def test_service_account_write_opt_in_must_be_explicit(self):
+        with mock.patch.object(write_sheet.google_auth, "is_service_account", return_value=True), \
+                mock.patch.object(write_sheet.subprocess, "run") as run, \
+                mock.patch.dict("os.environ", {"google_sheet_id": "existing-sheet",
+                                               "GOOGLE_SHEETS_WRITE_ENABLED": "false"}):
+            with self.assertRaisesRegex(RuntimeError, "writes are disabled"):
+                write_sheet.gws("sheets", "+append", "--spreadsheet", "existing-sheet", "--json-values", "[]")
+        run.assert_not_called()
+
+    def test_tracker_id_is_required_and_no_replacement_is_created(self):
+        with mock.patch.dict("os.environ", {"google_sheet_id": ""}), \
+                mock.patch.object(write_sheet, "gws") as gws:
+            with self.assertRaisesRegex(RuntimeError, "existing tracker spreadsheet"):
+                write_sheet.get_or_create_sheet_id()
+        gws.assert_not_called()
+
+    def test_tracker_read_without_id_does_not_search_drive(self):
+        with mock.patch.dict("os.environ", {"google_sheet_id": "  "}), \
+                mock.patch.object(write_sheet, "find_sheet_by_title") as find_sheet:
+            tracker = tracker_service.Tracker()
+            self.assertFalse(tracker.snapshot()["configured"])
+        find_sheet.assert_not_called()
+
     def test_build_row_defaults_both_tracker_fields_independently(self):
         row = write_sheet.build_row({"title": "T", "company": "C", "link": "L", "score": 8}, "2026-10-23")
         self.assertEqual(row[5], "Not Applied")

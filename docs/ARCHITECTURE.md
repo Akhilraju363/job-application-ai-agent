@@ -6,19 +6,20 @@
 flowchart LR
     A[scrape_jobs.py<br/>Apify LinkedIn actor] -->|output/raw_jobs.json| B[score_jobs.py<br/>LLM score 1-10]
     B -->|output/scored_jobs.json<br/>qualified = score >= 8| C[tailor_job.py<br/>tailoring_service.tailor]
-    C -->|verified resume only| D[Google Drive<br/>per-job folder + PDF]
+    C -->|verified resume only| D[Private GCS<br/>job-scoped PDF/DOCX objects]
+    D -->|authenticated proxy URL| V[Dashboard artifact endpoint]
     C -->|output/tailored_jobs.json| E[company_research.py<br/>LLM talking points]
     E -->|company_notes| F[write_sheet.py<br/>Google Sheet via gws]
     M[modal_app.py run_pipeline<br/>Cron 0 7 * * 1-5 IST] -.runs in order.-> A
     M -.on any failure.-> T[Telegram<br/>JOB-APPLY-AGENT — WHAT BROKE]
     R[resume/base_resume.md<br/>master resume] -.source of truth.-> B
     R -.-> C
-    X[artifacts.py<br/>Drive pipeline-artifacts/] <-.mirror each JSON.-> A & B & C
+    X[artifacts.py<br/>GCS pipeline-artifacts/] <-.mirror each JSON.-> A & B & C
 ```
 
 Every stage is resume-safe and keyed by **canonical job link** (`scripts/job_links.py canonical_link`, tracking params
-stripped): re-running a stage skips jobs already done. Artifacts are mirrored to Drive so a local run can finish a failed
-Modal run (see `RUNBOOK.md`).
+stripped): re-running a stage skips jobs already done. With GCS selected, artifacts are mirrored to a private bucket so a
+local run can finish a failed Modal run (see `RUNBOOK.md`).
 
 ## Stage ownership
 
@@ -28,9 +29,9 @@ Modal run (see `RUNBOOK.md`).
 | Orchestration (local) | `scripts/run_pipeline.py` | `.env` (`LOCAL_MODE=true`) | same 5 scripts in order |
 | Scrape | `scripts/scrape_jobs.py` `scrape_jobs()` | Apify, `output/preferences.json` (optional) | `output/raw_jobs.json` (6h cache) |
 | Score + filter | `scripts/score_jobs.py` `score_job()` | raw jobs, master resume | `output/scored_jobs.json` (qualified **and** rejected kept) |
-| Tailor + verify + upload | `scripts/tailor_job.py` → `scripts/tailoring_service.py` `tailor()` | qualified jobs, master resume | Drive folder + PDF, `output/tailored_jobs.json`, `output/generated_resumes/<id>/` |
+| Tailor + verify + upload | `scripts/tailor_job.py` → `scripts/tailoring_service.py` `tailor()` | qualified jobs, master resume | Private GCS job-prefix + PDF/DOCX, `output/tailored_jobs.json`, `output/generated_resumes/<id>/` |
 | Verification | `scripts/no_fabrication.py`, `scripts/validate_resume.py` | tailored text vs master | pass / problems |
-| Export layout | `scripts/format_resume_doc.py`, `scripts/tailor_job.py` `render_markdown`/`export_doc_file` | resume markdown | Google Doc → PDF/DOCX |
+| Export layout | `scripts/resume_renderer.py`, `scripts/tailor_job.py` `render_markdown`/`export_doc_file` | resume markdown | local PDF/DOCX; no Google Doc in GCS mode |
 | Company research | `scripts/company_research.py` | saved entries | `company_notes` in `tailored_jobs.json` |
 | Tracker | `scripts/write_sheet.py` (+ `tracker_service.py` for the dashboard) | saved entries | Google Sheet rows (deduped by link) |
 | LLM client | `scripts/llm.py` `call_llm` | provider keys | — |
@@ -92,7 +93,7 @@ the same as `Rejected`.
 `tailor_job.export_doc_file` (fixed header + contact line), structure-checked (stdlib), published
 atomically and recorded as `versions[n].exports.pdf` plus `versions[n].artifacts.pdf =
 {file, version, verified, md_sha1, job_key, master_version, size, generated_at}`. The scheduled
-pipeline publishes it for every saved job and uploads that same file to Drive; saved entries in
+pipeline publishes it for every saved job and uploads that same file to the selected backend; saved entries in
 `tailored_jobs.json` now also carry `resume_id` and `resume_version`. Unverified versions are never
 exported. Consumers (Auto_job_apply's Naukri upload) re-check identity, freshness and text.
 
@@ -126,10 +127,11 @@ The detailed notes below were moved verbatim from the previous `CLAUDE.md` (2026
 6. **Outputs**:
    - Google Sheet row per qualifying job: title, company, job link, fit score, resume path, status,
      timestamp.
-   - Desktop folder (interactive path) or Drive folder (Modal path) per qualifying job:
+   - Desktop folder (interactive path) or private GCS object prefix (Modal path) per qualifying job:
      `Job Applications/{company}-{job-title-slug}/` on Desktop (all per-job folders nest under one
-     `Job Applications` parent), containing the tailored resume. The Sheet row references this
-     exact folder/file.
+     `Job Applications` parent), containing the tailored resume. Cloud object keys keep the
+     per-resume ID, job folder, version and original export filename. The Sheet row links to the
+     authenticated dashboard artifact endpoint.
 7. **Headless + Hosting** — the automated path (`scripts/tailor_job.py`, `scripts/company_research.py`)
    uses OpenRouter instead of live Claude reasoning, so it can run unattended without an Anthropic
    API key. Deployed as a Modal scheduled function (`@app.function(schedule=modal.Cron(...))`),
@@ -154,12 +156,14 @@ job-apply-agent/
     tailor_job.py            # automated tailoring path (free provider chain, for Modal)
     company_research.py
     write_sheet.py          # Google Sheets
-    format_resume_doc.py     # markdown -> real Google Docs formatting
+    format_resume_doc.py     # legacy OAuth Drive mode: markdown -> formatted Google Docs
+    resume_renderer.py       # GCS mode: markdown -> local PDF/DOCX
     validate_resume.py       # shared validation logic
     llm.py                    # provider-aware chat client: free cloud chain (Groq->OpenRouter->Gemini) or local Ollama
     resume_role.py            # fixed header (master's name + headline, same for every job); normalized job title -> export filename only
     contact.py                # RESUME_CONTACT_LINE (email/location) added at export only -- base resume is public
-    artifacts.py              # best-effort Drive mirror of stage JSON, for cross-machine resume
+    artifact_storage.py       # private GCS object storage + authenticated artifact URLs
+    artifacts.py              # configured stage JSON mirror, for cross-machine resume
     run_pipeline.py            # LOCAL_MODE=true entrypoint: same 5 scripts in order, local high-volume runs
     tailoring_service.py     # ONE shared tailor path (manual JD + scraped job): analyze -> match -> tailor_job.tailor_text -> verify
     master_resume.py         # Master Resume editor: base_resume.md <-> structured sections, field validation, atomic save (GET/PUT /api/master-resume)
@@ -195,11 +199,11 @@ so reject counts stay auditable per the PRD's "log the reject count too" require
 
 `.claude/skills/tailor-resume/SKILL.md` tailors the resume per qualifying job (reorder/reword
 only, no fabrication), gated by `.claude/hooks/resume_hook.py` (a `PreToolUse` hook that blocks
-the write if required sections are missing or placeholder text remains), then builds a Google Doc
-via `gws`, formats it with `scripts/format_resume_doc.py` (converts the markdown structure into
-real bold headers/bullets/italics — **never use `gws docs +write`** with raw markdown text, it
-inserts `#`/`##`/`-` as literal characters instead of formatting), exports to PDF into
-`~/Desktop/{company}-{slug}/Akhil Dalali Resume.pdf`, and deletes the intermediate Doc.
+the write if required sections are missing or placeholder text remains). GCS mode renders PDF/DOCX
+locally through `scripts/resume_renderer.py`; it does not create Google Docs or Drive files.
+The optional legacy OAuth Drive mode retains `scripts/format_resume_doc.py` and its temporary Doc
+export. Never use `gws docs +write` with raw markdown (it inserts `#`/`##`/`-` as literal text).
+The interactive export remains under the existing per-job Desktop folder.
 `scripts/write_sheet.py` then logs each `status: "saved"` entry from `output/tailored_jobs.json` to
 the "Job Application Tracker" Google Sheet (id cached in `.env` as `google_sheet_id`), with
 `Status` starting at `"Not Applied"` for manual tracking. Interview Tracker records use a separate
@@ -251,21 +255,21 @@ Modal secret needs at least `GROQ_API_KEY` (plus optionally `GEMINI_API_KEY`);
 `open_router_apikey` is still read for back-compat.
 
 The pipeline is **resume-safe**, keyed by job link at every stage — identically whether driven by
-`modal_app.py` (cloud) or `scripts/run_pipeline.py` (local): same artifacts, same Drive mirror,
-same Sheet, so a job that fails on one path can be finished by the other without duplicating
-Sheet rows or Drive folders:
+`modal_app.py` (cloud) or `scripts/run_pipeline.py` (local): same artifacts, same selected storage,
+same Sheet, so a job that fails on one path can be finished by the other without duplicate Sheet
+rows or artifact objects:
 - `score_jobs.py` skips links already in `output/scored_jobs.json` (incremental write).
 - `tailor_job.py` skips jobs already `status:"saved"` in `output/tailored_jobs.json` — it does
-  **not** re-tailor or re-create Drive folders for finished jobs.
+  **not** re-tailor or re-upload artifacts for finished jobs.
 - `company_research.py` skips jobs that already have `company_notes`.
 - `write_sheet.py` dedupes by job link against the live Sheet, so it's safe to re-run.
 
-`scripts/artifacts.py` mirrors the three stage JSON artifacts to a `pipeline-artifacts` Drive
-subfolder (date-stamped, under `google_drive_folder_id`), best-effort. This is what lets a local
-Ollama run pick up a failed Modal run's state. `PIPELINE_DATE=YYYY-MM-DD` targets an earlier day;
-`artifact_sync=0` disables the mirror. `write_sheet.py` sheet-id priority: configured
-`google_sheet_id` → Drive lookup by name → create. For Modal, `google_sheet_id` goes in the
-`job-apply-agent-secrets` secret (no persistent `.env` in the container).
+`scripts/artifacts.py` mirrors the three stage JSON artifacts to a date-stamped
+`pipeline-artifacts/` prefix in the selected backend. GCS errors fail the stage; the optional
+legacy Drive mirror remains best-effort. `PIPELINE_DATE=YYYY-MM-DD` targets an earlier day;
+`artifact_sync=0` disables the mirror. `google_sheet_id` is required and always identifies the
+existing spreadsheet; the app never searches for or creates a replacement. For Modal, keep the ID
+in protected settings because the container has no persistent `.env`.
 
 ### Verification Per Step
 
@@ -285,7 +289,7 @@ Ollama run pick up a failed Modal run's state. `PIPELINE_DATE=YYYY-MM-DD` target
 `python scripts/dashboard_server.py` serves `web/` plus a JSON API over the existing artifacts and
 the tracker Sheet. Manual-JD and scraped-job tailoring both go through `tailoring_service.tailor_resume()` (-> `tailor()`);
 the scheduled pipeline (`tailor_job.py` -> `verified_resume()`) calls the same `tailor()`, so only
-verified resumes (or the reorder-only fallback) are ever exported to Drive
+verified resumes (or the reorder-only fallback) are ever exported to persistent artifact storage
 (`tailoring_service.is_current_master()` / `master_resume_current` flags resumes built from an older master)
 (reusing `tailor_job.tailor_text`, `validate_resume.validate`, `llm.call_llm`). Hard rules still
 apply: `no_fabrication.check_no_fabrication` gates every export and tracker save; the automated
@@ -321,12 +325,26 @@ master version, so older tailored resumes show `master_resume_current: false`; n
 **The hosted (Modal) dashboard is read-only for the master** -- `resume/` is baked into the image, so a write there
 would be lost on restart and never reach the cron; edit locally, commit and redeploy.
 
-**Resumes live in Google Drive, not local paths.** `scripts/drive_resumes.py` uploads each exported
-PDF/DOCX (`{resume_id}-v{n}.{ext}`) to `google_drive_folder_id/{company}-{title-slug}/` through the
-existing `gws` auth, idempotently (keyed by resume_id + version + format in the file's `appProperties`,
-so retries reuse the file). The tracker's Resume column always gets the PDF's Drive URL;
-`tracker_service.save_job` refuses a local path, and a failed upload blocks the row instead of falling
-back. `output/generated_resumes/` stays as the local cache/download source.
+**New resumes live in private GCS, not local paths or personal Drive.** `scripts/drive_resumes.py`
+preserves the export filename and writes each PDF/DOCX under a job-scoped object prefix, with
+resume/version/format metadata and idempotent retry behavior. The tracker stores an authenticated
+dashboard proxy URL; the browser must have a valid dashboard session to retrieve the private object.
+`tracker_service.save_job` refuses a local path, and a failed upload blocks the row instead of
+falling back. `output/generated_resumes/` remains the local cache/download source.
+
+Existing Drive URLs remain untouched in the tracker and old stage artifacts are not migrated.
+`HISTORICAL_DRIVE_ARTIFACTS` documents/enables the optional legacy Drive path; GCS mode never reads,
+creates, or changes the existing personal Drive folder. Keep the authenticated `/api/artifacts/`
+route, service-account read access, bucket, and stable dashboard host available while GCS URLs
+remain in the tracker.
+
+Sheets mutations are classified centrally by `write_sheet.is_sheets_write_operation` and gated for
+service-account credentials by `GOOGLE_SHEETS_WRITE_ENABLED`, including the Interviews tab's
+`spreadsheets.values.append` call and batch updates used for row deletion. Reads remain available
+with the gate disabled; explicit OAuth compatibility is unchanged. Jobs and Interviews resolve
+only the configured `google_sheet_id`; neither silently searches Drive by title. GCS object-key
+validation accepts readable `+`, `#`, spaces, and Unicode filenames, URL-encodes them for the
+authenticated dashboard route, and still rejects path separators and traversal.
 
 ### UI specifications (docs/ui/)
 
@@ -335,7 +353,7 @@ The dashboard UI (`web/`) is specified in `docs/ui/` — read the relevant file 
 `h()` only, layers), `UI_COMPONENTS.md`, `UI_PAGES.md` + one spec per page (`UI_DASHBOARD`, `UI_JOBS`, `UI_TAILOR_RESUME`,
 `UI_MASTER_RESUME`, `UI_APPLICATIONS`, `UI_JOB_ALERTS`, `UI_SETTINGS`), `UI_RESPONSIVE.md`,
 `UI_ACCESSIBILITY.md`, and `UI_IMPLEMENTATION.md` (how to change the UI safely + the checklist). UI work never changes API
-contracts, auth, tailoring/no-fabrication, the master-resume rules, the 8+ cutoff, tracker, Drive, logging, Modal or cron,
+contracts, auth, tailoring/no-fabrication, the master-resume rules, the 8+ cutoff, tracker, artifact storage, logging, Modal or cron,
 and never shows invented data or features.
 
 ### Hosted dashboard, authentication and logging (built)

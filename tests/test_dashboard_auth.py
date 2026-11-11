@@ -478,6 +478,8 @@ class RouteProtection(AuthCase):
     PUBLIC = {"/api/auth", "/api/auth/login", "/api/auth/logout"}
 
     def concrete(self, pattern):
+        if pattern.pattern.startswith("^/api/artifacts/"):
+            return "/api/artifacts/generated_resumes/0123456789ab/acme-java/v1/Akhil_C%2B%2B_C%23_Developer.pdf"
         path = pattern.pattern.strip("^$")
         return re.sub(r"\(\?P<\w+>\[0-9a-f\]\{(\d+)\}\)", lambda m: "0" * int(m.group(1)), path)
 

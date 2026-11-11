@@ -62,13 +62,14 @@ export function resumePreview(initialRec, { onRegenerate, onRecord }) {
       await withBusy(btn, async () => {
         if (!v.exports?.[fmt]) {
           const { task_id } = await api.post(`/api/resumes/${s.rec.id}/export`, { format: fmt, version: v.n });
-          s.note = 'Building the document via Google Docs…';
+          s.note = 'Building the resume export…';
           render();
           const done = await pollTask(task_id).promise;
           s.rec = await api.get(`/api/resumes/${s.rec.id}`);
           onRecord?.(s.rec);
           s.note = '';
-          if (done.result?.drive?.status === 'failed') toast(`Saved locally, but not to Google Drive. ${done.result.drive.error}`, 'error', 9000);
+          const storage = done.result?.storage || done.result?.drive;
+          if (storage?.status === 'failed') toast(`Exported locally, but artifact storage failed. ${storage.error}`, 'error', 9000);
         }
         await download(`/api/resumes/${s.rec.id}/download?format=${fmt}&version=${v.n}`, `resume.${fmt}`);
       });
@@ -99,9 +100,9 @@ export function resumePreview(initialRec, { onRegenerate, onRecord }) {
     const pipelineScore = rec.job.pipeline_score;
     const score = pipelineScore ?? rec.match.fit_score;
     const trackerNote = rec.tracker && `Saved to the tracker (v${rec.tracker.version})`;
-    const drive = v.drive || {};
-    const driveHref = safeHref(drive.pdf?.url || drive.docx?.url);   // PDF first: the primary artifact
-    const driveFailure = ['pdf', 'docx'].map((f) => drive[f]).find((d) => d?.status === 'failed');
+    const storage = v.storage || v.drive || {};
+    const storageHref = safeHref(storage.pdf?.url || storage.docx?.url);
+    const storageFailure = ['pdf', 'docx'].map((f) => storage[f]).find((d) => d?.status === 'failed');
 
     mount(host,
       h('div', { class: 'preview-head' },
@@ -117,9 +118,9 @@ export function resumePreview(initialRec, { onRegenerate, onRecord }) {
         : resumePaper(v.preview_markdown || v.markdown),
       s.note && h('p', { class: 'muted', role: 'status' }, s.note),
       trackerNote && h('p', { class: 'muted' }, icon('check', 14), ' ', trackerNote),
-      driveHref && h('p', { class: 'muted' }, icon('check', 14), ' ',
-        h('a', { class: 'link', href: driveHref, target: '_blank', rel: 'noopener noreferrer' }, 'Open in Google Drive')),
-      !driveHref && driveFailure && h('p', { class: 'notice notice-warn', role: 'note' }, `Not saved to Google Drive: ${driveFailure.error}`),
+      storageHref && h('p', { class: 'muted' }, icon('check', 14), ' ',
+        h('a', { class: 'link', href: storageHref, target: '_blank', rel: 'noopener noreferrer' }, 'Open stored artifact')),
+      !storageHref && storageFailure && h('p', { class: 'notice notice-warn', role: 'note' }, `Artifact upload failed: ${storageFailure.error}`),
       h('div', { class: 'preview-actions' },
         s.editing
           ? [h('button', { class: 'btn btn-primary', onClick: (e) => saveEdit(e.currentTarget) }, icon('check', 16), 'Save changes'),

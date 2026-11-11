@@ -432,7 +432,7 @@ def to_result(rec, version=None):
 
     matching = jd_analysis._clean_list(m["skills"]["required_matched"] + m["skills"]["preferred_matched"]
                                        + m["skills"]["technologies_matched"], 60)
-    drive = v.get("drive") or {}
+    drive = v.get("storage") or v.get("drive") or {}
     uploaded = [drive[f] for f in ("pdf", "docx") if (drive.get(f) or {}).get("status") == "uploaded"]
     failed = [drive[f] for f in ("pdf", "docx") if (drive.get(f) or {}).get("status") == "failed"]
     return {
@@ -461,7 +461,8 @@ def to_result(rec, version=None):
                    "master_resume_current": is_current_master(rec),
                    "pdf_url": url("pdf"), "docx_url": url("docx"),
                    "drive_url": uploaded[0]["url"] if uploaded else None,   # PDF first: the primary artifact
-                   "drive_error": failed[0]["error"] if failed else None},
+                   "drive_error": failed[0]["error"] if failed else None,
+                   "storage_backend": uploaded[0].get("backend") if uploaded else None},
         "ats_validation": {k: ats.get(k) for k in (
             "score", "keyword_coverage", "required_skill_coverage", "missing_keywords", "not_in_master_resume",
             "duplicate_keywords", "issues", "warnings", "components", "checks", "disclaimer")},

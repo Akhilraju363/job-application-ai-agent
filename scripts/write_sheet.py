@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from job_links import canonical_link  # noqa: E402
 from activity import log_event  # noqa: E402
 import logging_config as lc  # noqa: E402
+import google_auth  # noqa: E402
 
 log = lc.get_logger("tracker")
 
@@ -85,17 +86,52 @@ def _resolve_gws():
 
 
 GWS_CMD = _resolve_gws()
+_SERVICE_ACCOUNT_SHEETS_READ_VERIFIED = False
+
+
+def is_sheets_write_operation(args):
+    """Classify the GWS Sheets commands that can mutate spreadsheet data or structure."""
+    command = tuple(str(arg).lower() for arg in args)
+    if not command or command[0] != "sheets":
+        return False
+    route = command[1:]
+    if route[:1] == ("+append",):
+        return True
+    if route[:2] in (("spreadsheets", "create"), ("spreadsheets", "batchupdate")):
+        return True
+    return route[:2] == ("spreadsheets", "values") and route[2:3] in (
+        ("append",), ("update",), ("batchupdate",), ("clear",), ("batchclear",))
 
 
 def gws(*args):
     # See format_resume_doc.py's gws() for why encoding="utf-8" is required on Windows.
-    result = subprocess.run([*GWS_CMD, *args], capture_output=True, text=True, encoding="utf-8")
+    is_write = is_sheets_write_operation(args)
+    if (is_write and google_auth.is_service_account() and
+            os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on")):
+        raise RuntimeError("Google Sheets writes are disabled; verify read-only access, then explicitly set "
+                           "GOOGLE_SHEETS_WRITE_ENABLED=true")
+    global _SERVICE_ACCOUNT_SHEETS_READ_VERIFIED
+    if is_write and google_auth.is_service_account() and not _SERVICE_ACCOUNT_SHEETS_READ_VERIFIED:
+        sheet_id = os.environ.get("google_sheet_id", "").strip()
+        if not sheet_id:
+            raise RuntimeError("google_sheet_id must identify the existing tracker spreadsheet")
+        gws("sheets", "spreadsheets", "get", "--params",
+            json.dumps({"spreadsheetId": sheet_id, "fields": "spreadsheetId"}))
+        gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", f"{TRACKER_TAB}!A1:M1")
+        _SERVICE_ACCOUNT_SHEETS_READ_VERIFIED = True
+    result = subprocess.run([*GWS_CMD, *args], capture_output=True, text=True, encoding="utf-8",
+                            env=google_auth.configure_environment())
     if result.returncode != 0:
-        command = "gws " + " ".join(args)
+        operation = []
+        for arg in args:
+            if str(arg).startswith("--"):
+                break
+            operation.append(str(arg))
+        command = "gws " + " ".join(operation)
         raise RuntimeError("\n".join([
             f"{command} failed (exit code {result.returncode})",
-            f"stdout: {result.stdout.rstrip()}",
-            f"stderr: {result.stderr.rstrip()}",
+            f"stdout: {google_auth.safe_gws_error(result.stdout)}",
+            f"stderr: {google_auth.safe_gws_error(result.stderr)}",
         ]))
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
@@ -116,6 +152,9 @@ def find_sheet_by_title():
         "orderBy": "createdTime",
         "fields": "files(id,name)",
         "pageSize": 10,
+        "supportsAllDrives": True,
+        "includeItemsFromAllDrives": True,
+        "corpora": "allDrives",
     }))
     files = result.get("files", [])
     return files[0]["id"] if files else None
@@ -129,36 +168,10 @@ def _remember_sheet_id(sheet_id):
 
 
 def get_or_create_sheet_id():
-    """Lookup priority: configured google_sheet_id -> existing sheet by name in
-    Drive -> create a new one (only when no tracker exists at all)."""
-    import os
+    """Return only the explicitly configured existing spreadsheet; never search or create."""
     sheet_id = os.environ.get("google_sheet_id", "").strip()
-    if sheet_id:
-        rename_tracker_tab(sheet_id)
-        return sheet_id
-
-    sheet_id = find_sheet_by_title()
-    if sheet_id:
-        _remember_sheet_id(sheet_id)
-        rename_tracker_tab(sheet_id)
-        log.info("Reusing existing tracker sheet", extra={"sheet_title": SHEET_TITLE})
-        return sheet_id
-
-    created = gws("sheets", "spreadsheets", "create", "--json",
-                   json.dumps({"properties": {"title": SHEET_TITLE}}))
-    sheet_id = created["spreadsheetId"]
-    rename_tracker_tab(sheet_id)
-
-    gws("sheets", "spreadsheets", "values", "update", "--params",
-        json.dumps({"spreadsheetId": sheet_id, "range": f"{TRACKER_TAB}!A1:M1", "valueInputOption": "USER_ENTERED"}),
-        "--json", json.dumps({"values": [HEADERS]}))
-
-    gws("sheets", "spreadsheets", "batchUpdate", "--params",
-        json.dumps({"spreadsheetId": sheet_id}),
-        "--json", json.dumps({"requests": _validation_requests()}))
-
-    _remember_sheet_id(sheet_id)
-    log.info("Created new tracker sheet", extra={"sheet_title": SHEET_TITLE})
+    if not sheet_id:
+        raise RuntimeError("google_sheet_id must identify the existing tracker spreadsheet")
     return sheet_id
 
 

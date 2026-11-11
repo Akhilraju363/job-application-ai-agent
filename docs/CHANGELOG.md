@@ -2,6 +2,14 @@
 
 Newest first. One line per change. Entries up to 2026-09-28 come from `git log`; 2026-09-29 entries are uncommitted.
 
+- 2026-11-11 fix(storage): centralize service-account Sheets mutation gating (including Interviews), require explicit spreadsheet IDs without Drive lookup, encode and validate GCS resume filenames with `+`/`#`/Unicode support, redact GWS diagnostics, and restore the approved master-resume name header
+
+- 2026-11-11 fix(resume): use OS-managed temporary directories for Drive upload copies; sanitize local resume path components for Windows invalid/reserved names and long/colliding company-role combinations
+- 2026-11-11 test(dashboard): verify POST unknown paths remain 404 and the registered bulk-delete path rejects wrong methods with 405; document stale-server diagnosis
+- 2026-11-11 feat(applications): add confirmed bulk deletion with stable IDs, per-record outcomes, filter-aware selection, and one verified Sheets batch update; no artifact deletion
+- 2026-11-11 feat(storage): use service-account auth for the existing Sheet with a read-before-write gate; store new resumes and pipeline snapshots in private GCS with authenticated dashboard retrieval, preserve historical Drive links, and document setup/rollback
+- 2026-11-02 update(dashboard-auth): require new passwords to be at least 8 characters with a letter, digit, and special character; uppercase is optional
+- 2026-11-02 deploy: Modal production app `job-apply-agent` deployed as v34 from `origin/main` commit `30e00a3`; dashboard returned HTTP 200 and the scheduled pipeline was not invoked
 - 2026-11-02 (merged PR #25) fix(security): write Interview Tracker values with Google Sheets `RAW` semantics to prevent formula interpretation; retain existing tracker write behavior
 - 2026-11-02 (merged PR #25) fix(interviews): keep search input mounted while filtering, strictly normalize reminder booleans, add mocked CRUD route coverage, sanitize storage errors, and re-resolve unique IDs immediately before positional row deletion; document the residual Sheets race
 - 2026-10-23 (merged PR #25) fix(ui): correct Interview Calendar weekday offsets and local date-only handling; add today/interview markers,

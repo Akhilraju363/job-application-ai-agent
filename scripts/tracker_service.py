@@ -55,16 +55,18 @@ class Tracker:
             self._failure = None
 
     def _lookup_sheet_id(self, create=False):
-        sid = os.environ.get("google_sheet_id", "").strip() or self._sheet_id
+        sid = os.environ.get("google_sheet_id", "").strip()
         if not sid:
-            sid = write_sheet.get_or_create_sheet_id() if create else write_sheet.find_sheet_by_title()
+            if create:
+                sid = write_sheet.get_or_create_sheet_id()
+            else:
+                return None
         self._sheet_id = sid
         return sid
 
     def sheet_url(self):
-        """Browser link to the tracker sheet, built from the id already resolved (configured, or
-        found by snapshot()) -- never triggers a lookup. None when unknown or malformed."""
-        sid = os.environ.get("google_sheet_id", "").strip() or self._sheet_id
+        """Browser link to the explicitly configured tracker ID -- never triggers a lookup."""
+        sid = os.environ.get("google_sheet_id", "").strip()
         if not sid or not SHEET_ID_RE.fullmatch(sid):
             return None
         return f"https://docs.google.com/spreadsheets/d/{sid}/edit"

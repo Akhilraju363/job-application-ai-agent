@@ -36,6 +36,7 @@ export function dashboardPage(root, { profile }) {
   const jobsHost = h('div', {});
   const activityHost = h('div', {});
   const sourcesHost = h('div', {});
+  const googleHealthHost = h('div', {});
   const interviewsHost = h('div', {});
 
   // Every section loads independently: one failing (e.g. Google Sheet offline) shows its own
@@ -83,6 +84,16 @@ export function dashboardPage(root, { profile }) {
     render: (d) => recentActivity(d.events),
   });
   const sources = loadable(sourcesHost, { load: () => api.get('/api/dashboard/sources'), render: configuredSources });
+  const googleHealth = loadable(googleHealthHost, {
+    load: () => api.get('/api/health/google'),
+    render: (d, reload) => h('div', { class: 'google-health-list' },
+      ...[['sheets', 'Google Sheets'], ['drive', 'Google Drive'], ['artifact_storage', 'Resume artifact storage'], ['interviews', 'Interview storage']].map(([key, label]) => {
+        const item = d[key] || {};
+        return h('div', { class: 'google-health-item' }, h('strong', {}, label),
+          h('span', { class: item.status === 'available' ? 'health-ok' : item.status === 'not_required' ? 'health-neutral' : 'health-error' }, item.status || 'unknown'),
+          item.message && h('small', { class: 'muted' }, item.message));
+      }), h('button', { class: 'btn btn-outline btn-sm', onClick: reload }, 'Retry')),
+  });
   const interviews = loadable(interviewsHost, {
     load: () => api.get('/api/dashboard/interviews'),
     isEmpty: (d) => !d.upcoming.length && !d.recent.length,
@@ -153,5 +164,6 @@ export function dashboardPage(root, { profile }) {
       h('div', { class: 'stack' },
         card(h('div', { class: 'card-head-row' }, 'Interviews', h('a', { class: 'link', href: '/interviews', 'data-link': true }, 'Manage')), interviewsHost),
         card(h('div', { class: 'card-head-row' }, 'Recent Activity'), activityHost),
+        card(h('div', { class: 'card-head-row' }, 'Google Service Health'), googleHealthHost),
         card(h('div', { class: 'card-head-row' }, 'Configured Sources', h('a', { class: 'link', href: '/job-alerts', 'data-link': true }, 'Edit')), sourcesHost))));
 }

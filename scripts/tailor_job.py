@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from dotenv import load_dotenv
 
@@ -35,6 +35,8 @@ import paths  # noqa: E402
 import employment_history  # noqa: E402
 from llm import call_llm, validate_local_setup  # noqa: E402 -- LLM endpoint/model/retry config, .env-driven
 from job_links import canonical_link  # noqa: E402
+import google_auth  # noqa: E402
+import artifact_storage  # noqa: E402
 import logging_config as lc  # noqa: E402
 
 log = lc.get_logger("tailoring")
@@ -101,14 +103,27 @@ GWS_CMD = _resolve_gws()
 
 def gws(*args, cwd=None):
     # See format_resume_doc.py's gws() for why encoding="utf-8" is required on Windows.
-    result = subprocess.run([*GWS_CMD, *args], capture_output=True, text=True, encoding="utf-8", cwd=cwd)
+    result = subprocess.run([*GWS_CMD, *args], capture_output=True, text=True, encoding="utf-8", cwd=cwd,
+                            env=google_auth.configure_environment())
     if result.returncode != 0:
-        raise RuntimeError(f"gws {' '.join(args)} failed: {result.stderr}")
+        raise RuntimeError(f"GWS operation failed: {google_auth.safe_gws_error(result.stderr or result.stdout)}")
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
 def slugify(title):
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", title.lower())).strip("-")
+
+
+def job_folder_name(company, title):
+    company = "" if company is None else str(company)
+    title = "" if title is None else str(title)
+    display_name = f"{company}-{slugify(title)}"
+    return paths.safe_path_component(display_name, collision_key=f"{company}\0{title}", fallback="job")
+
+
+def temporary_pdf_path(temp_dir: PurePath, folder_name, filename):
+    return (temp_dir / paths.safe_path_component(folder_name)
+            / paths.safe_path_component(filename))
 
 
 def tailor_text(job, resume_text, feedback=""):
@@ -154,7 +169,7 @@ def verified_resume(job, base_md, want_record=False):
 
 
 def create_job_folder(company, slug, parent_folder_id):
-    folder = gws("drive", "files", "create", "--params", json.dumps({"fields": "id,webViewLink"}),
+    folder = gws("drive", "files", "create", "--params", json.dumps({"fields": "id,webViewLink", "supportsAllDrives": True}),
                  "--json", json.dumps({
                      "name": f"{company}-{slug}",
                      "mimeType": "application/vnd.google-apps.folder",
@@ -171,10 +186,15 @@ def render_markdown(markdown):
 
 
 def export_doc_file(markdown_path, out_path, mime_type="application/pdf"):
-    """Markdown -> formatted Google Doc -> exported file at out_path (PDF by default; pass the
-    DOCX mime type for Word). The intermediate Doc is always deleted. Shared by the Drive
-    pipeline below and the dashboard's Download PDF/DOCX. The fixed header and the private contact
-    line (render_markdown) are applied here, so they reach every export but never the stored markdown."""
+    """Render a resume locally for GCS, or use the legacy Google Docs export for Drive."""
+    if artifact_storage.backend() == "gcs":
+        import resume_renderer
+        with tempfile.TemporaryDirectory() as tmp:
+            render_path = Path(tmp) / "resume.md"
+            render_path.write_text(render_markdown(Path(markdown_path).read_text(encoding="utf-8")),
+                                   encoding="utf-8")
+            resume_renderer.render(render_path, out_path, mime_type)
+        return
     if not contact_line():
         log.warning("Exporting a resume without a contact line: RESUME_CONTACT_LINE is not set",
                     extra={"file": Path(out_path).name})
@@ -192,6 +212,7 @@ def _export_doc(markdown_path, doc_id, out_path, mime_type):
         subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "format_resume_doc.py"), str(markdown_path), doc_id],
             check=True,
+            env=google_auth.configure_environment(),
         )
 
         export_dir = out_path.parent
@@ -202,15 +223,16 @@ def _export_doc(markdown_path, doc_id, out_path, mime_type):
         export_dir = export_dir.resolve()
         result = subprocess.run(
             [*GWS_CMD, "drive", "files", "export", "--params",
-             json.dumps({"fileId": doc_id, "mimeType": mime_type}),
+            json.dumps({"fileId": doc_id, "mimeType": mime_type}),
              "--output", out_path.name],
             cwd=export_dir, capture_output=True, text=True, encoding="utf-8",
+            env=google_auth.configure_environment(),
         )
         if result.returncode != 0:
-            raise RuntimeError(f"export failed: {result.stderr}")
+            raise RuntimeError(f"export failed: {google_auth.safe_gws_error(result.stderr or result.stdout)}")
     finally:
         try:
-            gws("drive", "files", "delete", "--params", json.dumps({"fileId": doc_id}))
+            gws("drive", "files", "delete", "--params", json.dumps({"fileId": doc_id, "supportsAllDrives": True}))
         except Exception:  # noqa: BLE001 -- a leaked scratch Doc must not mask the real error
             pass
 
@@ -224,7 +246,7 @@ def upload_pdf(tmp_pdf_path, folder_id):
     """Upload an existing PDF (named as the recruiter should see it) into the job's Drive folder."""
     export_dir = tmp_pdf_path.parent.resolve()
 
-    uploaded = gws("drive", "files", "create", "--params", json.dumps({"fields": "id,webViewLink"}),
+    uploaded = gws("drive", "files", "create", "--params", json.dumps({"fields": "id,webViewLink", "supportsAllDrives": True}),
                     "--json", json.dumps({
                         "name": tmp_pdf_path.name,
                         "parents": [folder_id],
@@ -233,6 +255,15 @@ def upload_pdf(tmp_pdf_path, folder_id):
                     cwd=export_dir)
 
     return uploaded["webViewLink"]
+
+
+def upload_verified_pdf(source_pdf, folder_id, folder_name, filename):
+    """Copy the verified PDF to an isolated OS temp directory for the duration of its upload."""
+    with tempfile.TemporaryDirectory(prefix="tailor-job-") as temp_dir:
+        tmp_pdf_path = temporary_pdf_path(Path(temp_dir), folder_name, filename)
+        tmp_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_pdf, tmp_pdf_path)
+        return upload_pdf(tmp_pdf_path, folder_id)
 
 
 if __name__ == "__main__":
@@ -245,7 +276,10 @@ if __name__ == "__main__":
     scope = job_scope.from_cli_or_env()
 
     validate_local_setup()  # no-op unless LOCAL_MODE=true; fails loudly, never falls back to cloud
-    parent_folder_id = os.environ["google_drive_folder_id"]
+    storage_backend = artifact_storage.backend()
+    parent_folder_id = os.environ.get("google_drive_folder_id", "").strip()
+    if storage_backend == "drive" and not parent_folder_id:
+        raise RuntimeError("google_drive_folder_id is required for the legacy Drive artifact backend")
     resume_text = paths.read_base_resume()  # the master: every job starts from a fresh copy of it
 
     # Recovery: reuse the scores and any resumes an earlier run already finished.
@@ -286,8 +320,10 @@ if __name__ == "__main__":
     for job in qualified:
         link = job["link"]
         key = canonical_link(link)
-        slug = slugify(job["title"])
-        folder_name = f"{job['company']}-{slug}"
+        company = str(job.get("company") or "")
+        title = str(job.get("title") or "")
+        slug = slugify(title)
+        folder_name = job_folder_name(company, title)
 
         # Checked against the live dict, not a static pre-loop snapshot -- two
         # qualified entries that canonicalize to the same job (e.g. both freshly
@@ -306,22 +342,31 @@ if __name__ == "__main__":
                 md_path = tailored_dir / f"{folder_name}.md"
                 md_path.write_text(text, encoding="utf-8")
 
-                folder_id, folder_link = create_job_folder(job["company"], slug, parent_folder_id)
+                folder_id, folder_link = (create_job_folder(job["company"], slug, parent_folder_id)
+                                          if storage_backend == "drive" else (None, None))
                 # The verified version becomes the local artifact generated_resumes/<id>/v<n>.pdf
-                # (rendered once, checked, recorded); Drive gets that same file under its export name.
+                # (rendered once, checked, recorded); persistent storage gets that same file under
+                # its export name and a job-scoped object prefix.
                 import resume_artifacts
                 import resume_store
                 resume_artifacts.publish_verified_pdf(resume_id, resume_version)
-                tmp_pdf_path = tmp_dir / folder_name / export_filename(text, "pdf", job["title"])
-                tmp_pdf_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(resume_store.version_path(resume_id, resume_version, "pdf"), tmp_pdf_path)
-                resume_link = upload_pdf(tmp_pdf_path, folder_id)
+                if storage_backend == "drive":
+                    resume_link = upload_verified_pdf(
+                        resume_store.version_path(resume_id, resume_version, "pdf"),
+                        folder_id, folder_name, export_filename(text, "pdf", title),
+                    )
+                    storage_key = None
+                else:
+                    import drive_resumes
+                    uploaded = drive_resumes.upload_and_record(resume_id, resume_version, "pdf")
+                    resume_link, storage_key = uploaded["url"], uploaded["key"]
 
                 by_link[key] = {
                     "title": job["title"], "company": job["company"], "link": link,
                     "score": job["score"], "source": job.get("source") or "LinkedIn",
                     "drive_folder_link": folder_link,
                     "resume_link": resume_link, "resume_id": resume_id, "resume_version": resume_version,
+                    "storage_backend": storage_backend, "storage_key": storage_key,
                     "status": "saved",
                     "tailored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 }

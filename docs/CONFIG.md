@@ -24,10 +24,19 @@ Template: `.env.example`.
 | `FORCE_SCRAPE` | `.env` | bypass the 6h scrape cache (spends an Apify run) | unset |
 | `JOB_SOURCES` | `.env` / env | sources for `scrape_jobs.py`: `linkedin`, `naukri` (comma separated); `naukri` alone never calls Apify | `linkedin,naukri` (Naukri is a no-op without `NAUKRI_JOBS_PATH`) |
 | `NAUKRI_JOBS_PATH` | `.env` only (local) | Naukri jobs exported by the separate Auto_job_apply project (`exports/naukri_jobs.json`, already in the raw-job format) | unset = no Naukri jobs; never set on Modal |
-| `artifact_sync` | `.env` | `0` disables the Drive mirror of stage JSON | on |
+| `artifact_sync` | `.env` | `0` disables stage-artifact mirroring | on |
 | `PIPELINE_DATE` | `.env` | recover an earlier day's artifacts (`YYYY-MM-DD`) | today |
-| `google_sheet_id` | `.env`, `job-apply-agent-secrets` | the existing Job Application Tracker spreadsheet; the Interview Tracker uses its `Interviews` tab | lookup by name → create, if unset |
-| `google_drive_folder_id` | `.env`, `job-apply-agent-secrets` | parent Drive folder (per-job folders + `pipeline-artifacts/`) | required for uploads |
+| `google_sheet_id` | `.env`, `job-apply-agent-secrets` | required ID of the existing tracker spreadsheet used by Jobs and Interviews | missing/empty IDs cause a clear configuration error; never searches Drive |
+| `google_drive_folder_id` | `.env`, `job-apply-agent-secrets` | optional legacy OAuth Drive folder; unused by GCS | never used for service-account uploads |
+| `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` | local environment / `.env`; set by Modal bootstrap | explicit GWS credentials JSON path | service account or authorized-user JSON; isolated GWS cache |
+| `GOOGLE_AUTH_MODE` | local environment / `gws-credentials` Modal secret | explicitly selects `service_account` or `oauth` | Modal defaults to service-account mode; OAuth must be selected explicitly |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | protected `gws-credentials` Modal secret | service-account JSON materialized to a temporary file by Modal | required when auth mode is `service_account` |
+| `GOOGLE_SHEETS_WRITE_ENABLED` | `.env`, `job-apply-agent-secrets` | centralized gate for service-account append, update, clear, create, and batchUpdate operations (including interviews/deletes) | `false` until read access is verified; OAuth mode retains existing behavior |
+| `ARTIFACT_STORAGE_BACKEND` | `.env`, `job-apply-agent-secrets` | `gcs` or legacy `drive` artifact backend | explicitly set `gcs` for service-account mode |
+| `GCS_BUCKET` | `.env`, `job-apply-agent-secrets` | private bucket for resumes and date-stamped pipeline artifacts | required for `gcs` |
+| `ARTIFACT_PUBLIC_BASE_URL` | `.env`, `job-apply-agent-secrets` | stable HTTPS dashboard origin for authenticated GCS links | required for `gcs` |
+| `HISTORICAL_DRIVE_ARTIFACTS` | `.env`, `job-apply-agent-secrets` | allow explicitly selected legacy OAuth Drive artifact storage; does not affect historical links | `true`; no migration or rewriting |
+| Python storage/render dependencies | `requirements.txt` | `google-cloud-storage`, `reportlab`, `python-docx` | install with `pip install -r requirements.txt`; GCS stays private and PDF/DOCX render locally |
 | `RESUME_CONTACT_LINE` | `.env`, `job-apply-agent-secrets` | private contact row added at export (never in the repo) | exports warn / refuse without it |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `.env`, `job-apply-agent-secrets` | failure alerts | optional; the alert is skipped with a warning if unset |
 | `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD_HASH`, `DASHBOARD_ALLOWED_HOSTS` | `job-apply-agent-dashboard-secrets` (or `.env`) | dashboard sign-in + Host check | unset locally = open on loopback only |
@@ -35,7 +44,7 @@ Template: `.env.example`.
 | `MASTER_RESUME_READ_ONLY` | env | disable master-resume saves in the dashboard | Modal (`MODAL_TASK_ID` / `MODAL_IS_REMOTE`) is read-only automatically |
 | `JOB_AGENT_OUTPUT_DIR` | env | override `output/` | tests / hosting |
 | `LOG_LEVEL`, `LOG_DIR`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`, `LOG_TO_FILE` | env | logging (`scripts/logging_config.py`) | INFO, `output/logs`, 10 MB, 5; the cron forces `LOG_TO_FILE=0` |
-| `client_id`, `client_secret`, `refresh_token`, `type` | `gws-credentials` | Google OAuth for `gws` inside Modal (`modal_app.materialize_gws_credentials`) | see `GWS_SETUP.md` |
+| `client_id`, `client_secret`, `refresh_token`, `type` | `gws-credentials` | explicit legacy authorized-user OAuth mode | selected only with `GOOGLE_AUTH_MODE=oauth`; no fallback |
 | `DASHBOARD_TOKEN` | — | legacy (replaced by username/password sign-in) | TODO: confirm it can be removed from any old secret |
 
 ## Modal
@@ -59,9 +68,9 @@ Template: `.env.example`.
 ## Verified PDF artifacts
 
 `python scripts/resume_artifacts.py --resume-id <id>` (or `--link <job url>`) publishes the latest verified
-version of a tailored resume as `output/generated_resumes/<id>/v<n>.pdf` (Google Docs export via `gws`;
-needs `RESUME_CONTACT_LINE` like every export). Idempotent; refuses unverified versions. The pipeline does
-this automatically for every saved job.
+version of a tailored resume as `output/generated_resumes/<id>/v<n>.pdf` (local PDF rendering in GCS
+mode; the legacy OAuth Drive mode retains Google Docs export). Needs `RESUME_CONTACT_LINE` like every
+export. Idempotent; refuses unverified versions. The pipeline does this automatically for every saved job.
 
 ## Naukri (Auto_job_apply handoff, local only)
 
@@ -89,7 +98,7 @@ runs out) — per the project owner; TODO: confirm the current plan.
 | B | Company | `company` |
 | C | Job Link | `link` (dedupe key, canonicalised) |
 | D | Fit Score | `score` (1-10) |
-| E | Resume Path | `resume_link` (Drive URL), or `desktop_file` / `resume_path` for old rows |
+| E | Resume Path | `resume_link` (authenticated dashboard URL for new GCS artifacts; historical Drive URLs are preserved), or `desktop_file` / `resume_path` for old rows |
 | F | Status | starts `"Not Applied"`; then one of Not Applied, Applied, Interviewing, Offer, Rejected (manual / dashboard) |
 | G | Timestamp | run date |
 | H | Company Notes | `company_notes` |
