@@ -54,7 +54,7 @@ dedupes by link). There is **no** `(title, company)` dedupe in the code — see 
 | `source` | str | `"LinkedIn"` (Apify) or `"Naukri"` (Auto_job_apply handoff, see `CONFIG.md`) |
 | `found_at` | str | `date.today().isoformat()` (YYYY-MM-DD) |
 
-Naukri records (from `NAUKRI_JOBS_PATH`, merged by `scrape_jobs.run_scrape()`) have the same keys plus
+Naukri records (from `NAUKRI_JOBS_PATH` or the personal Drive handoff, merged by `scrape_jobs.run_scrape()`) have the same keys plus
 `source_job_id` (Naukri job id), `dedup_key` (`naukri:id:<id>`) and `skills` (list); later stages pass them through.
 `link` is already canonical. Records missing title/company/link/description are skipped.
 

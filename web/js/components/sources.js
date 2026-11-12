@@ -8,8 +8,7 @@ export function configuredSources({ job_sources: jobSources, services, llm }) {
     h('ul', { class: 'source-list' }, ...jobSources.map((s) =>
       h('li', { class: 'source' },
         h('div', {}, h('strong', {}, s.name), h('span', { class: 'muted' }, ` via ${s.via}`)),
-        h('span', { class: `source-status ${s.active ? 'on' : 'off'}` }, dot(s.active), s.active ? 'Active' : 'Inactive')))),
-    h('p', { class: 'muted small' }, 'LinkedIn is the only job source the scraper supports today.'),
+        h('span', { class: `source-status ${s.active ? 'on' : 'off'}` }, dot(s.active), s.status || (s.active ? 'Active' : 'Inactive'))))),
     h('div', { class: 'chips' }, ...services.map((s) =>
       h('span', { class: `chip ${s.active ? 'chip-on' : 'chip-off'}`, title: s.active ? 'Configured' : 'Not configured' },
         dot(s.active), s.name))),

@@ -26,6 +26,7 @@ test('the sidebar has the current pages, in order and group', () => {
     ['/applications', 'Applications', 'Tracking'],
     ['/interviews', 'Interviews', 'Tracking'],
     ['/job-alerts', 'Job Alerts', 'Tracking'],
+    ['/naukri', 'Naukri Handoff', 'System'],
     ['/settings', 'Settings', 'System'],
   ]);
 });

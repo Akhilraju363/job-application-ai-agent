@@ -165,5 +165,5 @@ export function dashboardPage(root, { profile }) {
         card(h('div', { class: 'card-head-row' }, 'Interviews', h('a', { class: 'link', href: '/interviews', 'data-link': true }, 'Manage')), interviewsHost),
         card(h('div', { class: 'card-head-row' }, 'Recent Activity'), activityHost),
         card(h('div', { class: 'card-head-row' }, 'Google Service Health'), googleHealthHost),
-        card(h('div', { class: 'card-head-row' }, 'Configured Sources', h('a', { class: 'link', href: '/job-alerts', 'data-link': true }, 'Edit')), sourcesHost))));
+        card(h('div', { class: 'card-head-row' }, 'Configured Sources', h('a', { class: 'link', href: '/naukri', 'data-link': true }, 'Edit')), sourcesHost))));
 }

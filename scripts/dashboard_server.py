@@ -57,6 +57,7 @@ import google_auth  # noqa: E402
 import jd_analysis  # noqa: E402
 import log_reader  # noqa: E402
 import master_resume  # noqa: E402
+import naukri_handoff  # noqa: E402
 import interview_store  # noqa: E402
 import write_sheet  # noqa: E402
 import logging_config as lc  # noqa: E402
@@ -289,9 +290,38 @@ def dash_activity(req):
                                        _int(req.q("limit"), 10, 1, 50))}
 
 
+def _sources_with_naukri_status():
+    data = dd.sources()
+    state = naukri_handoff.status()
+    for source in data.get("job_sources", []):
+        if source.get("id") == "naukri" or source.get("name", "").lower() == "naukri":
+            source["active"] = state["status"] == "ready"
+            source["status"] = state["label"]
+            source["status_code"] = state["status"]
+    return data
+
+
 @route("GET", "/api/dashboard/sources")
 def dash_sources(req):
-    return dd.sources()
+    return _sources_with_naukri_status()
+
+
+@route("GET", "/api/naukri/status")
+def naukri_status(req):
+    return naukri_handoff.status()
+
+
+@route("POST", "/api/naukri/import")
+def naukri_import(req):
+    body = req.body
+    try:
+        jobs = naukri_handoff.validate_jobs(body.get("jobs"))
+    except naukri_handoff.HandoffError as exc:
+        raise ApiError(400, str(exc), "invalid_handoff", exc.details) from None
+    try:
+        return naukri_handoff.import_jobs(jobs)
+    except naukri_handoff.HandoffError as exc:
+        raise ApiError(503, "Could not store the Naukri handoff in Google Drive", "drive_unavailable") from None
 
 
 @route("GET", "/api/health/google")
@@ -930,7 +960,7 @@ def master_resume_put(req):
 def settings(req):
     md = paths.read_base_resume()
     parsed = nf.parse_resume(md)
-    return {**dd.sources(), "profile": dd.profile(),
+    return {**_sources_with_naukri_status(), "profile": dd.profile(),
             "master_resume": {"path": "resume/base_resume.md", "sections": list(parsed["sections"]),
                               "roles": [r["label"] for r in parsed["roles"]],
                               "skills": len(parsed["skill_items"]), "years": jd_analysis.resume_years(md)},

@@ -22,8 +22,8 @@ Template: `.env.example`.
 | `JOB_LIMIT` | `.env` / secret | jobs per cloud run | 10 (sized to free-tier LLM quotas) |
 | `LOCAL_JOB_LIMIT` | `.env` | jobs per local run | 50 |
 | `FORCE_SCRAPE` | `.env` | bypass the 6h scrape cache (spends an Apify run) | unset |
-| `JOB_SOURCES` | `.env` / env | sources for `scrape_jobs.py`: `linkedin`, `naukri` (comma separated); `naukri` alone never calls Apify | `linkedin,naukri` (Naukri is a no-op without `NAUKRI_JOBS_PATH`) |
-| `NAUKRI_JOBS_PATH` | `.env` only (local) | Naukri jobs exported by the separate Auto_job_apply project (`exports/naukri_jobs.json`, already in the raw-job format) | unset = no Naukri jobs; never set on Modal |
+| `JOB_SOURCES` | `.env` / env | sources for `scrape_jobs.py`: `linkedin`, `naukri` (comma separated); `naukri` alone never calls Apify | `linkedin,naukri` |
+| `NAUKRI_JOBS_PATH` | `.env` / env | Optional local override for Auto_job_apply's `exports/naukri_jobs.json`; when unset, uses personal Google Drive handoff | unset = Drive handoff |
 | `artifact_sync` | `.env` | `0` disables stage-artifact mirroring | on |
 | `PIPELINE_DATE` | `.env` | recover an earlier day's artifacts (`YYYY-MM-DD`) | today |
 | `google_sheet_id` | `.env`, `job-apply-agent-secrets` | required ID of the existing tracker spreadsheet used by Jobs and Interviews | missing/empty IDs cause a clear configuration error; never searches Drive |
@@ -68,12 +68,16 @@ version of a tailored resume as `output/generated_resumes/<id>/v<n>.pdf` (Google
 Drive upload). Needs `RESUME_CONTACT_LINE` like every
 export. Idempotent; refuses unverified versions. The pipeline does this automatically for every saved job.
 
-## Naukri (Auto_job_apply handoff, local only)
+## Naukri (Auto_job_apply handoff)
 
 Naukri jobs are discovered by the separate **Auto_job_apply** project (headed Playwright browser with the owner's
 Naukri profile -- Naukri blocks headless, so this cannot run on Modal). It writes them with
-`python main.py --action export-to-agent` to a JSON list in the raw-job format; `scrape_jobs.load_naukri_jobs()` reads
-`NAUKRI_JOBS_PATH`, and `run_scrape()` merges them into `output/raw_jobs.json` (deduped by `canonical_link`, capped at
+`python main.py --action export-to-agent` to `exports/naukri_jobs.json`. In the dashboard, open **Naukri Handoff** and
+upload that JSON file. The authenticated importer validates every record before storing it as `naukri_jobs.json` in a
+dedicated `naukri-handoff` folder under the configured personal Google Drive folder. The existing authorized-user OAuth
+credentials and `google_drive_folder_id` are used; no additional storage service or secret is introduced. Local runs use
+`NAUKRI_JOBS_PATH` when explicitly set, otherwise they read the Drive handoff; Modal runs use Drive.
+`run_scrape()` merges Naukri jobs into `output/raw_jobs.json` (deduped by `canonical_link`, capped at
 the job limit) -- on a fresh scrape, on a 6h cache hit (the cache keeps its original age) and in Naukri-only mode
 (`JOB_SOURCES=naukri`, no Apify call). From there the normal stages run unchanged; `source` stays `"Naukri"` through
 tailoring and into the Sheet's Source column. Auto_job_apply reads `output/scored_jobs.json` back

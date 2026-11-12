@@ -126,8 +126,7 @@ NAUKRI_REQUIRED_FIELDS = ("title", "company", "link", "description")
 
 
 def job_sources():
-    """Enabled sources from JOB_SOURCES (comma separated). Default: both -- the Naukri source is a
-    no-op unless NAUKRI_JOBS_PATH points at a file, so the Modal cron is unaffected."""
+    """Enabled sources from JOB_SOURCES (comma separated). Default: LinkedIn and Naukri."""
     raw = os.environ.get("JOB_SOURCES", "").strip().lower()
     sources = tuple(s.strip() for s in raw.split(",") if s.strip()) or KNOWN_SOURCES
     unknown = [s for s in sources if s not in KNOWN_SOURCES]
@@ -152,6 +151,10 @@ def load_naukri_jobs(path=None, limit=None):
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, list):
         raise ValueError(f"Naukri handoff file must contain a JSON list: {path}")
+    return _normalize_naukri_jobs(data, limit)
+
+
+def _normalize_naukri_jobs(data, limit=None):
     jobs = []
     for index, job in enumerate(data):
         missing = [f for f in NAUKRI_REQUIRED_FIELDS
@@ -312,7 +315,23 @@ def run_scrape(force=False):
     # A failed Modal run may have already scraped today -- reuse that instead of
     # spending another paid Apify call on the local recovery run.
     artifacts.pull("raw_jobs.json")
-    naukri_jobs = load_naukri_jobs() if "naukri" in sources else []
+    naukri_jobs = []
+    if "naukri" in sources:
+        try:
+            handoff_path = os.environ.get("NAUKRI_JOBS_PATH", "").strip()
+            on_modal = bool(os.environ.get("MODAL_TASK_ID")) or os.environ.get("MODAL_IS_REMOTE") == "1"
+            if handoff_path and not on_modal:
+                naukri_jobs = load_naukri_jobs(handoff_path)
+            else:
+                # Dashboard imports and Modal cron share the same OAuth Drive file.
+                # An unavailable handoff is optional and must not stop LinkedIn.
+                import naukri_handoff
+                raw_handoff = naukri_handoff.retrieve_jobs()
+                if raw_handoff:
+                    naukri_jobs = _normalize_naukri_jobs(raw_handoff, effective_job_limit())
+        except Exception as exc:  # noqa: BLE001 -- optional source cannot stop LinkedIn
+            log.warning("Naukri handoff unavailable; continuing other sources",
+                        extra={"reason": type(exc).__name__})
     cached = _read_cached_jobs()
     cache_recovery_required = cached is None
     # Earlier Naukri records are kept (merged with this run's handoff), not replaced by it.
