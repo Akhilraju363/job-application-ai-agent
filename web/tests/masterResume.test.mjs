@@ -72,7 +72,7 @@ test('Master Resume is in the sidebar navigation, right after Tailor Resume', ()
   assert.match(nav, /\{ path: '\/master-resume', label: 'Master Resume', icon: '\w+', page: masterResumePage[,}]/);
   const labels = [...nav.matchAll(/label: '([^']+)'/g)].map((m) => m[1]);
   assert.deepEqual(labels, ['Dashboard', 'Find Jobs', 'Tailor Resume', 'Master Resume', 'Applications',
-    'Interviews', 'Job Alerts', 'Settings'], 'sidebar order from docs/ui/UI_PAGES.md');
+    'Interviews', 'Job Alerts', 'Naukri Handoff', 'Settings'], 'sidebar order from docs/ui/UI_PAGES.md');
 });
 
 // ---- loading and structure ---------------------------------------------------------------

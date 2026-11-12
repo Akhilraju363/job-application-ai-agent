@@ -33,7 +33,7 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       -> "managing" stays blocked by design. Same on the new master (2026-10-09 live runs): a Java/Spring Boot JD
       got 0 changed bullets -> reorder-only (`conservative`, verified; Skills still re-ordered for the JD); an
       Angular/Python JD got 2 accepted rewrites + 1 rejected (`generated`, verified).
-- [ ] Naukri on Modal: needs the handoff file mirrored through configured artifact storage (`artifacts.py`); not implemented -- local only.
+- [x] Naukri on Modal: authenticated dashboard import stores the validated handoff in a dedicated personal Drive file, read by local and Modal scraper runs.
 - [ ] (title, company) dedupe across sources: the same posting on LinkedIn and Naukri has two links and is scored twice.
 - [ ] Test `agentx/all-jobs-scraper` (platforms Naukri, foundit; country India) with `limit=2`; record its input params and
       output field names in `CONFIG.md`.

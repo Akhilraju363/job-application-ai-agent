@@ -8,6 +8,7 @@
 | `/master-resume` | `pages/masterResume.js` | Workspace | `UI_MASTER_RESUME.md` | What are my career facts? (source of truth) |
 | `/applications` | `pages/applications.js` `applicationsPage` | Tracking | `UI_APPLICATIONS.md` | Where do my applications stand? |
 | `/job-alerts` | `pages/alerts.js` | Tracking | `UI_JOB_ALERTS.md` | What does Find New Jobs search for? |
+| `/naukri` | `pages/naukri.js` | System | — | Is the Auto_job_apply handoff ready, and how do I import it? |
 | `/settings` | `pages/settings.js` | System | `UI_SETTINGS.md` | How is this app configured? |
 
 Signed out: the login view (`components/loginForm.js`) replaces the shell.

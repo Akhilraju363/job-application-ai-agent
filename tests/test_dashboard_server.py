@@ -199,6 +199,25 @@ class Security(ServerCase):
 
 
 class DashboardEndpoints(ServerCase):
+    def test_naukri_import_validates_authenticates_and_respects_origin(self):
+        valid = {"title": "Engineer", "company": "Example", "link": "https://example.test/1", "description": "Build"}
+        with mock.patch.dict(os.environ, auth_env()):
+            self.assertEqual(self.call("POST", "/api/naukri/import", {"jobs": [valid]})[0], 401)
+        with mock.patch.object(srv.naukri_handoff, "import_jobs", return_value={"status": "ready", "job_count": 1}) as import_jobs:
+            self.assertEqual(self.call("POST", "/api/naukri/import", {"jobs": []})[0], 400)
+            self.assertEqual(self.call("POST", "/api/naukri/import", {"jobs": [valid]},
+                                       headers={"Origin": "https://evil.example"})[0], 403)
+            import_jobs.assert_not_called()
+            status, _, result = self.call("POST", "/api/naukri/import", {"jobs": [valid]})
+            self.assertEqual((status, result["job_count"]), (200, 1))
+
+    def test_dashboard_naukri_status_uses_drive_readiness(self):
+        with mock.patch.object(srv.naukri_handoff, "status", return_value={"status": "invalid_json", "label": "Invalid JSON"}):
+            _, _, result = self.call("GET", "/api/dashboard/sources")
+        naukri = next(s for s in result["job_sources"] if s["id"] == "naukri")
+        self.assertFalse(naukri["active"])
+        self.assertEqual(naukri["status"], "Invalid JSON")
+
     def test_summary_overview_status_use_real_data(self):
         with pinned_today():
             s, _, d = self.call("GET", "/api/dashboard/summary?range=30d")

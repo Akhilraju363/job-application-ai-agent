@@ -17,6 +17,7 @@ import { applicationsPage } from './pages/applications.js';
 import { alertsPage } from './pages/alerts.js';
 import { settingsPage } from './pages/settings.js';
 import { interviewsPage } from './pages/interviews.js';
+import { naukriPage } from './pages/naukri.js';
 
 const NAV = [
   { path: '/', label: 'Dashboard', icon: 'home', page: dashboardPage, group: 'Workspace' },
@@ -26,6 +27,7 @@ const NAV = [
   { path: '/applications', label: 'Applications', icon: 'send', page: applicationsPage, group: 'Tracking' },
   { path: '/interviews', label: 'Interviews', icon: 'calendar', page: interviewsPage, group: 'Tracking' },
   { path: '/job-alerts', label: 'Job Alerts', icon: 'bell', page: alertsPage, group: 'Tracking' },
+  { path: '/naukri', label: 'Naukri Handoff', icon: 'download', page: naukriPage, group: 'System' },
   { path: '/settings', label: 'Settings', icon: 'settings', page: settingsPage, group: 'System' },
 ];
 

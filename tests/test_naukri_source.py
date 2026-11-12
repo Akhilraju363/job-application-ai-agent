@@ -120,11 +120,36 @@ class TestMerge(NaukriSourceTestCase):
 
 class TestRunScrape(NaukriSourceTestCase):
     def test_linkedin_only_behaviour_unchanged_without_handoff(self):
-        self.env(JOB_SOURCES="", NAUKRI_JOBS_PATH="")
+        self.env(JOB_SOURCES="linkedin", NAUKRI_JOBS_PATH="")
         jobs = scrape_jobs.run_scrape()
         self.apify.assert_called_once()
         self.assertEqual(jobs, [linkedin_job()])
         self.assertEqual(self.raw(), [linkedin_job()])
+
+    def test_linkedin_only_never_attempts_naukri_drive_retrieval(self):
+        self.env(JOB_SOURCES="linkedin", NAUKRI_JOBS_PATH="")
+        with mock.patch("naukri_handoff.retrieve_jobs", side_effect=AssertionError("unexpected Drive call")):
+            self.assertEqual(scrape_jobs.run_scrape(), [linkedin_job()])
+
+    def test_drive_retrieval_failure_does_not_stop_linkedin(self):
+        self.env(JOB_SOURCES="linkedin,naukri", NAUKRI_JOBS_PATH="")
+        with mock.patch("naukri_handoff.retrieve_jobs", side_effect=RuntimeError("offline")):
+            self.assertEqual(scrape_jobs.run_scrape(), [linkedin_job()])
+        self.apify.assert_called_once()
+
+    def test_drive_jobs_merge_with_linkedin_and_keep_source_labels(self):
+        self.env(JOB_SOURCES="linkedin,naukri", NAUKRI_JOBS_PATH="")
+        with mock.patch("naukri_handoff.retrieve_jobs", return_value=[naukri_record()]):
+            jobs = scrape_jobs.run_scrape()
+        self.assertEqual([job["source"] for job in jobs], ["LinkedIn", "Naukri"])
+        self.apify.assert_called_once()
+
+    def test_modal_uses_drive_even_if_local_override_variable_is_set(self):
+        self.env(JOB_SOURCES="naukri", NAUKRI_JOBS_PATH=str(self.handoff), MODAL_IS_REMOTE="1")
+        with mock.patch("naukri_handoff.retrieve_jobs", return_value=[naukri_record()]) as retrieve:
+            jobs = scrape_jobs.run_scrape(force=True)
+        retrieve.assert_called_once()
+        self.assertEqual([job["source"] for job in jobs], ["Naukri"])
 
     def test_cache_hit_without_naukri_does_not_rewrite(self):
         self.env(JOB_SOURCES="", NAUKRI_JOBS_PATH="")

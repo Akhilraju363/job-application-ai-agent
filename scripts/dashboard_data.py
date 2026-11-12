@@ -280,7 +280,7 @@ def sources():
                     "detail": "Full-Stack Java/Spring Boot/Angular postings via the Apify LinkedIn actor"},
                    {"id": "naukri", "name": "Naukri", "via": "Auto_job_apply handoff file",
                     "active": _env("NAUKRI_JOBS_PATH"),
-                    "detail": "Naukri jobs exported by the local Auto_job_apply scanner (NAUKRI_JOBS_PATH)"}]
+                    "detail": "Auto_job_apply JSON handoff from personal Google Drive or local NAUKRI_JOBS_PATH"}]
     storage_backend = (os.environ.get("ARTIFACT_STORAGE_BACKEND") or "").strip().lower()
     drive_available = _env("google_drive_folder_id") and storage_backend in ("", "drive")
     services = [
