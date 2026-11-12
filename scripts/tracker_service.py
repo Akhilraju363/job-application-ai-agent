@@ -55,16 +55,18 @@ class Tracker:
             self._failure = None
 
     def _lookup_sheet_id(self, create=False):
-        sid = os.environ.get("google_sheet_id", "").strip() or self._sheet_id
+        sid = os.environ.get("google_sheet_id", "").strip()
         if not sid:
-            sid = write_sheet.get_or_create_sheet_id() if create else write_sheet.find_sheet_by_title()
+            if create:
+                sid = write_sheet.get_or_create_sheet_id()
+            else:
+                return None
         self._sheet_id = sid
         return sid
 
     def sheet_url(self):
-        """Browser link to the tracker sheet, built from the id already resolved (configured, or
-        found by snapshot()) -- never triggers a lookup. None when unknown or malformed."""
-        sid = os.environ.get("google_sheet_id", "").strip() or self._sheet_id
+        """Browser link to the explicitly configured tracker ID -- never triggers a lookup."""
+        sid = os.environ.get("google_sheet_id", "").strip()
         if not sid or not SHEET_ID_RE.fullmatch(sid):
             return None
         return f"https://docs.google.com/spreadsheets/d/{sid}/edit"
@@ -131,6 +133,36 @@ class Tracker:
         activity.log_event("tracker_deleted", f"Removed {row['title']} at {row['company']} from the tracker",
                            company=row["company"], title=row["title"], link=row["link"])
         return {"deleted": True}
+
+    def delete_jobs(self, links):
+        """Delete multiple uniquely matched tracker rows with one Sheets batch update."""
+        if not isinstance(links, list) or not links:
+            raise ValueError("at least one application is required")
+        keys = [canonical_link(link) for link in links]
+        if any(not key for key in keys):
+            raise ValueError("every application must have a valid job link")
+        if len(set(keys)) != len(keys):
+            raise ValueError("duplicate applications are not allowed")
+        try:
+            sid = self._lookup_sheet_id()
+            if not sid:
+                raise TrackerError("No tracker sheet is configured")
+            outcomes = write_sheet.delete_rows(sid, keys)
+        except Exception as e:  # noqa: BLE001 -- Google/GWS may fail for several reasons
+            log.error("Tracker bulk delete failed", exc_info=True)
+            raise TrackerError("The tracker could not complete the bulk delete") from e
+
+        deleted = [outcome for outcome in outcomes if outcome["status"] == "deleted"]
+        if deleted:
+            self.invalidate()
+        for outcome in deleted:
+            log.info("Tracker row deleted", extra={"company": outcome["company"], "row": outcome["row"]})
+            activity.log_event(
+                "tracker_deleted",
+                f"Removed {outcome['title']} at {outcome['company']} from the tracker",
+                company=outcome["company"], title=outcome["title"], link=outcome["link"],
+            )
+        return outcomes
 
     def save_job(self, *, title, company, link, score, resume_path="", source="LinkedIn",
                  company_notes="", resume_id="", match_pct=None):

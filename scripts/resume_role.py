@@ -17,6 +17,7 @@ Pure functions, no I/O.
 import re
 
 import no_fabrication as nf
+import paths
 
 FALLBACK_ROLE = "Software Engineer"
 ROLE_NOUNS = {"developer", "engineer", "programmer", "consultant", "analyst", "specialist",
@@ -155,6 +156,7 @@ def resume_filename(markdown, ext, fallback_name="Resume", role=""):
         head = role_of(markdown)
         role = head if "|" not in head else ""
     stem = re.sub(r"[^\w+#]+", "_", f"{name} {role}").strip("_")[:120]
+    stem = paths.safe_path_component(stem, fallback="Resume", max_units=120)
     return f"{stem or 'Resume'}.{ext}"
 
 

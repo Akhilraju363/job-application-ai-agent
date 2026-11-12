@@ -8,6 +8,7 @@ import socket
 import tempfile
 import threading
 import time
+from urllib.parse import urlsplit
 import unittest
 from datetime import date
 from pathlib import Path
@@ -20,6 +21,7 @@ import dashboard_data as dd
 import dashboard_server as srv
 import dashboard_tasks as tasks
 import drive_resumes
+import artifact_storage
 import interview_store
 import paths
 import resume_store
@@ -241,7 +243,9 @@ class DashboardEndpoints(ServerCase):
 
     def test_unknown_route_and_method(self):
         self.assertEqual(self.call("GET", "/api/nope")[0], 404)
+        self.assertEqual(self.call("POST", "/api/nope", {})[0], 404)
         self.assertEqual(self.call("DELETE", "/api/jobs")[0], 405)
+        self.assertEqual(self.call("GET", "/api/tracker/bulk-delete")[0], 405)
 
 
 class TailoringEntryPoints(ServerCase):
@@ -354,6 +358,42 @@ class TailoringEntryPoints(ServerCase):
 
 
 class ResumeActions(ServerCase):
+    def test_private_gcs_route_decodes_url_encoded_resume_filename(self):
+        key = "generated_resumes/0123456789ab/Acme-java-dev/v1/Akhil_C++_C#_Développeur.pdf"
+        with mock.patch.dict(os.environ, {"ARTIFACT_PUBLIC_BASE_URL": "https://agent.example"}):
+            url = artifact_storage.public_url(key)
+        path = urlsplit(url).path
+        with mock.patch.object(artifact_storage, "check_configuration"), \
+                mock.patch.object(artifact_storage, "download_bytes", return_value=b"%PDF-private") as download:
+            status, _, body = self.call("GET", path, raw=True)
+        self.assertEqual((status, body), (200, b"%PDF-private"))
+        download.assert_called_once_with(key)
+
+    def test_private_gcs_artifact_route_serves_inline_content_and_reports_outage(self):
+        key = "generated_resumes/0123456789ab/Acme-java-dev/v1/Jane_Roe_Java_Developer.pdf"
+        path = "/api/artifacts/" + key
+        with mock.patch.object(artifact_storage, "check_configuration"), \
+                mock.patch.object(artifact_storage, "download_bytes", return_value=b"%PDF-private"):
+            status, headers, body = self.call("GET", path, raw=True)
+        self.assertEqual((status, body), (200, b"%PDF-private"))
+        self.assertEqual(headers["Content-Type"], "application/pdf")
+        self.assertIn("inline;", headers["Content-Disposition"])
+
+        with mock.patch.object(artifact_storage, "check_configuration"), \
+                mock.patch.object(artifact_storage, "download_bytes",
+                                  side_effect=artifact_storage.ArtifactStorageError("bucket unavailable")):
+            status, _, error = self.call("GET", path)
+        self.assertEqual(status, 502)
+        self.assertEqual(error["error"]["code"], "artifact_unavailable")
+
+    def test_private_artifact_route_reports_missing_gcs_configuration(self):
+        path = "/api/artifacts/generated_resumes/0123456789ab/Acme-job/v1/resume.pdf"
+        with mock.patch.object(artifact_storage, "check_configuration",
+                               side_effect=artifact_storage.ArtifactStorageError("GCS is not configured")):
+            status, _, error = self.call("GET", path)
+        self.assertEqual(status, 502)
+        self.assertEqual(error["error"]["code"], "artifact_unavailable")
+
     def test_get_list_and_edit(self):
         rid = self.make_resume()
         s, _, r = self.call("GET", f"/api/resumes/{rid}")
@@ -682,6 +722,70 @@ class TrackerAndJobActions(ServerCase):
             status, _, result = self.call("DELETE", f"/api/tracker/{srv.dd.job_key(LINK)}")
         self.assertEqual((status, result["error"]["code"]), (409, "tracker_conflict"))
 
+    def test_bulk_delete_uses_stable_ids_and_returns_partial_per_record_results(self):
+        second = "https://example.com/jobs/second"
+        rows = [
+            {"row": 2, "title": "A", "company": "Acme", "link": LINK},
+            {"row": 3, "title": "B", "company": "Beta", "link": second},
+            {"row": 4, "title": "Keep", "company": "Gamma", "link": "https://example.com/jobs/keep"},
+        ]
+        ids = [dd.job_key(LINK), dd.job_key(second)]
+        outcomes = [
+            {"status": "deleted"},
+            {"status": "failed", "code": "not_found", "message": "Application not found"},
+        ]
+        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(rows)) as snapshot, \
+                mock.patch.object(srv.tracker, "delete_jobs", return_value=outcomes) as delete:
+            status, _, result = self.call("POST", "/api/tracker/bulk-delete", {"ids": ids})
+        self.assertEqual(status, 200)
+        self.assertEqual((result["status"], result["deleted_count"], result["failed_count"]), ("partial", 1, 1))
+        self.assertEqual([item["id"] for item in result["results"]], ids)
+        self.assertEqual([item["status"] for item in result["results"]], ["deleted", "failed"])
+        self.assertEqual(result["results"][1]["code"], "not_found")
+        delete.assert_called_once_with([LINK, second])
+        snapshot.assert_called_once_with(force=True)
+
+    def test_bulk_delete_rejects_empty_invalid_and_duplicate_ids(self):
+        valid = dd.job_key(LINK)
+        for body in ({"ids": []}, {"ids": ["not-an-id"]}, {"ids": [valid, valid]}):
+            status, _, result = self.call("POST", "/api/tracker/bulk-delete", body)
+            self.assertEqual(status, 400, body)
+            self.assertEqual(result["error"]["code"], "invalid_input")
+
+    def test_bulk_delete_reports_missing_and_ambiguous_rows_without_deleting(self):
+        duplicate_link = "https://in.linkedin.com/jobs/view/java-dev-123?trackingId=duplicate"
+        rows = [
+            {"row": 2, "title": "A", "company": "Acme", "link": LINK},
+            {"row": 3, "title": "A duplicate", "company": "Acme", "link": duplicate_link},
+        ]
+        missing_id = "abcdef123456"
+        ambiguous_id = dd.job_key(LINK)
+        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(rows)), \
+                mock.patch.object(srv.tracker, "delete_jobs") as delete:
+            status, _, result = self.call("POST", "/api/tracker/bulk-delete",
+                                          {"ids": [missing_id, ambiguous_id]})
+        self.assertEqual(status, 200)
+        self.assertEqual((result["deleted_count"], result["failed_count"]), (0, 2))
+        self.assertEqual([record["code"] for record in result["results"]], ["not_found", "tracker_conflict"])
+        delete.assert_not_called()
+
+    def test_bulk_delete_fails_closed_for_unavailable_tracker_and_mutation_errors(self):
+        key = dd.job_key(LINK)
+        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state([], available=False)), \
+                mock.patch.object(srv.tracker, "delete_jobs") as delete:
+            status, _, result = self.call("POST", "/api/tracker/bulk-delete", {"ids": [key]})
+        self.assertEqual((status, result["error"]["code"]), (502, "tracker_unavailable"))
+        self.assertEqual(result["error"]["details"]["results"][0]["code"], "tracker_unavailable")
+        delete.assert_not_called()
+
+        rows = [{"row": 2, "title": "A", "company": "Acme", "link": LINK}]
+        with mock.patch.object(srv.tracker, "snapshot", return_value=tracker_state(rows)), \
+                mock.patch.object(srv.tracker, "delete_jobs", side_effect=srv.TrackerError("offline")):
+            status, _, result = self.call("POST", "/api/tracker/bulk-delete", {"ids": [key]})
+        self.assertEqual((status, result["error"]["code"]), (502, "tracker_unavailable"))
+        self.assertEqual(result["error"]["details"]["results"][0]["message"],
+                         "Tracker is unavailable; this application was not deleted")
+
     def test_suitability_update_is_independent_and_validated(self):
         self.assertEqual(self.call("PATCH", "/api/tracker/suitability",
                                    {"link": LINK, "suitability": "Unknown"})[0], 400)
@@ -727,8 +831,11 @@ class TrackerAndJobActions(ServerCase):
             with mock.patch.dict(os.environ, {"google_sheet_id": bad}):
                 self.assertIsNone(self.call("GET", "/api/tracker")[2]["tracker"]["sheet_url"], bad)
 
-    def test_sheet_url_reuses_the_resolved_id_without_a_gws_call(self):
+    def test_sheet_url_requires_the_explicit_id_and_never_uses_a_cached_fallback(self):
         with mock.patch.dict(os.environ, {"google_sheet_id": ""}), mock.patch.object(srv.tracker, "_sheet_id", self.FAKE_SHEET_ID), \
+                mock.patch("write_sheet.gws", side_effect=AssertionError("no Sheets call for the link")):
+            self.assertIsNone(srv.tracker.sheet_url())
+        with mock.patch.dict(os.environ, {"google_sheet_id": self.FAKE_SHEET_ID}), \
                 mock.patch("write_sheet.gws", side_effect=AssertionError("no Sheets call for the link")):
             self.assertEqual(srv.tracker.sheet_url(), f"https://docs.google.com/spreadsheets/d/{self.FAKE_SHEET_ID}/edit")
 
@@ -767,11 +874,26 @@ class PipelineActionsAndPreferences(ServerCase):
 
     def test_full_pipeline_is_the_five_existing_steps(self):
         self.FakeProc.commands = []
-        with mock.patch.object(tasks.subprocess, "Popen", self.FakeProc):
+        healthy = {"status": "available", "category": None, "message": "ok"}
+        with mock.patch.object(tasks.subprocess, "Popen", self.FakeProc), \
+                mock.patch("google_auth.health_check", return_value={"sheets": healthy,
+                           "artifact_storage": healthy}):
             _, _, a = self.call("POST", "/api/actions/find-jobs", {"mode": "full"})
             self.wait_task(a["task_id"])
         self.assertEqual([Path(c[-1]).name for c in self.FakeProc.commands],
                          ["scrape_jobs.py", "score_jobs.py", "tailor_job.py", "company_research.py", "write_sheet.py"])
+
+    def test_full_pipeline_preflight_stops_before_job_processing(self):
+        self.FakeProc.commands = []
+        unavailable = {"status": "unavailable", "category": "permission_denied", "message": "grant access"}
+        with mock.patch.object(tasks.subprocess, "Popen", self.FakeProc), \
+                mock.patch("google_auth.health_check", return_value={"sheets": unavailable,
+                           "artifact_storage": unavailable}):
+            _, _, a = self.call("POST", "/api/actions/find-jobs", {"mode": "full"})
+            task = self.wait_task(a["task_id"])
+        self.assertEqual(task["status"], "error")
+        self.assertEqual(self.FakeProc.commands, [])
+        self.assertIn("Google preflight failed", json.dumps(task))
 
     def test_failing_step_fails_the_task_and_stops(self):
         class Failing(self.FakeProc):

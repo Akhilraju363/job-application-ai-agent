@@ -175,5 +175,40 @@ class InterviewStoreTests(unittest.TestCase):
             interview_store.list_interviews()
 
 
+class InterviewSheetsConfigurationTests(unittest.TestCase):
+    def test_interview_append_respects_service_account_write_gate(self):
+        with mock.patch.object(interview_store.write_sheet, "_SERVICE_ACCOUNT_SHEETS_READ_VERIFIED", False), \
+                mock.patch.object(interview_store.write_sheet.google_auth, "is_service_account", return_value=True), \
+                mock.patch.object(interview_store.write_sheet.subprocess, "run") as run, \
+                mock.patch.dict("os.environ", {"GOOGLE_SHEETS_WRITE_ENABLED": "false"}):
+            with self.assertRaisesRegex(interview_store.StorageError, "Google Sheets writes are disabled"):
+                interview_store._append("existing-sheet", [""] * len(interview_store.HEADERS))
+        run.assert_not_called()
+
+    def test_interview_append_succeeds_after_explicit_opt_in_and_read_check(self):
+        def successful_gws(command, **kwargs):
+            return __import__("subprocess").CompletedProcess(command, 0, stdout="{}", stderr="")
+
+        with mock.patch.object(interview_store.write_sheet, "_SERVICE_ACCOUNT_SHEETS_READ_VERIFIED", False), \
+                mock.patch.object(interview_store.write_sheet.google_auth, "is_service_account", return_value=True), \
+                mock.patch.object(interview_store.write_sheet.subprocess, "run", side_effect=successful_gws) as run, \
+                mock.patch.dict("os.environ", {"GOOGLE_SHEETS_WRITE_ENABLED": "true",
+                                                "google_sheet_id": "existing-sheet"}):
+            interview_store._append("existing-sheet", [""] * len(interview_store.HEADERS))
+        commands = [call.args[0][len(interview_store.write_sheet.GWS_CMD):] for call in run.call_args_list]
+        self.assertEqual(commands[0][:3], ["sheets", "spreadsheets", "get"])
+        self.assertEqual(commands[1][:2], ["sheets", "+read"])
+        self.assertEqual(commands[2][:4], ["sheets", "spreadsheets", "values", "append"])
+
+    def test_missing_or_empty_spreadsheet_id_never_starts_a_drive_search(self):
+        with mock.patch.object(interview_store.write_sheet, "find_sheet_by_title") as find_sheet:
+            for sheet_id in ("", "   "):
+                with self.subTest(sheet_id=sheet_id), \
+                        mock.patch.dict("os.environ", {"google_sheet_id": sheet_id}):
+                    with self.assertRaisesRegex(interview_store.StorageError, "google_sheet_id"):
+                        interview_store._spreadsheet_id()
+        find_sheet.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

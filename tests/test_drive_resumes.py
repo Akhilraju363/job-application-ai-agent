@@ -48,6 +48,25 @@ class DriveCase(unittest.TestCase):
 
 
 class Upload(DriveCase):
+    def test_gcs_upload_uses_private_bucket_key_and_authenticated_dashboard_url(self):
+        rid = make_resume()
+        key = f"generated_resumes/{rid}/Acme-java-dev/v1/Jane_Roe_Java_Developer.pdf"
+        with mock.patch.object(dr.artifact_storage, "backend", return_value="gcs"), \
+                mock.patch.object(dr.artifact_storage, "resume_object_key", return_value=key), \
+                mock.patch.object(dr.artifact_storage, "public_url",
+                                  return_value=f"https://agent.example/api/artifacts/{key}"), \
+                mock.patch.object(dr.artifact_storage, "upload_file",
+                                  return_value={"key": key, "reused": False}) as upload:
+            result = dr.upload_and_record(rid, 1, "pdf")
+        self.assertEqual(result["backend"], "gcs")
+        self.assertEqual(result["url"], f"https://agent.example/api/artifacts/{key}")
+        self.assertEqual(result["key"], key)
+        self.assertEqual(self.drive.calls, [])
+        self.assertEqual(upload.call_args.kwargs["content_type"], "application/pdf")
+        record = resume_store.get(rid, with_markdown=False)["versions"][0]["storage"]["pdf"]
+        self.assertEqual(record["status"], "uploaded")
+        self.assertEqual(record["backend"], "gcs")
+
     def test_uploads_the_pdf_into_the_per_job_folder_and_returns_the_drive_link(self):
         rid = make_resume()
         r = dr.upload_resume(rid, 1, "pdf")
@@ -136,6 +155,21 @@ class Idempotency(DriveCase):
 
 
 class Failures(DriveCase):
+    def test_gcs_failure_is_recorded_and_never_falls_back_to_drive(self):
+        rid = make_resume()
+        with mock.patch.object(dr.artifact_storage, "backend", return_value="gcs"), \
+                mock.patch.object(dr.artifact_storage, "resume_object_key", return_value="generated_resumes/failure.pdf"), \
+                mock.patch.object(dr.artifact_storage, "public_url", return_value="https://agent.example/api/artifacts/failure"), \
+                mock.patch.object(dr.artifact_storage, "upload_file",
+                                  side_effect=dr.artifact_storage.ArtifactStorageError("bucket unavailable")):
+            with self.assertRaises(dr.DriveUploadError) as error:
+                dr.upload_and_record(rid, 1, "pdf")
+        self.assertIn("Artifact storage upload failed", str(error.exception))
+        self.assertEqual(self.drive.calls, [])
+        record = resume_store.get(rid, with_markdown=False)["versions"][0]["storage"]["pdf"]
+        self.assertEqual(record["status"], "failed")
+        self.assertNotIn("url", record)
+
     def test_failure_is_reported_records_no_url_and_keeps_the_local_file(self):
         rid = make_resume()
         self.drive.fail = "network unreachable"

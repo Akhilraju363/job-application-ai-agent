@@ -23,6 +23,8 @@ import time
 from datetime import datetime, timezone
 
 import logging_config as lc
+import artifact_storage
+import google_auth
 import resume_role
 import resume_store
 import write_sheet  # reuses its gws resolution (Windows .cmd-shim workaround)
@@ -47,14 +49,16 @@ class DriveUploadError(RuntimeError):
 
 def _gws(args, cwd=None):
     result = subprocess.run([*write_sheet.GWS_CMD, *args], capture_output=True, text=True,
-                            encoding="utf-8", cwd=cwd)
+                            encoding="utf-8", cwd=cwd, env=google_auth.configure_environment())
     if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout or "gws failed").strip())
+        raise RuntimeError(google_auth.safe_gws_error(result.stderr or result.stdout or "gws failed"))
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
 def _explain(exc):
     first = (str(exc).strip().splitlines() or [type(exc).__name__])[0][:200]
+    if isinstance(exc, artifact_storage.ArtifactStorageError):
+        return f"Artifact storage upload failed: {first}"
     hint = f" {AUTH_HINT}" if _AUTH_WORDS.search(str(exc)) else ""
     return f"Google Drive upload failed: {first}.{hint}"
 
@@ -100,17 +104,19 @@ def _link(file):
 def _ensure_folder(name, parent):
     found = _gws(["drive", "files", "list", "--params", json.dumps({
         "q": f"name = '{_q(name)}' and '{_q(parent)}' in parents and mimeType = '{FOLDER_MIME}' and trashed = false",
-        "orderBy": "createdTime", "fields": "files(id)", "pageSize": 1})]).get("files", [])
+        "orderBy": "createdTime", "fields": "files(id)", "pageSize": 1,
+        "supportsAllDrives": True, "includeItemsFromAllDrives": True, "corpora": "allDrives"})]).get("files", [])
     if found:
         return found[0]["id"]
-    return _gws(["drive", "files", "create", "--params", json.dumps({"fields": "id"}), "--json",
+    return _gws(["drive", "files", "create", "--params", json.dumps({"fields": "id", "supportsAllDrives": True}), "--json",
                  json.dumps({"name": name, "mimeType": FOLDER_MIME, "parents": [parent]})])["id"]
 
 
 def _find_existing(key):
     files = _gws(["drive", "files", "list", "--params", json.dumps({
         "q": f"appProperties has {{ key='{KEY_PROP}' and value='{_q(key)}' }} and trashed = false",
-        "orderBy": "createdTime", "fields": "files(id,name,webViewLink,parents)", "pageSize": 5})]).get("files", [])
+        "orderBy": "createdTime", "fields": "files(id,name,webViewLink,parents)", "pageSize": 5,
+        "supportsAllDrives": True, "includeItemsFromAllDrives": True, "corpora": "allDrives"})]).get("files", [])
     return files[0] if files else None  # oldest wins if a past race ever left two
 
 
@@ -128,7 +134,31 @@ def upload_resume(rid, n, fmt, job=None):
     job = job or resume_store.get(rid, with_markdown=False)["job"]
     key, name = resume_key(rid, n, fmt), drive_file_name(rid, n, fmt, job)
 
-    log.info("Drive upload started", extra=ctx)
+    try:
+        selected_backend = artifact_storage.backend()
+    except artifact_storage.ArtifactStorageError as exc:
+        raise DriveUploadError(_explain(exc)) from exc
+    log.info("Resume artifact upload started" if selected_backend == "gcs" else "Drive upload started",
+             extra=ctx)
+    if selected_backend == "gcs":
+        try:
+            object_key = artifact_storage.resume_object_key(rid, n, name, folder_name(job))
+            url = artifact_storage.public_url(object_key)
+            version = next((v for v in resume_store.get(rid, with_markdown=False)["versions"]
+                            if int(v["n"]) == int(n)), {})
+            md_sha1 = ((version.get("artifacts") or {}).get(fmt) or {}).get("md_sha1", "")
+            result = artifact_storage.upload_file(
+                path, object_key, content_type=MIME[fmt],
+                metadata={"resume_key": key, "resume_id": rid, "version": n, "format": fmt,
+                          "md_sha1": md_sha1, "company": job.get("company", ""),
+                          "job_title": job.get("title", "")})
+        except artifact_storage.ArtifactStorageError as exc:
+            raise DriveUploadError(_explain(exc)) from exc
+        log.info("Resume artifact stored", extra={**ctx, "backend": "gcs", "reused": result["reused"]})
+        return {"file_id": object_key, "url": url, "name": name,
+                "folder_id": f"generated_resumes/{rid}/v{int(n)}", "reused": result["reused"],
+                "backend": "gcs", "key": object_key}
+
     with _lock:
         last = None
         for attempt in range(1, ATTEMPTS + 1):
@@ -141,7 +171,7 @@ def upload_resume(rid, n, fmt, job=None):
                             "folder_id": (existing.get("parents") or [None])[0], "reused": True}
                 folder_id = _ensure_folder(folder_name(job), _parent_id())
                 created = _gws(["drive", "files", "create", "--params",
-                                json.dumps({"fields": "id,name,webViewLink,parents"}), "--json",
+                                json.dumps({"fields": "id,name,webViewLink,parents", "supportsAllDrives": True}), "--json",
                                 json.dumps({"name": name, "parents": [folder_id], "appProperties": {KEY_PROP: key}}),
                                 "--upload", path.name, "--upload-content-type", MIME[fmt]],
                                cwd=str(path.parent.resolve()))
@@ -167,12 +197,25 @@ def upload_and_record(rid, n, fmt):
     """upload_resume + remember the outcome on the resume (success or failure) so the UI and the
     tracker can tell 'in Drive' from 'not in Drive'. Re-raises DriveUploadError."""
     try:
+        selected_backend = artifact_storage.backend()
+    except artifact_storage.ArtifactStorageError as exc:
+        raise DriveUploadError(_explain(exc)) from exc
+    try:
         out = upload_resume(rid, n, fmt)
     except DriveUploadError as e:
-        resume_store.mark_drive(rid, n, fmt, {"status": "failed", "error": str(e), "at": _now()})
+        failed = {"status": "failed", "error": str(e), "at": _now()}
+        if selected_backend == "gcs":
+            resume_store.mark_storage(rid, n, fmt, {**failed, "backend": "gcs"})
+        else:
+            resume_store.mark_drive(rid, n, fmt, failed)
         raise
-    resume_store.mark_drive(rid, n, fmt, {"status": "uploaded", "file_id": out["file_id"], "url": out["url"],
-                                          "name": out["name"], "at": _now()})
+    info = {"status": "uploaded", "backend": out.get("backend", "drive"), "file_id": out["file_id"],
+            "url": out["url"], "name": out["name"], "at": _now()}
+    if selected_backend == "gcs":
+        info["key"] = out["key"]
+        resume_store.mark_storage(rid, n, fmt, info)
+    else:
+        resume_store.mark_drive(rid, n, fmt, info)
     return out
 
 

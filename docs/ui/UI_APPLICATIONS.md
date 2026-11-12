@@ -10,19 +10,30 @@ A clean list of everything in the tracker (the Google Sheet) and where each appl
   client-side search (role / company), a “Sort by” select (`sort-select`) and a “Rows per page” select
   (`page-size-select`). The controls wrap on narrow screens.
 - Result count above the table (`role="status"`): “Showing 1–10 of 88 applications”, or “7 applications” on a single page.
-- Table: Role (bold) · Company · Fit (score badge) · Status (inline select) · Resume (Drive link or “—”) · Date
+- Table: page-scoped Select All checkbox · per-row selection checkbox · Role (bold) · Company · Fit (score badge) ·
+  Status (inline select) · Suitability (inline select) · Resume (authenticated GCS link, historical Drive link, local file, or “—”) · Date
   (the application/log date, Sheet column G `timestamp`, as `MM/DD/YYYY` — e.g. 2026-01-05 → `01/05/2026`; never relative;
-  “—” when missing or invalid) · Source · open-posting icon. `formatDateMMDDYYYY()` in `trackerView.js` parses the
+  “—” when missing or invalid) · Source · Open · individual Delete. `formatDateMMDDYYYY()` in `trackerView.js` parses the
   value (ISO dates as UTC calendar dates, so no timezone shift; impossible dates like 2026-02-30 are invalid) and is
   display-only — the date sorts compare `rowTime()`.
+- Bulk action bar above the table: selected count and Delete Selected (disabled when empty). The confirmation states
+  how many records will be removed and warns that deletion is permanent and limited to tracker rows; resumes, job
+  artifacts, interviews, and unrelated applications remain.
 - Pager below the table (`nav.pager`, only when there is more than one page): Previous · page numbers · Next.
 
 ## Statuses
 Exactly: Not Applied, Applied, Interviewing, Offer, Rejected. No others.
 
 ## Data
-`GET /api/tracker?status=`; status change `PATCH /api/tracker/status {link, status}` (safe update + toast).
-Tracker offline → error state with Retry; stale cache → warning notice; not configured → “No tracker sheet yet…”.
+`GET /api/tracker?status=&suitability=`; status change `PATCH /api/tracker/status {link, status}` and suitability
+change `PATCH /api/tracker/suitability {link, suitability}` (safe update + toast).
+Single delete is `DELETE /api/tracker/{key}`. Bulk deletion is `POST /api/tracker/bulk-delete {ids: [key, ...]}`;
+keys are stable 12-character hashes of canonical job links, never row positions. The API returns per-ID status and
+deleted/failed counts; selections remain across pages, but are reconciled away when search or filters hide records.
+Successful deletion refreshes the tracker and invalidates its cached snapshot. Deletion never removes resume files or
+job-source history.
+Tracker offline → error state with Retry; stale cache → warning notice; missing `google_sheet_id` →
+“Tracker spreadsheet ID is not configured” with instructions to set it in local or protected Modal settings.
 
 ## Sort
 Sort (client-side, `web/js/lib/trackerView.js`, over the rows already loaded — no refetch, never a status write):
@@ -48,9 +59,9 @@ The pager and the “Rows per page” select are shared with Find Jobs (`web/js/
 
 ## Google Sheet link
 - The link is `tracker.sheet_url` from `GET /api/tracker`, built server-side (`tracker_service.Tracker.sheet_url`) from the
-  sheet id the tracker already uses (`google_sheet_id`, else the id found by name) -- no extra `gws` call, no credentials.
+  configured existing `google_sheet_id` -- no extra `gws` call, no credentials.
   The UI opens it in a new tab only if it is an https `docs.google.com/spreadsheets/d/…` URL (`sheetHref`); otherwise it
-  shows “Google Sheets link is not configured.” Nothing is shown while loading or when no tracker sheet exists yet.
+  shows “Google Sheets link is not configured.” Nothing is shown while loading or when the configured spreadsheet ID is missing.
 
 ## Empty state
 “No applications yet — Save a job from Find Jobs, or generate a tailored resume and save it to the tracker.” with a

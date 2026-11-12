@@ -62,6 +62,12 @@ code { font-family: var(--font-mono); font-size: .92em; }
 ::selection { background: var(--primary-soft); }
 .muted { color: var(--muted); } .small { font-size: var(--fs-caption); } .nowrap { white-space: nowrap; } .prewrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .error-text { color: var(--red); } .icon { flex: none; }
+.google-health-list { display: grid; gap: 10px; }
+.google-health-item { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; align-items: center; }
+.google-health-item small { grid-column: 1 / -1; }
+.health-ok { color: var(--green); font-size: 12px; text-transform: capitalize; }
+.health-error { color: var(--red); font-size: 12px; text-transform: capitalize; }
+.health-neutral { color: var(--muted); font-size: 12px; text-transform: capitalize; }
 .skip-link { position: absolute; left: var(--s-3); top: -60px; z-index: 300; padding: var(--s-2) var(--s-3); border-radius: var(--r-md);
   background: var(--primary); color: var(--on-primary); font-weight: 600; text-decoration: none; transition: top var(--dur) var(--ease); }
 .skip-link:focus { top: var(--s-3); }
@@ -184,6 +190,8 @@ select.input { appearance: auto; padding-right: var(--s-2); }
 .pager-pages { display: flex; align-items: center; gap: var(--s-1); flex-wrap: wrap; }
 .page-btn { min-width: 32px; padding: 0 var(--s-2); } .pager-gap { min-width: 20px; text-align: center; color: var(--muted); }
 .result-count { font-size: var(--fs-caption); color: var(--muted); margin-bottom: var(--s-2); }
+.bulk-delete-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); margin-bottom: var(--s-2); }
+.bulk-delete-count { color: var(--muted); font-size: var(--fs-caption); font-variant-numeric: tabular-nums; }
 
 /* ============================== states ============================== */
 .state { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: var(--s-8) var(--s-4); color: var(--muted); }
@@ -275,6 +283,10 @@ select.input { appearance: auto; padding-right: var(--s-2); }
 .table th { text-align: left; font-size: var(--fs-meta); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
   height: 36px; padding: 0 var(--s-3); background: var(--surface-2); border-bottom: 1px solid var(--border); white-space: nowrap; }
 .table td { height: 48px; padding: 6px var(--s-3); border-bottom: 1px solid var(--border); vertical-align: middle; color: var(--text-2); }
+.table th.selection-cell, .table td.selection-cell { width: 40px; min-width: 40px; padding: 0 var(--s-3); text-align: center; }
+.selection-checkbox { width: 16px; height: 16px; margin: 0; accent-color: var(--primary); cursor: pointer; vertical-align: middle; }
+.selection-checkbox:disabled { cursor: default; }
+.selection-checkbox:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .table tbody tr { transition: background var(--dur-fast); } .table tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
 .table tr:last-child td { border-bottom: 0; }
 .cell-title { font-weight: 600; min-width: 170px; max-width: 300px; color: var(--text) !important; }
@@ -282,6 +294,9 @@ select.input { appearance: auto; padding-right: var(--s-2); }
 .cell-title .link-btn:hover { color: var(--primary); text-decoration: none; }
 .cell-sub { display: block; font-weight: 400; font-size: var(--fs-caption); color: var(--muted); }
 .row-actions { display: flex; align-items: center; gap: var(--s-1); flex-wrap: nowrap; white-space: nowrap; }
+.table th.application-actions-header, .table td.application-row-actions { min-width: 172px; text-align: right; }
+.application-row-actions { justify-content: flex-end; }
+.application-open-slot { width: 74px; flex: 0 0 74px; display: flex; align-items: center; justify-content: flex-start; }
 .status-select { min-width: 124px; }
 .status-cell { display: flex; flex-direction: column; gap: 2px; }
 .status-note { font-style: italic; }

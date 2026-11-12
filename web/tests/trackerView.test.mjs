@@ -19,7 +19,7 @@ const { applicationsPage, sheetAction } = await import('../js/pages/applications
 const FAKE_SHEET = 'https://docs.google.com/spreadsheets/d/FAKE_sheet_id_0123456789/edit';
 
 const row = (n, over = {}) => ({
-  row: n, key: `abcdef12345${n}`, title: `Role ${n}`, company: `Company ${n}`, link: `https://example.com/jobs/${n}`, score: '8',
+  row: n, key: String(n).padStart(12, '0'), title: `Role ${n}`, company: `Company ${n}`, link: `https://example.com/jobs/${n}`, score: '8',
   resume_path: '', status: 'Not Applied', timestamp: '2026-09-01', company_notes: '', source: 'LinkedIn',
   status_updated: '', ...over,
 });
@@ -149,14 +149,30 @@ const ROWS = [
   row(6, { title: 'Undated open', company: 'Alpha', status: 'Not Applied', timestamp: '', score: '9' }),
 ];
 
-function fakeServer({ rows = ROWS, tracker = {} } = {}) {
+function fakeServer({ rows = ROWS, tracker = {}, bulkDelete } = {}) {
   const calls = [];
+  let currentRows = [...rows];
   globalThis.fetch = async (url, init = {}) => {
-    calls.push({ url, method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : undefined });
-    if ((init.method || 'GET') === 'PATCH' || init.method === 'DELETE') return { ok: true, status: 200, json: async () => ({ ok: true }) };
-    const wanted = new URL(url, 'http://x').searchParams.get('status');
+    const method = init.method || 'GET';
+    const body = init.body ? JSON.parse(init.body) : undefined;
+    calls.push({ url, method, body });
+    if (method === 'POST' && url === '/api/tracker/bulk-delete') {
+      const result = bulkDelete ? await bulkDelete(body, currentRows) : {
+        status: 'completed', deleted_count: body.ids.length, failed_count: 0,
+        results: body.ids.map((id) => ({ id, status: 'deleted' })),
+      };
+      const deleted = new Set((result.results || []).filter((item) => item.status === 'deleted').map((item) => item.id));
+      currentRows = currentRows.filter((item) => !deleted.has(item.key));
+      return { ok: true, status: 200, json: async () => result };
+    }
+    if (method === 'PATCH' || method === 'DELETE') return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    const params = new URL(url, 'http://x').searchParams;
+    const wanted = params.get('status');
+    const wantedSuitability = params.get('suitability');
     return { ok: true, status: 200, json: async () => ({
-      rows: rows.filter((r) => !wanted || r.status === wanted), total: rows.length,
+      rows: currentRows.filter((r) => (!wanted || r.status === wanted)
+        && (!wantedSuitability || (r.suitability || 'Not reviewed') === wantedSuitability)),
+      total: currentRows.length,
       tracker: { available: true, error: null, stale: false, configured: true, sheet_url: FAKE_SHEET, ...tracker },
     }) };
   };
@@ -167,6 +183,12 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 const byClass = (root, cls) => root.findAll((e) => (e.attributes.class || '').split(' ').includes(cls));
 const sortSel = (root) => byClass(root, 'sort-select')[0];
 const tableTitles = (root) => byClass(root, 'cell-title').map((td) => td.textContent);
+const rowCheckboxes = (root) => byClass(root, 'selection-checkbox').slice(1);
+const selectAllCheckbox = (root) => byClass(root, 'selection-checkbox')[0];
+const selectedCount = (root) => byClass(root, 'bulk-delete-count')[0]?.textContent;
+const bulkButton = (root) => byClass(root, 'bulk-delete-button')[0];
+const latestDialog = () => document.body.findAll((e) => e.getAttribute('role') === 'dialog').at(-1);
+const dialogButton = (dialog, label) => dialog.find((e) => e.tagName === 'BUTTON' && e.textContent === label);
 async function choose(sel, value) { sel.value = value; await sel.dispatch('change'); }
 
 async function renderPage(page, { storage = memoryStorage(), query = '' } = {}) {
@@ -248,8 +270,217 @@ test('Applications: every row exposes visible Open and Delete actions', async ()
   const actions = byClass(root, 'row-actions');
   assert.equal(actions.length, ROWS.length);
   assert.ok(actions.every((cell) => cell.findAll((e) => e.tagName === 'BUTTON' && e.textContent === 'Delete').length === 1));
+  assert.ok(actions.every((cell) => byClass(cell, 'application-open-slot').length === 1));
   assert.ok(actions.every((cell) => cell.findAll((e) => e.tagName === 'A' && e.textContent === 'Open').length === 1));
   assert.equal(root.findAll((e) => e.tagName === 'TH').at(-1).textContent, 'Actions');
+});
+
+test('Applications: Open keeps its slot when a job link is missing and Delete stays last', async () => {
+  fakeServer({ rows: [
+    row(1, { title: 'A long role title that wraps over several lines', company: 'A company with a longer name', link: 'https://example.com/jobs/1' }),
+    row(2, { title: 'Backend Engineer', company: 'Short Co', link: '' }),
+  ] });
+  const root = await renderPage(applicationsPage);
+  const actions = byClass(root, 'row-actions');
+  assert.equal(actions.length, 2);
+  for (const cell of actions) {
+    const slot = byClass(cell, 'application-open-slot')[0];
+    assert.ok(slot, 'each row reserves the first Open slot');
+    assert.equal(cell.children.at(-1).textContent, 'Delete', 'Delete remains the last action');
+  }
+  const openCounts = actions.map((cell) => byClass(cell, 'application-open-slot')[0].findAll((e) => e.tagName === 'A').length);
+  assert.deepEqual(openCounts.sort(), [0, 1]);
+  const emptySlot = actions.flatMap((cell) => byClass(cell, 'application-open-slot')).find((slot) => !slot.findAll((e) => e.tagName === 'A').length);
+  assert.equal(emptySlot.attributes['aria-hidden'], 'true');
+  assert.equal(bulkButton(root).disabled, true, 'bulk delete remains independently available and initially disabled');
+  const select = rowCheckboxes(root)[1];
+  select.checked = true;
+  await select.dispatch('change');
+  assert.equal(bulkButton(root).disabled, false);
+});
+
+test('Applications: row selection shows a count, supports indeterminate state, and disables an empty bulk action', async () => {
+  fakeServer();
+  const root = await renderPage(applicationsPage);
+  assert.equal(selectedCount(root), '0 selected');
+  assert.equal(bulkButton(root).disabled, true);
+
+  const first = rowCheckboxes(root)[0];
+  first.checked = true;
+  await first.dispatch('change');
+  assert.equal(selectedCount(root), '1 selected');
+  assert.equal(bulkButton(root).disabled, false);
+  assert.equal(selectAllCheckbox(root).checked, false);
+  assert.equal(selectAllCheckbox(root).indeterminate, true);
+
+  const selectAll = selectAllCheckbox(root);
+  selectAll.checked = true;
+  await selectAll.dispatch('change');
+  assert.equal(selectedCount(root), `${ROWS.length} selected`);
+  assert.equal(selectAllCheckbox(root).checked, true);
+  assert.equal(selectAllCheckbox(root).indeterminate, false);
+
+  const clearPage = selectAllCheckbox(root);
+  clearPage.checked = false;
+  await clearPage.dispatch('change');
+  assert.equal(selectedCount(root), '0 selected');
+  assert.equal(bulkButton(root).disabled, true);
+});
+
+test('Applications: Select All applies only to the current page and selection persists across pagination', async () => {
+  fakeServer({ rows: Array.from({ length: 12 }, (_, i) => row(i + 1)) });
+  const root = await renderPage(applicationsPage);
+  const selectFirstPage = selectAllCheckbox(root);
+  selectFirstPage.checked = true;
+  await selectFirstPage.dispatch('change');
+  assert.equal(selectedCount(root), '10 selected');
+
+  await root.find((e) => e.getAttribute('data-page-nav') === 'next').dispatch('click');
+  assert.equal(selectedCount(root), '10 selected');
+  assert.equal(selectAllCheckbox(root).checked, false);
+  const selectLastPage = selectAllCheckbox(root);
+  selectLastPage.checked = true;
+  await selectLastPage.dispatch('change');
+  assert.equal(selectedCount(root), '12 selected');
+
+  await root.find((e) => e.getAttribute('data-page-nav') === 'prev').dispatch('click');
+  assert.equal(selectAllCheckbox(root).checked, true);
+  assert.equal(selectedCount(root), '12 selected');
+});
+
+test('Applications: changing search reconciles selections that become hidden', async () => {
+  fakeServer({ rows: [row(1, { title: 'Keep me' }), row(2, { title: 'Other role' })] });
+  const root = await renderPage(applicationsPage);
+  const selected = rowCheckboxes(root)[1];
+  selected.checked = true;
+  await selected.dispatch('change');
+  assert.equal(selectedCount(root), '1 selected');
+
+  const search = root.find((e) => e.tagName === 'INPUT' && e.attributes.type === 'search');
+  await search.dispatch('input', { target: { value: 'Other role' } });
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert.equal(selectedCount(root), '0 selected');
+  assert.equal(bulkButton(root).disabled, true);
+  assert.deepEqual(tableTitles(root), ['Other role']);
+});
+
+test('Applications: status and suitability filter changes start without stale selections', async () => {
+  const rows = [
+    row(1, { title: 'Shortlist applied', status: 'Applied', suitability: 'Shortlist' }),
+    row(2, { title: 'Unreviewed open', status: 'Not Applied', suitability: 'Not reviewed' }),
+  ];
+  fakeServer({ rows });
+
+  const allRoot = await renderPage(applicationsPage);
+  const selectUnreviewed = rowCheckboxes(allRoot)[1];
+  selectUnreviewed.checked = true;
+  await selectUnreviewed.dispatch('change');
+  assert.equal(selectedCount(allRoot), '1 selected');
+
+  const statusRoot = await renderPage(applicationsPage, { query: 'status=Applied' });
+  assert.deepEqual(tableTitles(statusRoot), ['Shortlist applied']);
+  assert.equal(selectedCount(statusRoot), '0 selected');
+  assert.equal(bulkButton(statusRoot).disabled, true);
+
+  const suitabilityRoot = await renderPage(applicationsPage, { query: 'suitability=Shortlist' });
+  assert.deepEqual(tableTitles(suitabilityRoot), ['Shortlist applied']);
+  assert.equal(selectedCount(suitabilityRoot), '0 selected');
+  assert.equal(bulkButton(suitabilityRoot).disabled, true);
+});
+
+test('Applications: bulk delete confirmation reports scope and cancel sends no request', async () => {
+  const calls = fakeServer();
+  const root = await renderPage(applicationsPage);
+  const selected = rowCheckboxes(root)[0];
+  selected.checked = true;
+  await selected.dispatch('change');
+
+  const opening = bulkButton(root).dispatch('click');
+  await settle();
+  const dialog = latestDialog();
+  assert.match(dialog.textContent, /Delete 1 application/);
+  assert.match(dialog.textContent, /cannot be undone/);
+  assert.match(dialog.textContent, /Generated resumes.*will not be deleted/);
+  await dialogButton(dialog, 'Cancel').dispatch('click');
+  await opening;
+  assert.equal(calls.filter((call) => call.url === '/api/tracker/bulk-delete').length, 0);
+  assert.equal(selectedCount(root), '1 selected');
+  assert.equal(bulkButton(root).disabled, false);
+});
+
+test('Applications: confirmed bulk delete posts IDs once, clears selection, and refreshes rows', async () => {
+  const calls = fakeServer();
+  const root = await renderPage(applicationsPage);
+  const selected = rowCheckboxes(root)[0];
+  selected.checked = true;
+  await selected.dispatch('change');
+  const expectedId = String(5).padStart(12, '0'); // newest application in ROWS
+
+  const opening = bulkButton(root).dispatch('click');
+  await settle();
+  await dialogButton(latestDialog(), 'Delete 1').dispatch('click');
+  await opening;
+  const posts = calls.filter((call) => call.url === '/api/tracker/bulk-delete');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].body, { ids: [expectedId] });
+  await settle();
+  assert.equal(calls.filter((call) => call.method === 'GET').length, 2);
+  assert.deepEqual(tableTitles(root).sort(), ROWS.filter((item) => item.key !== expectedId).map((item) => item.title).sort());
+  assert.equal(selectedCount(root), '0 selected');
+});
+
+test('Applications: partial bulk failure is shown and failed rows remain selected', async () => {
+  const calls = fakeServer({ bulkDelete: async ({ ids }) => ({
+    status: 'partial', deleted_count: 1, failed_count: 1,
+    results: [
+      { id: ids[0], status: 'deleted' },
+      { id: ids[1], status: 'failed', code: 'tracker_conflict', message: 'Tracker row is ambiguous' },
+    ],
+  }) });
+  const root = await renderPage(applicationsPage);
+  for (const checkbox of rowCheckboxes(root).slice(0, 2)) {
+    checkbox.checked = true;
+    await checkbox.dispatch('change');
+  }
+  const opening = bulkButton(root).dispatch('click');
+  await settle();
+  await dialogButton(latestDialog(), 'Delete 2').dispatch('click');
+  await opening;
+  await settle();
+
+  assert.equal(calls.filter((call) => call.url === '/api/tracker/bulk-delete').length, 1);
+  assert.equal(selectedCount(root), '1 selected');
+  assert.equal(tableTitles(root).length, ROWS.length - 1);
+  const toast = document.body.findAll((element) => (element.attributes.class || '').includes('toast-')).at(-1);
+  assert.match(toast.textContent, /1 deleted; 1 failed.*Tracker row is ambiguous/);
+});
+
+test('Applications: duplicate bulk submission is blocked while the request is running', async () => {
+  let release;
+  let started;
+  const waiting = new Promise((resolve) => { started = resolve; });
+  const calls = fakeServer({ bulkDelete: async ({ ids }) => new Promise((resolve) => {
+    release = () => resolve({
+      status: 'completed', deleted_count: ids.length, failed_count: 0,
+      results: ids.map((id) => ({ id, status: 'deleted' })),
+    });
+    started();
+  }) });
+  const root = await renderPage(applicationsPage);
+  const selected = rowCheckboxes(root)[0];
+  selected.checked = true;
+  await selected.dispatch('change');
+  const opening = bulkButton(root).dispatch('click');
+  await settle();
+  await dialogButton(latestDialog(), 'Delete 1').dispatch('click');
+  await waiting;
+
+  assert.equal(bulkButton(root).disabled, true);
+  await bulkButton(root).dispatch('click');
+  assert.equal(calls.filter((call) => call.url === '/api/tracker/bulk-delete').length, 1);
+  release();
+  await opening;
+  assert.equal(calls.filter((call) => call.url === '/api/tracker/bulk-delete').length, 1);
 });
 
 // ---- DATE column (MM/DD/YYYY) -----------------------------------------------------------------
@@ -303,7 +534,7 @@ test('Applications: the column is headed Date (shown uppercase) and cells are MM
     row(4, { title: 'Undated', timestamp: '' }), row(5, { title: 'US', timestamp: '9/2/2026' })] });
   const root = await renderPage(applicationsPage);
   const heads = root.findAll((e) => e.tagName === 'TH').map((th) => th.textContent);
-  assert.deepEqual(heads, ['Role', 'Company', 'Fit', 'Status', 'Suitability', 'Resume', 'Date', 'Source', 'Actions']);
+  assert.deepEqual(heads, ['', 'Role', 'Company', 'Fit', 'Status', 'Suitability', 'Resume', 'Date', 'Source', 'Actions']);
   assert.ok(!heads.includes('Logged'));
   const dates = byClass(root, 'cell-date').map((td) => td.textContent);
   assert.deepEqual(dates, [`${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(0, 4)}`, '09/02/2026', '01/05/2026', '—']);

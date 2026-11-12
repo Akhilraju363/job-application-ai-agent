@@ -164,9 +164,9 @@ def _local_rows():
 
 
 def _spreadsheet_id():
-    sid = os.environ.get("google_sheet_id", "").strip() or write_sheet.find_sheet_by_title()
+    sid = os.environ.get("google_sheet_id", "").strip()
     if not sid:
-        raise StorageError("The configured Google spreadsheet could not be found")
+        raise StorageError("google_sheet_id must identify the existing tracker spreadsheet")
     return sid
 
 

@@ -270,6 +270,11 @@ def _env(*names):
     return any(os.environ.get(n, "").strip() for n in names)
 
 
+def _enabled_env(name, default=False):
+    value = os.environ.get(name)
+    return str(value).strip().lower() in ("1", "true", "yes", "on") if value is not None else default
+
+
 def sources():
     """Job sources + the services the pipeline depends on. Booleans and non-secret labels
     only -- never a key, token, id or credential."""
@@ -289,7 +294,10 @@ def sources():
          and not llm.IS_LOCAL},
         {"id": "ollama", "name": "Local (Ollama)", "active": llm.IS_LOCAL},
         {"id": "sheets", "name": "Google Sheets", "active": _env("google_sheet_id")},
-        {"id": "drive", "name": "Google Drive", "active": _env("google_drive_folder_id")},
+        {"id": "drive", "name": "Historical Google Drive artifacts",
+         "active": _env("google_drive_folder_id") and _enabled_env("HISTORICAL_DRIVE_ARTIFACTS", True)},
+        {"id": "artifact_storage", "name": "Resume artifact storage",
+         "active": os.environ.get("ARTIFACT_STORAGE_BACKEND", "").strip().lower() == "gcs" and _env("GCS_BUCKET")},
         {"id": "telegram", "name": "Telegram alerts", "active": _env("TELEGRAM_BOT_TOKEN")
          and _env("TELEGRAM_CHAT_ID")},
     ]

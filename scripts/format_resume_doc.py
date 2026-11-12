@@ -12,6 +12,10 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import google_auth  # noqa: E402
 
 
 def _resolve_gws():
@@ -37,9 +41,10 @@ def gws(*args):
     # encoding="utf-8" is required: gws (a Node CLI) always writes UTF-8 stdout, but
     # text=True alone decodes using the OS locale encoding -- cp1252 on this Windows
     # setup, which crashes on any non-ASCII output (accented names, em dashes, (R), etc).
-    result = subprocess.run([*GWS_CMD, *args], capture_output=True, text=True, encoding="utf-8")
+    result = subprocess.run([*GWS_CMD, *args], capture_output=True, text=True, encoding="utf-8",
+                            env=google_auth.configure_environment())
     if result.returncode != 0:
-        raise RuntimeError(f"gws {' '.join(args)} failed: {result.stderr}")
+        raise RuntimeError(f"GWS operation failed: {google_auth.safe_gws_error(result.stderr or result.stdout)}")
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 

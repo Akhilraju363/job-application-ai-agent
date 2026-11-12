@@ -89,6 +89,9 @@ class MasterSource(unittest.TestCase):
 
 
 class FixedHeader(unittest.TestCase):
+    def test_master_resume_keeps_the_approved_name_header(self):
+        self.assertEqual(MASTER.splitlines()[0], NAME)
+
     def test_header_is_the_master_header_for_every_role(self):
         for title in ("Java Developer", "Python Developer", "Full Stack Developer", "Chief Blockchain Ninja"):
             # even a model that swaps the headline for the job title gets the master header back

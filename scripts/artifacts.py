@@ -1,12 +1,11 @@
-"""Best-effort Google Drive mirror for the pipeline's stage artifacts.
+"""Configured remote mirror for the pipeline's stage artifacts.
 
 Why this exists: the daily Modal run and a local recovery run are different
 machines. Modal's ``output/`` directory is thrown away when the container exits,
 so a Modal run that fails partway leaves nothing on local disk for an Ollama
 recovery run to resume from. This module mirrors the three stage artifacts --
 ``output/raw_jobs.json``, ``output/scored_jobs.json``, ``output/tailored_jobs.json``
--- to a ``pipeline-artifacts`` subfolder of the Drive folder in
-``google_drive_folder_id``:
+-- to a date-stamped ``pipeline-artifacts`` location in the configured artifact backend:
 
     pull(name): copy the Drive copy over output/<name> when Drive's copy is newer
                 (or the local file is missing). Never clobbers local work that is
@@ -17,10 +16,8 @@ The Drive copy is date-stamped (``scored_jobs-2026-09-06.json``) so a fresh dail
 run and a recovery of an earlier day never collide. The date defaults to today;
 set ``PIPELINE_DATE=YYYY-MM-DD`` to recover a specific earlier day's run.
 
-Everything here is best-effort. With ``google_drive_folder_id`` unset,
-``artifact_sync=0``, or ``gws`` unusable (a local box with no Google auth), every
-call prints one line to stderr and returns -- the pipeline still runs against
-whatever is already in ``output/``.
+The legacy Drive backend remains best-effort. GCS errors propagate so a configured but
+unavailable recovery store cannot be mistaken for a successful pipeline run.
 
 Source-of-truth rule: when both the Drive copy and a local copy changed since the
 last sync, the newer mtime wins. In this pipeline the only writer of these files
@@ -34,6 +31,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import logging_config as lc
+import google_auth
+import artifact_storage
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = ROOT / "output"
@@ -67,9 +66,9 @@ _state = {"checked": False, "folder_id": None, "file_ids": {}}
 
 def _run(args, cwd=None):
     result = subprocess.run([*_GWS, *args], capture_output=True, text=True,
-                            encoding="utf-8", cwd=cwd)
+                            encoding="utf-8", cwd=cwd, env=google_auth.configure_environment())
     if result.returncode != 0:
-        raise RuntimeError(f"gws {' '.join(args)} failed: {result.stderr.strip()}")
+        raise RuntimeError(f"GWS Drive operation failed: {google_auth.safe_gws_error(result.stderr or result.stdout)}")
     return result.stdout
 
 
@@ -81,6 +80,10 @@ def _json(args, cwd=None):
 def _remote_name(name):
     stem, _, suffix = name.rpartition(".")
     return f"{stem}-{_RUN_DATE}.{suffix}"
+
+
+def _gcs_key(name):
+    return artifact_storage.pipeline_object_key(_remote_name(name))
 
 
 def _parse_rfc3339(value):
@@ -122,12 +125,13 @@ def _folder_id():
         query = (f"name = '{SUBFOLDER_NAME}' and '{_PARENT_ID}' in parents and "
                  "mimeType = 'application/vnd.google-apps.folder' and trashed = false")
         found = _json(["drive", "files", "list", "--params",
-                       json.dumps({"q": query, "fields": "files(id)"})]).get("files", [])
+                       json.dumps({"q": query, "fields": "files(id)", "supportsAllDrives": True,
+                                   "includeItemsFromAllDrives": True, "corpora": "allDrives"})]).get("files", [])
         if found:
             _state["folder_id"] = found[0]["id"]
         else:
             _state["folder_id"] = _json(["drive", "files", "create", "--params",
-                                         json.dumps({"fields": "id"}), "--json",
+                                         json.dumps({"fields": "id", "supportsAllDrives": True}), "--json",
                                          json.dumps({"name": SUBFOLDER_NAME,
                                                      "mimeType": "application/vnd.google-apps.folder",
                                                      "parents": [_PARENT_ID]})])["id"]
@@ -145,7 +149,8 @@ def _remote_meta(name):
     query = f"name = '{remote_name}' and '{folder_id}' in parents and trashed = false"
     files = _json(["drive", "files", "list", "--params",
                    json.dumps({"q": query, "fields": "files(id,modifiedTime)",
-                               "orderBy": "modifiedTime desc"})]).get("files", [])
+                               "orderBy": "modifiedTime desc", "supportsAllDrives": True,
+                               "includeItemsFromAllDrives": True, "corpora": "allDrives"})]).get("files", [])
     if not files:
         return None
     _state["file_ids"][name] = files[0]["id"]
@@ -153,7 +158,31 @@ def _remote_meta(name):
 
 
 def pull(name):
-    """Best-effort: refresh output/<name> from the Drive copy when Drive is ahead."""
+    """Refresh output/<name> from the configured remote copy when it is ahead."""
+    if _DISABLED:
+        return
+    if artifact_storage.backend() == "gcs":
+        key = _gcs_key(name)
+        meta = artifact_storage.object_metadata(key)
+        if not meta:
+            return
+        remote_time = meta["updated"].isoformat()
+        sidecar = _load_sidecar()
+        if sidecar.get(name) == remote_time:
+            return
+        local = OUTPUT_DIR / name
+        if local.exists() and name not in sidecar:
+            local_dt = datetime.fromtimestamp(local.stat().st_mtime, tz=timezone.utc)
+            remote_dt = meta["updated"]
+            if (remote_dt - local_dt).total_seconds() < _PULL_GRACE_SECONDS:
+                return
+        content = artifact_storage.download_bytes(key)
+        OUTPUT_DIR.mkdir(exist_ok=True)
+        local.write_bytes(content)
+        sidecar[name] = remote_time
+        _save_sidecar(sidecar)
+        _note(f"pulled {name} from GCS ({_remote_name(name)})")
+        return
     try:
         meta = _remote_meta(name)
     except Exception as e:  # noqa: BLE001
@@ -190,9 +219,28 @@ def pull(name):
 
 
 def push(name):
-    """Best-effort: upload output/<name>, replacing the date-stamped Drive copy."""
+    """Upload output/<name>, replacing the date-stamped object in the configured backend."""
+    if _DISABLED:
+        return
     local = OUTPUT_DIR / name
     if not local.exists():
+        return
+    if artifact_storage.backend() == "gcs":
+        key = _gcs_key(name)
+        artifact_storage.upload_file(local, key, content_type="application/json",
+                                     metadata={"artifact_name": name, "run_date": _RUN_DATE})
+        meta = artifact_storage.object_metadata(key)
+        if meta:
+            sidecar = _load_sidecar()
+            remote_time = meta["updated"].isoformat()
+            sidecar[name] = remote_time
+            _save_sidecar(sidecar)
+            try:
+                ts = meta["updated"].timestamp()
+                os.utime(local, (ts, ts))
+            except OSError:
+                pass
+        _note(f"pushed {name} to GCS ({_remote_name(name)})")
         return
     folder_id = _folder_id()
     if not folder_id:
@@ -206,12 +254,12 @@ def push(name):
             file_id = meta["id"] if meta else None
         if file_id:
             result = _json(["drive", "files", "update", "--params",
-                            json.dumps({"fileId": file_id, "fields": "id,modifiedTime"}),
+                            json.dumps({"fileId": file_id, "fields": "id,modifiedTime", "supportsAllDrives": True}),
                             "--upload", name, "--upload-content-type", "application/json"],
                            cwd=OUTPUT_DIR)
         else:
             result = _json(["drive", "files", "create", "--params",
-                            json.dumps({"fields": "id,modifiedTime"}), "--json",
+                            json.dumps({"fields": "id,modifiedTime", "supportsAllDrives": True}), "--json",
                             json.dumps({"name": remote_name, "parents": [folder_id]}),
                             "--upload", name, "--upload-content-type", "application/json"],
                            cwd=OUTPUT_DIR)
