@@ -13,9 +13,8 @@ from pathlib import Path
 
 
 ENV_CREDENTIALS = "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"
-SERVICE_ACCOUNT_JSON_ENV = "GOOGLE_SERVICE_ACCOUNT_JSON"
+LEGACY_SERVICE_ACCOUNT_JSON_ENV = "GOOGLE_SERVICE_ACCOUNT_JSON"
 _CONFIG_DIR_ENV = "GOOGLE_WORKSPACE_CLI_CONFIG_DIR"
-_KNOWN_TYPES = {"service_account", "authorized_user"}
 _ISOLATED_CONFIG_DIR = None
 
 
@@ -35,8 +34,10 @@ def configure_environment(env=None):
     env = dict(os.environ if env is None else env)
     path = (env.get(ENV_CREDENTIALS) or "").strip()
     auth_mode = (env.get("GOOGLE_AUTH_MODE") or "").strip().lower()
-    if auth_mode == "service_account" and not path:
-        raise GoogleAuthError("missing_credentials", "Service-account credential file is not configured")
+    if auth_mode and auth_mode != "oauth":
+        raise GoogleAuthError("unsupported_identity", "Personal Google Drive and Sheets require OAuth credentials")
+    if (env.get(LEGACY_SERVICE_ACCOUNT_JSON_ENV) or "").strip():
+        raise GoogleAuthError("unsupported_identity", "Service-account credentials are not supported; use personal OAuth")
     if not path:
         return env
     credential_path = Path(path).expanduser()
@@ -47,15 +48,10 @@ def configure_environment(env=None):
     except (OSError, UnicodeError, json.JSONDecodeError):
         raise GoogleAuthError("invalid_credentials", "Configured Google credential file is not valid JSON") from None
     kind = data.get("type") if isinstance(data, dict) else None
-    if kind not in _KNOWN_TYPES:
-        raise GoogleAuthError("invalid_credentials", "Google credential type must be service_account or authorized_user")
-    if auth_mode and auth_mode != kind:
-        raise GoogleAuthError("invalid_credentials", "GOOGLE_AUTH_MODE does not match the selected credential type")
-    if kind == "service_account" and not all(isinstance(data.get(k), str) and data[k].strip()
-                                               for k in ("client_email", "private_key", "token_uri")):
-        raise GoogleAuthError("invalid_credentials", "Service-account credential JSON is missing required fields")
-    if kind == "authorized_user" and not all(isinstance(data.get(k), str) and data[k].strip()
-                                               for k in ("client_id", "client_secret", "refresh_token")):
+    if kind != "authorized_user":
+        raise GoogleAuthError("unsupported_identity", "Google credentials must be authorized_user OAuth credentials")
+    if not all(isinstance(data.get(k), str) and data[k].strip()
+               for k in ("client_id", "client_secret", "refresh_token")):
         raise GoogleAuthError("invalid_credentials", "OAuth credential JSON is missing required fields")
     env[ENV_CREDENTIALS] = str(credential_path.resolve())
     env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
@@ -65,25 +61,8 @@ def configure_environment(env=None):
             _ISOLATED_CONFIG_DIR = tempfile.mkdtemp(prefix="gws-explicit-auth-")
         env[_CONFIG_DIR_ENV] = _ISOLATED_CONFIG_DIR
     env.pop("GOOGLE_WORKSPACE_CLI_TOKEN", None)
+    env.pop(LEGACY_SERVICE_ACCOUNT_JSON_ENV, None)
     return env
-
-
-def is_service_account(env=None):
-    """Identify explicit service-account selection without exposing credential content."""
-    env = os.environ if env is None else env
-    mode = (env.get("GOOGLE_AUTH_MODE") or "").strip().lower()
-    if mode:
-        return mode == "service_account"
-    if (env.get(SERVICE_ACCOUNT_JSON_ENV) or "").strip():
-        return True
-    path = (env.get(ENV_CREDENTIALS) or "").strip()
-    if not path:
-        return False
-    try:
-        data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return False
-    return isinstance(data, dict) and data.get("type") == "service_account"
 
 
 def credentials_path(env=None):
@@ -95,7 +74,7 @@ def credentials_path(env=None):
 
 def classify_error(message):
     text = str(message).lower()
-    if "not configured" in text or "required for gcs" in text:
+    if "not configured" in text or "is required for personal google drive" in text:
         return "missing_configuration"
     if "no credentials" in text or "not signed in" in text or "run `gws auth login`" in text:
         return "missing_credentials"
@@ -131,18 +110,20 @@ def safe_gws_error(exc):
 def actionable_error(category):
     return {
         "missing_credentials": "Set GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE or complete the existing GWS OAuth login.",
-        "missing_configuration": "Configure the selected artifact backend, bucket, and HTTPS dashboard URL.",
-        "unsupported_storage": "Service accounts cannot create files in personal My Drive; use private GCS for new artifacts or explicitly selected OAuth Drive compatibility.",
-        "permission_denied": "Grant this identity access to the configured spreadsheet and, in GCS mode, the private bucket.",
-        "insufficient_scopes": "Refresh OAuth credentials with Sheets and Drive scopes, or select service-account credentials.",
+        "missing_configuration": "Set google_sheet_id and google_drive_folder_id in the protected Modal settings.",
+        "unsupported_identity": "Use authorized-user OAuth credentials for personal Google Drive and Sheets.",
+        "permission_denied": "Grant the selected Google account access to the configured spreadsheet and Drive folder.",
+        "insufficient_scopes": "Refresh OAuth credentials with Drive, Docs, and Sheets scopes.",
         "api_not_enabled": "Enable the Google Sheets or Drive API in the credential project's Google Cloud project.",
-        "invalid_credentials": "Google credentials could not be used; verify the selected credential configuration and rotate if needed.",
+        "invalid_credentials": "Google rejected the OAuth refresh grant (often a revoked/expired token or OAuth client mismatch). "
+                              "Reauthorize with the intended client and Drive, Docs, and Sheets scopes, then update the "
+                              "protected Modal OAuth secret; code cannot repair a rejected refresh token.",
         "network_error": "Google could not be reached; check network access and retry.",
         "storage_unavailable": "Google storage could not complete the read-only check; inspect local service logs.",
     }.get(category, "Google service is unavailable; check its configuration and permissions.")
 
 
-def health_check(run_gws, environ=None, check_gcs=None):
+def health_check(run_gws, environ=None):
     """Read-only checks for the configured tracker and selected artifact storage."""
     env = os.environ if environ is None else environ
     result = {
@@ -184,42 +165,27 @@ def health_check(run_gws, environ=None, check_gcs=None):
 
     try:
         import artifact_storage
-        storage_backend = artifact_storage.backend(env)
+        artifact_storage.backend(env)
     except Exception as exc:
         result["artifact_storage"] = {
             "status": "unavailable", "category": getattr(exc, "category", "missing_configuration"),
             "message": str(exc)}
         return result
 
-    if storage_backend == "gcs":
-        try:
-            artifact_storage.check_configuration(env)
-            (check_gcs or artifact_storage.check_bucket)()
-            result["artifact_storage"] = {"status": "available", "category": None,
-                                          "message": "Configured GCS bucket is readable"}
-        except Exception as exc:
-            category = classify_error(exc)
-            result["artifact_storage"] = {"status": "unavailable", "category": category,
-                                          "message": actionable_error(category)}
-    else:
+    try:
+        artifact_storage.check_configuration(env)
         parent = (env.get("google_drive_folder_id") or "").strip()
-        if not parent:
-            result["drive"] = result["artifact_storage"] = {
-                "status": "unavailable", "category": "missing_configuration",
-                "message": "google_drive_folder_id is required for the legacy Drive backend"}
-        else:
-            try:
-                run_gws("drive", "files", "get", "--params", json.dumps({
-                    "fileId": parent, "fields": "id,mimeType", "supportsAllDrives": True}))
-                result["drive"] = {"status": "available", "category": None,
-                                   "message": "Configured legacy Drive parent is readable"}
-                result["artifact_storage"] = {"status": "available", "category": None,
-                                              "message": "Legacy Drive artifact storage is readable"}
-            except Exception as exc:
-                category = classify_error(exc)
-                msg = actionable_error(category)
-                result["drive"] = result["artifact_storage"] = {
-                    "status": "unavailable", "category": category, "message": msg}
+        run_gws("drive", "files", "get", "--params", json.dumps({
+            "fileId": parent, "fields": "id,mimeType", "supportsAllDrives": True}))
+        result["drive"] = {"status": "available", "category": None,
+                           "message": "Configured personal Drive folder is readable"}
+        result["artifact_storage"] = {"status": "available", "category": None,
+                                      "message": "Personal Google Drive artifact storage is readable"}
+    except Exception as exc:
+        category = classify_error(exc)
+        msg = actionable_error(category)
+        result["drive"] = result["artifact_storage"] = {
+            "status": "unavailable", "category": category, "message": msg}
     return result
 
 

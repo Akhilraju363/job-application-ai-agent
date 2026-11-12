@@ -1,25 +1,24 @@
-"""Configured remote mirror for the pipeline's stage artifacts.
+"""Best-effort Google Drive mirror for the pipeline's stage artifacts.
 
 Why this exists: the daily Modal run and a local recovery run are different
 machines. Modal's ``output/`` directory is thrown away when the container exits,
 so a Modal run that fails partway leaves nothing on local disk for an Ollama
 recovery run to resume from. This module mirrors the three stage artifacts --
 ``output/raw_jobs.json``, ``output/scored_jobs.json``, ``output/tailored_jobs.json``
--- to a date-stamped ``pipeline-artifacts`` location in the configured artifact backend:
+-- to a date-stamped ``pipeline-artifacts`` folder under ``google_drive_folder_id``:
 
-    pull(name): copy the Drive copy over output/<name> when Drive's copy is newer
+    pull(name): copy the remote copy over output/<name> when it is newer
                 (or the local file is missing). Never clobbers local work that is
-                ahead of Drive.
-    push(name): upload output/<name>, replacing the Drive copy.
+                ahead of the remote copy.
+    push(name): upload output/<name>, replacing the remote copy.
 
-The Drive copy is date-stamped (``scored_jobs-2026-09-06.json``) so a fresh daily
+The remote copy is date-stamped (``scored_jobs-2026-09-06.json``) so a fresh daily
 run and a recovery of an earlier day never collide. The date defaults to today;
 set ``PIPELINE_DATE=YYYY-MM-DD`` to recover a specific earlier day's run.
 
-The legacy Drive backend remains best-effort. GCS errors propagate so a configured but
-unavailable recovery store cannot be mistaken for a successful pipeline run.
+Drive sync is best-effort; unavailable Drive sync leaves the local output untouched.
 
-Source-of-truth rule: when both the Drive copy and a local copy changed since the
+Source-of-truth rule: when both the remote copy and a local copy changed since the
 last sync, the newer mtime wins. In this pipeline the only writer of these files
 is the pipeline itself, so that resolves correctly.
 """
@@ -80,10 +79,6 @@ def _json(args, cwd=None):
 def _remote_name(name):
     stem, _, suffix = name.rpartition(".")
     return f"{stem}-{_RUN_DATE}.{suffix}"
-
-
-def _gcs_key(name):
-    return artifact_storage.pipeline_object_key(_remote_name(name))
 
 
 def _parse_rfc3339(value):
@@ -158,31 +153,10 @@ def _remote_meta(name):
 
 
 def pull(name):
-    """Refresh output/<name> from the configured remote copy when it is ahead."""
+    """Refresh output/<name> from its date-stamped Drive copy when it is ahead."""
     if _DISABLED:
         return
-    if artifact_storage.backend() == "gcs":
-        key = _gcs_key(name)
-        meta = artifact_storage.object_metadata(key)
-        if not meta:
-            return
-        remote_time = meta["updated"].isoformat()
-        sidecar = _load_sidecar()
-        if sidecar.get(name) == remote_time:
-            return
-        local = OUTPUT_DIR / name
-        if local.exists() and name not in sidecar:
-            local_dt = datetime.fromtimestamp(local.stat().st_mtime, tz=timezone.utc)
-            remote_dt = meta["updated"]
-            if (remote_dt - local_dt).total_seconds() < _PULL_GRACE_SECONDS:
-                return
-        content = artifact_storage.download_bytes(key)
-        OUTPUT_DIR.mkdir(exist_ok=True)
-        local.write_bytes(content)
-        sidecar[name] = remote_time
-        _save_sidecar(sidecar)
-        _note(f"pulled {name} from GCS ({_remote_name(name)})")
-        return
+    artifact_storage.backend()
     try:
         meta = _remote_meta(name)
     except Exception as e:  # noqa: BLE001
@@ -198,7 +172,7 @@ def pull(name):
     local = OUTPUT_DIR / name
     if local.exists() and name not in sidecar:
         # Never synced this file here and it already exists locally: only overwrite
-        # if the Drive copy is genuinely newer (protects local-only progress).
+        # if the remote copy is genuinely newer (protects local-only progress).
         local_dt = datetime.fromtimestamp(local.stat().st_mtime, tz=timezone.utc)
         remote_dt = _parse_rfc3339(meta["modifiedTime"])
         if (remote_dt - local_dt).total_seconds() < _PULL_GRACE_SECONDS:
@@ -219,28 +193,12 @@ def pull(name):
 
 
 def push(name):
-    """Upload output/<name>, replacing the date-stamped object in the configured backend."""
+    """Upload output/<name>, replacing its date-stamped Drive copy."""
     if _DISABLED:
         return
+    artifact_storage.backend()
     local = OUTPUT_DIR / name
     if not local.exists():
-        return
-    if artifact_storage.backend() == "gcs":
-        key = _gcs_key(name)
-        artifact_storage.upload_file(local, key, content_type="application/json",
-                                     metadata={"artifact_name": name, "run_date": _RUN_DATE})
-        meta = artifact_storage.object_metadata(key)
-        if meta:
-            sidecar = _load_sidecar()
-            remote_time = meta["updated"].isoformat()
-            sidecar[name] = remote_time
-            _save_sidecar(sidecar)
-            try:
-                ts = meta["updated"].timestamp()
-                os.utime(local, (ts, ts))
-            except OSError:
-                pass
-        _note(f"pushed {name} to GCS ({_remote_name(name)})")
         return
     folder_id = _folder_id()
     if not folder_id:

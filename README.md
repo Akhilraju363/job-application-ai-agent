@@ -49,7 +49,7 @@ step — the rest are logged as rejected but never tailored, never touch the She
 **Prerequisites:**
 - Python 3.12+
 - The [`gws` CLI](https://github.com/googleworkspace/cli) — see [`GWS_SETUP.md`](GWS_SETUP.md) for
-  service-account setup or the explicitly selected legacy OAuth compatibility path
+  personal Google OAuth setup for Drive and Sheets
 - An [Apify](https://apify.com) account (free tier)
 - A [Groq](https://console.groq.com) API key (free, no credit card) — the primary LLM provider.
   Optionally also [OpenRouter](https://openrouter.ai) and/or [Google AI Studio](https://aistudio.google.com/apikey)
@@ -65,8 +65,8 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-`requirements.txt` includes `google-cloud-storage` for private GCS artifacts and `reportlab` plus
-`python-docx` for local PDF/DOCX rendering.
+The application uses only `requests` and `python-dotenv` at runtime; resume PDF/DOCX export is
+handled by Google Docs and the GWS CLI.
 
 **Environment:**
 
@@ -79,12 +79,10 @@ cp .env.example .env
 `google_sheet_id` — set this to the existing master "Job Application Tracker" spreadsheet ID.
 It is required: the app never searches for or creates another spreadsheet.
 
-For service-account storage, set `GOOGLE_AUTH_MODE=service_account`,
-`GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`, `ARTIFACT_STORAGE_BACKEND=gcs`, `GCS_BUCKET`, and
-`ARTIFACT_PUBLIC_BASE_URL` (the stable HTTPS dashboard origin). The bucket stays private; new
-resume URLs go through the authenticated dashboard. `google_drive_folder_id` is unused in GCS
-mode. Existing Drive URLs remain untouched and are not migrated.
-See [`GWS_SETUP.md`](GWS_SETUP.md) for credential setup, read-only validation, and migration/rollback details.
+Set `google_drive_folder_id` to the existing personal Drive folder. Drive and Sheets use the same
+Google OAuth identity through GWS CLI; `ARTIFACT_STORAGE_BACKEND` defaults to `drive`. GCS and
+service-account storage are not supported. Existing Drive files and links are retained without
+migration. See [`GWS_SETUP.md`](GWS_SETUP.md) for secure OAuth setup and Modal secret configuration.
 
 `RESUME_CONTACT_LINE` — your email and location, e.g. `name@example.com | Bengaluru, India`.
 `resume/base_resume.md` is public, so it has no contact details. `scripts/contact.py` adds this
@@ -96,9 +94,9 @@ For Modal, `google_sheet_id` must be provided through the
 persistent `.env`.
 
 Keep `GOOGLE_SHEETS_WRITE_ENABLED=false` while validating access. Run
-`python scripts/google_auth.py` to perform read-only checks against the configured spreadsheet
-and `Jobs!A1:M1`, plus the GCS bucket. Only after the tracker read succeeds should the service
-account be granted edit access and the write opt-in be explicitly enabled.
+`python scripts/google_auth.py` to perform read-only checks against the configured spreadsheet,
+`Jobs!A1:M1`, and the Drive parent folder. All Sheets mutations are blocked—including OAuth
+mutations—until the write opt-in is explicitly enabled.
 
 ### LLM providers (free only)
 
@@ -177,8 +175,8 @@ existing provider chain) -> match against `resume/base_resume.md` in code -> tai
 pipeline's own prompt -> verify -> store. Verification (`scripts/no_fabrication.py`) rejects any
 invented technology, employer, title, date, number or leadership claim, and any technology moved
 between employers. If the model's rewrite fails twice, a reorder-only version of the master resume
-is produced instead (clearly labelled). In GCS mode, PDF/DOCX are rendered locally without
-creating a Google Doc; Markdown remains available. Results live in `output/generated_resumes/`.
+is produced instead (clearly labelled). PDF/DOCX are exported through Google Docs, uploaded to
+personal Drive, and cached locally; Markdown remains available. Results live in `output/generated_resumes/`.
 
 **Entry point:** `tailoring_service.tailor_resume(job_description, job_title, company, job_url, source, job_id, user_id)`
 returns `{status, job, jd_analysis, match_analysis, resume, ats_validation, verification}`; also served at
@@ -206,11 +204,11 @@ Regenerate always creates a new version (v2, v3...). The Sheet gets two extra co
 ## Deploying (daily automatic run)
 
 Configure the existing Modal secrets through the protected Modal secret manager according to
-[`GWS_SETUP.md`](GWS_SETUP.md). For service-account mode, keep `GOOGLE_SHEETS_WRITE_ENABLED=false`
-until the read-only check is confirmed; place `GOOGLE_SERVICE_ACCOUNT_JSON` in the protected
-`gws-credentials` secret and configure private GCS. Do not pass the JSON key on a command line.
-This implementation does not change production secrets or deploy the application. Explicit legacy
-OAuth compatibility remains available only when `GOOGLE_AUTH_MODE=oauth` is selected.
+[`GWS_SETUP.md`](GWS_SETUP.md). The `gws-credentials` secret uses personal OAuth fields
+(`client_id`, `client_secret`, `refresh_token`, `type=authorized_user`); `job-apply-agent-secrets`
+keeps the existing Drive folder and Sheet IDs plus `GOOGLE_SHEETS_WRITE_ENABLED=false`. No
+service-account key or GCS bucket is needed. This implementation does not change production
+secrets or deploy the application.
 
 `GROQ_API_KEY` is the minimum LLM requirement; `OPENROUTER_API_KEY` and `GEMINI_API_KEY` are
 optional extra links in the failover chain. Runs at 7am Asia/Kolkata (IST), Monday–Friday (`0 7 * * 1-5`). See
@@ -254,12 +252,12 @@ modal deploy modal_app.py   # also (re)deploys the daily cron, code unchanged
 
 - **Persistence:** the `job-apply-agent-dashboard` Volume is mounted at `/app/output` (generated
   resumes, activity log, preferences), committed every 30s. The cron does **not** mount it and stays
-  stateless. New PDF/DOCX artifacts live in private GCS; the tracker links to an authenticated
-  dashboard download route. Historical Drive links remain unchanged.
+  stateless. New PDF/DOCX artifacts live in personal Drive; the authenticated dashboard serves its
+  local cache or retrieves the recorded Drive file. Historical Drive links remain unchanged.
 - **One container:** `max_containers=1` with scale-to-zero (`scaledown_window=900`). Background
   tailoring/export tasks are held in memory, so a container restart or redeploy while a task is
-  running loses that task — just re-run it (results already saved to GCS/Sheet are unaffected).
-- **Google access:** the same explicitly selected identity and GCS settings as the cron. See
+  running loses that task — just re-run it (results already saved to Drive/Sheet are unaffected).
+- **Google access:** the same personal OAuth identity and Drive/Sheets settings as the cron. See
   [`GWS_SETUP.md`](GWS_SETUP.md) for read-only validation, the Sheets write opt-in, migration and rollback.
 - Local use is unchanged: `python scripts/dashboard_server.py` on `127.0.0.1:8765`.
 
@@ -388,9 +386,9 @@ python3 scripts/write_sheet.py       # appends only jobs not already in the Shee
 
 To recover an **earlier** day's failed run, set `PIPELINE_DATE=YYYY-MM-DD` in `.env` first.
 
-How it works: with `ARTIFACT_STORAGE_BACKEND=gcs`, every stage mirrors its date-stamped artifact
-to the private bucket's `pipeline-artifacts/` prefix. A local run pulls the newest copy before
-starting and pushes its progress back, so Modal and your laptop share the same state. Jobs are
+How it works: every stage mirrors its date-stamped artifact to the existing Drive
+`pipeline-artifacts/` folder. A local run pulls the newest copy before starting and pushes its
+progress back, so Modal and your laptop share the same state. Jobs are
 identified by their URL throughout, so nothing is scored, tailored, researched, or logged twice —
 every recovery run converges on the same Sheet. Set `artifact_sync=0` to disable the mirror.
 

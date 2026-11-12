@@ -432,7 +432,7 @@ def to_result(rec, version=None):
 
     matching = jd_analysis._clean_list(m["skills"]["required_matched"] + m["skills"]["preferred_matched"]
                                        + m["skills"]["technologies_matched"], 60)
-    drive = v.get("storage") or v.get("drive") or {}
+    drive = v.get("drive") or {}
     uploaded = [drive[f] for f in ("pdf", "docx") if (drive.get(f) or {}).get("status") == "uploaded"]
     failed = [drive[f] for f in ("pdf", "docx") if (drive.get(f) or {}).get("status") == "failed"]
     return {

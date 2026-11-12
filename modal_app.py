@@ -60,7 +60,7 @@ GWS_URL = (
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("curl")
-    .pip_install("requests", "python-dotenv", "google-cloud-storage", "reportlab", "python-docx")
+    .pip_install("requests", "python-dotenv")
     .run_commands(
         f"curl -fsSL {GWS_URL} -o /tmp/gws.tar.gz",
         "tar -xzf /tmp/gws.tar.gz -C /usr/local/bin",
@@ -86,31 +86,16 @@ def materialize_gws_credentials():
     import os
     import tempfile
 
-    auth_mode = os.environ.get("GOOGLE_AUTH_MODE", "service_account").strip().lower()
-    if auth_mode not in ("service_account", "oauth"):
-        raise RuntimeError("GOOGLE_AUTH_MODE must be service_account or oauth")
+    auth_mode = os.environ.get("GOOGLE_AUTH_MODE", "oauth").strip().lower()
+    if auth_mode != "oauth":
+        raise RuntimeError("GOOGLE_AUTH_MODE must be oauth for personal Google Drive and Sheets")
     os.environ["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
-    service_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    if auth_mode == "service_account":
-        if not service_json.strip():
-            raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON is required for service-account mode")
-        try:
-            data = json.loads(service_json)
-        except json.JSONDecodeError:
-            raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON must contain valid JSON") from None
-        if not isinstance(data, dict) or data.get("type") != "service_account":
-            raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON must contain service-account credentials")
-        if not all(isinstance(data.get(k), str) and data[k].strip()
-                   for k in ("client_email", "private_key", "token_uri")):
-            raise RuntimeError("Service-account credentials are missing required fields")
-        credential_json = service_json
-    else:
-        required = ("client_id", "client_secret", "refresh_token", "type")
-        if not all(os.environ.get(k) for k in required):
-            raise RuntimeError("OAuth mode requires client_id, client_secret, refresh_token, and type")
-        if os.environ.get("type") != "authorized_user":
-            raise RuntimeError("OAuth credentials must have type authorized_user")
-        credential_json = json.dumps({k: os.environ[k] for k in required})
+    required = ("client_id", "client_secret", "refresh_token", "type")
+    if not all(os.environ.get(k) for k in required):
+        raise RuntimeError("OAuth mode requires client_id, client_secret, refresh_token, and type")
+    if os.environ.get("type") != "authorized_user":
+        raise RuntimeError("OAuth credentials must have type authorized_user")
+    credential_json = json.dumps({k: os.environ[k] for k in required})
     config_dir = Path(tempfile.mkdtemp(prefix="job-agent-google-")).resolve()
     config_dir.chmod(0o700)
     credential_path = config_dir / "credentials.json"
@@ -119,8 +104,9 @@ def materialize_gws_credentials():
     os.environ["GOOGLE_AUTH_MODE"] = auth_mode
     os.environ["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(credential_path)
     os.environ["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] = str(config_dir / "gws-config")
-    # The file is now the selected source; do not pass the raw secret JSON to child processes.
     os.environ.pop("GOOGLE_SERVICE_ACCOUNT_JSON", None)
+    for key in required:
+        os.environ.pop(key, None)
     return config_dir
 
 
@@ -227,8 +213,7 @@ def run_pipeline(force: bool = False):
                     for key in required if google_status[key]["status"] != "available"]
         if failures:
             raise RuntimeError("Google preflight failed: " + "; ".join(failures))
-        if os.environ.get("GOOGLE_AUTH_MODE") == "service_account" and \
-                os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+        if os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
             raise RuntimeError("Google Sheets read-only preflight passed, but writes remain disabled; "
                                "set GOOGLE_SHEETS_WRITE_ENABLED=true only after verifying the tracker read")
 

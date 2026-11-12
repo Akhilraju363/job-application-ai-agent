@@ -3,9 +3,9 @@
 No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come from the owner's notes and recent work.
 
 ## In progress
-- [x] 2026-11-11 pre-commit audit: enforce the Sheets write gate for interview appends and all mutating GWS Sheets operations; require explicit spreadsheet IDs without Drive lookup; support encoded readable GCS filenames; redact GWS diagnostics; restore the fixed `AKHIL DALALI` master header. Mocked regression coverage added; no live Google or Modal changes.
-- [ ] Run the operator-owned read-only Google health check with the configured service-account credentials; keep
-      `GOOGLE_SHEETS_WRITE_ENABLED=false` until the existing tracker read and permissions are confirmed.
+- [x] 2026-11-11 pre-commit audit: enforce the Sheets write gate for interview appends and all mutating GWS Sheets operations; require explicit spreadsheet IDs without Drive lookup; redact GWS diagnostics; restore the fixed `AKHIL DALALI` master header. Mocked regression coverage added; no live Google or Modal changes. Its GCS filename handling was superseded by the Drive-only restoration below.
+- [ ] Run the operator-owned read-only Google health check with the personal OAuth credentials; keep
+      `GOOGLE_SHEETS_WRITE_ENABLED=false` until the personal OAuth tracker/Drive reads are confirmed.
 - [ ] Review and commit the uncommitted 2026-09-29 work on branch `fix/fixed-resume-header-contact-dedupe`
       (master resume from PDF + export layout, stricter no-fabrication, verified pipeline tailoring, Master Resume editor,
       UI redesign + `docs/ui/`, project docs). Not committed or pushed yet.
@@ -53,6 +53,13 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       owner chose to keep the current order for now.
 
 ## Done
+- [x] 2026-11-12 Fixed Modal artifact backend selection: cloud cron/dashboard default an unset
+      `ARTIFACT_STORAGE_BACKEND` to GCS and reject explicit Drive selection; regression tests prove
+      GCS resume saving makes no GWS calls. No Modal secrets, schedule, or production services changed.
+- [x] 2026-11-12 (supersedes the GCS backend change above) Restored personal Google OAuth for Drive and Sheets;
+      removed GCS code/dependencies and Modal GCS enforcement; restored Drive resume uploads, retrieval, and
+      authenticated dashboard downloads; made the Sheets write gate apply to OAuth. Added mocked OAuth,
+      Drive, backend-selection, download, and write-gate regressions. No secrets, schedule, or production services changed.
 - [x] 2026-11-11 Made resume path components Windows-safe and temporary Drive upload copies OS-temp-scoped; RunLoyal colon case, reserved names, length limits, collision resistance, and cleanup are covered. Focused path (9), resume-role (18), artifact/storage/renderer/Drive tests, and frontend (145) pass. Full Python suite passed: 730 tests; an initial transient `ConnectionAbortedError` in dashboard auth did not recur on the full-suite retry or isolated 81-test run.
 - [x] 2026-11-11 Diagnosed the local bulk-delete 404: the current HTTP dispatcher registers and reaches
       `POST /api/tracker/bulk-delete`; the generic not-found response therefore indicates a stale/different server
@@ -62,12 +69,9 @@ No TODO/FIXME comments exist in the code (checked 2026-09-29); items below come 
       Google Sheets batch update; missing/ambiguous IDs fail per-record, tracker/auth failures fail closed, and no
       resumes, artifacts, interviews, source history, or unrelated rows are deleted. Frontend (144) and full Python
       regression (721) tests pass; no live Sheets/Drive writes or deployment performed.
-- [x] 2026-11-11 Implemented personal-Gmail storage architecture: service-account Sheets with explicit write opt-in and
-      existing-sheet-only access; private GCS for new resume/stage artifacts; authenticated dashboard retrieval;
-      preserved historical Drive URLs; local PDF/DOCX rendering; setup, migration, and rollback documentation.
-      Full backend tests (712), focused storage/auth/dashboard tests (277), and frontend tests (136) pass. Live
-      service-account access remains unverified pending owner-provided credentials; no production secrets, Drive
-      files, or deployment were changed.
+- [x] 2026-11-11 (superseded 2026-11-12) Temporarily implemented service-account Sheets with private GCS storage,
+      authenticated dashboard retrieval, and local PDF/DOCX rendering. Replaced by personal Google OAuth and
+      Drive-only storage per the owner's no-paid-storage requirement.
 - [x] 2026-11-02 Updated shared dashboard password validation to require 8+ characters, an ASCII letter, an ASCII digit,
       and a non-whitespace special character; uppercase remains optional. Creation and reset use the same validator.
 - [x] 2026-11-02 Deployed Modal production app `job-apply-agent` as v34 from `origin/main` commit `30e00a3`;

@@ -11,7 +11,7 @@ Usage (Windows PowerShell):
     python scripts/run_pipeline.py
 
 Same resume-safe artifacts (output/raw_jobs.json -> scored_jobs.json ->
-tailored_jobs.json), same Drive artifact mirror (scripts/artifacts.py), same master
+tailored_jobs.json), same configured remote artifact mirror (scripts/artifacts.py), same master
 "Job Application Tracker" Google Sheet, and the exact same reconciliation guard as the
 cloud path -- imported from modal_app.reconcile_qualified rather than reimplemented, so
 the two paths can't drift. This script only differs in provider and job-limit
@@ -87,8 +87,7 @@ def main():
                     for key in required if google_status[key]["status"] != "available"]
         if failures:
             raise RuntimeError("Google preflight failed: " + "; ".join(failures))
-        if google_auth.is_service_account() and \
-                os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+        if os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
             raise RuntimeError("Google Sheets read-only preflight passed, but writes remain disabled; "
                                "set GOOGLE_SHEETS_WRITE_ENABLED=true only after verifying the tracker read")
 

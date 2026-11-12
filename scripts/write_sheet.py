@@ -86,7 +86,6 @@ def _resolve_gws():
 
 
 GWS_CMD = _resolve_gws()
-_SERVICE_ACCOUNT_SHEETS_READ_VERIFIED = False
 
 
 def is_sheets_write_operation(args):
@@ -106,19 +105,10 @@ def is_sheets_write_operation(args):
 def gws(*args):
     # See format_resume_doc.py's gws() for why encoding="utf-8" is required on Windows.
     is_write = is_sheets_write_operation(args)
-    if (is_write and google_auth.is_service_account() and
+    if (is_write and
             os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on")):
         raise RuntimeError("Google Sheets writes are disabled; verify read-only access, then explicitly set "
                            "GOOGLE_SHEETS_WRITE_ENABLED=true")
-    global _SERVICE_ACCOUNT_SHEETS_READ_VERIFIED
-    if is_write and google_auth.is_service_account() and not _SERVICE_ACCOUNT_SHEETS_READ_VERIFIED:
-        sheet_id = os.environ.get("google_sheet_id", "").strip()
-        if not sheet_id:
-            raise RuntimeError("google_sheet_id must identify the existing tracker spreadsheet")
-        gws("sheets", "spreadsheets", "get", "--params",
-            json.dumps({"spreadsheetId": sheet_id, "fields": "spreadsheetId"}))
-        gws("sheets", "+read", "--spreadsheet", sheet_id, "--range", f"{TRACKER_TAB}!A1:M1")
-        _SERVICE_ACCOUNT_SHEETS_READ_VERIFIED = True
     result = subprocess.run([*GWS_CMD, *args], capture_output=True, text=True, encoding="utf-8",
                             env=google_auth.configure_environment())
     if result.returncode != 0:

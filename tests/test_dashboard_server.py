@@ -8,7 +8,6 @@ import socket
 import tempfile
 import threading
 import time
-from urllib.parse import urlsplit
 import unittest
 from datetime import date
 from pathlib import Path
@@ -21,7 +20,6 @@ import dashboard_data as dd
 import dashboard_server as srv
 import dashboard_tasks as tasks
 import drive_resumes
-import artifact_storage
 import interview_store
 import paths
 import resume_store
@@ -358,41 +356,19 @@ class TailoringEntryPoints(ServerCase):
 
 
 class ResumeActions(ServerCase):
-    def test_private_gcs_route_decodes_url_encoded_resume_filename(self):
-        key = "generated_resumes/0123456789ab/Acme-java-dev/v1/Akhil_C++_C#_Développeur.pdf"
-        with mock.patch.dict(os.environ, {"ARTIFACT_PUBLIC_BASE_URL": "https://agent.example"}):
-            url = artifact_storage.public_url(key)
-        path = urlsplit(url).path
-        with mock.patch.object(artifact_storage, "check_configuration"), \
-                mock.patch.object(artifact_storage, "download_bytes", return_value=b"%PDF-private") as download:
-            status, _, body = self.call("GET", path, raw=True)
-        self.assertEqual((status, body), (200, b"%PDF-private"))
-        download.assert_called_once_with(key)
-
-    def test_private_gcs_artifact_route_serves_inline_content_and_reports_outage(self):
-        key = "generated_resumes/0123456789ab/Acme-java-dev/v1/Jane_Roe_Java_Developer.pdf"
-        path = "/api/artifacts/" + key
-        with mock.patch.object(artifact_storage, "check_configuration"), \
-                mock.patch.object(artifact_storage, "download_bytes", return_value=b"%PDF-private"):
-            status, headers, body = self.call("GET", path, raw=True)
-        self.assertEqual((status, body), (200, b"%PDF-private"))
+    def test_authenticated_download_retrieves_missing_export_from_drive(self):
+        rid = self.make_resume()
+        resume_store.mark_drive(rid, 1, "pdf", {"status": "uploaded", "file_id": "drive-file-id"})
+        with mock.patch.dict(os.environ, auth_env()):
+            status, _, error = self.call("GET", f"/api/resumes/{rid}/download?format=pdf")
+            self.assertEqual(status, 401, error)
+            cookie = self.sign_in()
+            with mock.patch.object(srv.drive_resumes, "download_file", return_value=b"%PDF-from-drive") as download:
+                status, headers, body = self.call(
+                    "GET", f"/api/resumes/{rid}/download?format=pdf", headers={"Cookie": cookie}, raw=True)
+        self.assertEqual((status, body), (200, b"%PDF-from-drive"))
         self.assertEqual(headers["Content-Type"], "application/pdf")
-        self.assertIn("inline;", headers["Content-Disposition"])
-
-        with mock.patch.object(artifact_storage, "check_configuration"), \
-                mock.patch.object(artifact_storage, "download_bytes",
-                                  side_effect=artifact_storage.ArtifactStorageError("bucket unavailable")):
-            status, _, error = self.call("GET", path)
-        self.assertEqual(status, 502)
-        self.assertEqual(error["error"]["code"], "artifact_unavailable")
-
-    def test_private_artifact_route_reports_missing_gcs_configuration(self):
-        path = "/api/artifacts/generated_resumes/0123456789ab/Acme-job/v1/resume.pdf"
-        with mock.patch.object(artifact_storage, "check_configuration",
-                               side_effect=artifact_storage.ArtifactStorageError("GCS is not configured")):
-            status, _, error = self.call("GET", path)
-        self.assertEqual(status, 502)
-        self.assertEqual(error["error"]["code"], "artifact_unavailable")
+        download.assert_called_once_with("drive-file-id")
 
     def test_get_list_and_edit(self):
         rid = self.make_resume()
@@ -877,7 +853,8 @@ class PipelineActionsAndPreferences(ServerCase):
         healthy = {"status": "available", "category": None, "message": "ok"}
         with mock.patch.object(tasks.subprocess, "Popen", self.FakeProc), \
                 mock.patch("google_auth.health_check", return_value={"sheets": healthy,
-                           "artifact_storage": healthy}):
+                           "artifact_storage": healthy}), \
+                mock.patch.dict(os.environ, {"GOOGLE_SHEETS_WRITE_ENABLED": "true"}):
             _, _, a = self.call("POST", "/api/actions/find-jobs", {"mode": "full"})
             self.wait_task(a["task_id"])
         self.assertEqual([Path(c[-1]).name for c in self.FakeProc.commands],

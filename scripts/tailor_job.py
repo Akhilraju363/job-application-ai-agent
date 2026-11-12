@@ -1,4 +1,4 @@
-"""Tailor the resume for each qualifying job and deliver it as a PDF in Google Drive.
+"""Tailor the resume for each qualifying job and deliver it to personal Google Drive.
 
 Automated-path equivalent of .claude/skills/tailor-resume/SKILL.md — same hard rule
 (reorder/reword only, never fabricate) and same validation gate, but driven by the free
@@ -8,9 +8,8 @@ path as the dashboard: JD analysis, tailoring, no-fabrication check, retry, reor
 fallback -- so only verified resumes are exported (verified_resume below).
 
 Reads output/scored_jobs.json (qualified == true), writes output/tailored_jobs.json.
-Requires: google_drive_folder_id (the "Job Applications" parent Drive folder, created
-once during provisioning) plus an LLM endpoint -- open_router_apikey, or the llm_*
-overrides in scripts/llm.py -- in .env.
+Resume exports and uploads use Google Workspace CLI with the selected personal Google OAuth
+identity. The pipeline requires google_drive_folder_id and an LLM endpoint in .env.
 """
 import json
 import os
@@ -186,15 +185,8 @@ def render_markdown(markdown):
 
 
 def export_doc_file(markdown_path, out_path, mime_type="application/pdf"):
-    """Render a resume locally for GCS, or use the legacy Google Docs export for Drive."""
-    if artifact_storage.backend() == "gcs":
-        import resume_renderer
-        with tempfile.TemporaryDirectory() as tmp:
-            render_path = Path(tmp) / "resume.md"
-            render_path.write_text(render_markdown(Path(markdown_path).read_text(encoding="utf-8")),
-                                   encoding="utf-8")
-            resume_renderer.render(render_path, out_path, mime_type)
-        return
+    """Render a resume through Google Docs and export it locally for Drive upload."""
+    artifact_storage.backend()
     if not contact_line():
         log.warning("Exporting a resume without a contact line: RESUME_CONTACT_LINE is not set",
                     extra={"file": Path(out_path).name})

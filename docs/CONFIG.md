@@ -27,16 +27,13 @@ Template: `.env.example`.
 | `artifact_sync` | `.env` | `0` disables stage-artifact mirroring | on |
 | `PIPELINE_DATE` | `.env` | recover an earlier day's artifacts (`YYYY-MM-DD`) | today |
 | `google_sheet_id` | `.env`, `job-apply-agent-secrets` | required ID of the existing tracker spreadsheet used by Jobs and Interviews | missing/empty IDs cause a clear configuration error; never searches Drive |
-| `google_drive_folder_id` | `.env`, `job-apply-agent-secrets` | optional legacy OAuth Drive folder; unused by GCS | never used for service-account uploads |
-| `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` | local environment / `.env`; set by Modal bootstrap | explicit GWS credentials JSON path | service account or authorized-user JSON; isolated GWS cache |
-| `GOOGLE_AUTH_MODE` | local environment / `gws-credentials` Modal secret | explicitly selects `service_account` or `oauth` | Modal defaults to service-account mode; OAuth must be selected explicitly |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | protected `gws-credentials` Modal secret | service-account JSON materialized to a temporary file by Modal | required when auth mode is `service_account` |
-| `GOOGLE_SHEETS_WRITE_ENABLED` | `.env`, `job-apply-agent-secrets` | centralized gate for service-account append, update, clear, create, and batchUpdate operations (including interviews/deletes) | `false` until read access is verified; OAuth mode retains existing behavior |
-| `ARTIFACT_STORAGE_BACKEND` | `.env`, `job-apply-agent-secrets` | `gcs` or legacy `drive` artifact backend | explicitly set `gcs` for service-account mode |
-| `GCS_BUCKET` | `.env`, `job-apply-agent-secrets` | private bucket for resumes and date-stamped pipeline artifacts | required for `gcs` |
-| `ARTIFACT_PUBLIC_BASE_URL` | `.env`, `job-apply-agent-secrets` | stable HTTPS dashboard origin for authenticated GCS links | required for `gcs` |
-| `HISTORICAL_DRIVE_ARTIFACTS` | `.env`, `job-apply-agent-secrets` | allow explicitly selected legacy OAuth Drive artifact storage; does not affect historical links | `true`; no migration or rewriting |
-| Python storage/render dependencies | `requirements.txt` | `google-cloud-storage`, `reportlab`, `python-docx` | install with `pip install -r requirements.txt`; GCS stays private and PDF/DOCX render locally |
+| `google_drive_folder_id` | `.env`, `job-apply-agent-secrets` | existing personal Drive parent for resume uploads and pipeline artifacts | required for Drive storage; files are never migrated or deleted |
+| `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` | local environment / `.env`; set by Modal bootstrap | explicit authorized-user credentials JSON path for GWS | Modal creates a protected temporary file and isolated GWS config |
+| `GOOGLE_AUTH_MODE` | local environment / `gws-credentials` Modal secret | selects personal OAuth | Modal defaults to and requires `oauth` |
+| `GOOGLE_SHEETS_WRITE_ENABLED` | `.env`, `job-apply-agent-secrets` | centralized gate for every Sheets mutation, including OAuth writes and interview/delete operations | `false`; all writes fail closed until explicitly authorized |
+| `ARTIFACT_STORAGE_BACKEND` | `.env`, `job-apply-agent-secrets` | `drive` is the only supported artifact backend | defaults to `drive`; explicit `gcs` is rejected |
+| `client_id`, `client_secret`, `refresh_token`, `type` | `gws-credentials` Modal secret | authorized-user OAuth credential fields for the personal Google identity | set `type=authorized_user`; never log or commit values |
+| Runtime dependencies | `requirements.txt` | `requests`, `python-dotenv` | no GCS or local PDF/DOCX renderer dependency |
 | `RESUME_CONTACT_LINE` | `.env`, `job-apply-agent-secrets` | private contact row added at export (never in the repo) | exports warn / refuse without it |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `.env`, `job-apply-agent-secrets` | failure alerts | optional; the alert is skipped with a warning if unset |
 | `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD_HASH`, `DASHBOARD_ALLOWED_HOSTS` | `job-apply-agent-dashboard-secrets` (or `.env`) | dashboard sign-in + Host check | unset locally = open on loopback only |
@@ -44,7 +41,6 @@ Template: `.env.example`.
 | `MASTER_RESUME_READ_ONLY` | env | disable master-resume saves in the dashboard | Modal (`MODAL_TASK_ID` / `MODAL_IS_REMOTE`) is read-only automatically |
 | `JOB_AGENT_OUTPUT_DIR` | env | override `output/` | tests / hosting |
 | `LOG_LEVEL`, `LOG_DIR`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`, `LOG_TO_FILE` | env | logging (`scripts/logging_config.py`) | INFO, `output/logs`, 10 MB, 5; the cron forces `LOG_TO_FILE=0` |
-| `client_id`, `client_secret`, `refresh_token`, `type` | `gws-credentials` | explicit legacy authorized-user OAuth mode | selected only with `GOOGLE_AUTH_MODE=oauth`; no fallback |
 | `DASHBOARD_TOKEN` | — | legacy (replaced by username/password sign-in) | TODO: confirm it can be removed from any old secret |
 
 ## Modal
@@ -54,7 +50,7 @@ Template: `.env.example`.
 | App | `job-apply-agent` (`modal_app.py`) |
 | Cron function | `run_pipeline` — `modal.Cron("0 7 * * 1-5", timezone="Asia/Kolkata")` = **07:00 IST, Monday–Friday** |
 | Timeouts | outer 21600 s; per step: scrape 600, score 6000, tailor 7200, research 5400, sheet 300 |
-| Cron secrets | `job-apply-agent-secrets`, `gws-credentials` (no Volume; console logs only) |
+| Cron secrets | `job-apply-agent-secrets` (existing Google Sheet/Drive IDs and `GOOGLE_SHEETS_WRITE_ENABLED=false`), `gws-credentials` (personal OAuth fields; no Volume; console logs only) |
 | Dashboard function | `dashboard` web server; cron secrets + `job-apply-agent-dashboard-secrets`; Volume `job-apply-agent-dashboard` at `/app/output`; `max_containers=1`; `scaledown_window=900` |
 | Dashboard URL | `https://akhildalali07--job-apply-agent-dashboard.modal.run` |
 
@@ -68,8 +64,8 @@ Template: `.env.example`.
 ## Verified PDF artifacts
 
 `python scripts/resume_artifacts.py --resume-id <id>` (or `--link <job url>`) publishes the latest verified
-version of a tailored resume as `output/generated_resumes/<id>/v<n>.pdf` (local PDF rendering in GCS
-mode; the legacy OAuth Drive mode retains Google Docs export). Needs `RESUME_CONTACT_LINE` like every
+version of a tailored resume as `output/generated_resumes/<id>/v<n>.pdf` (Google Docs export for personal
+Drive upload). Needs `RESUME_CONTACT_LINE` like every
 export. Idempotent; refuses unverified versions. The pipeline does this automatically for every saved job.
 
 ## Naukri (Auto_job_apply handoff, local only)
@@ -98,7 +94,7 @@ runs out) — per the project owner; TODO: confirm the current plan.
 | B | Company | `company` |
 | C | Job Link | `link` (dedupe key, canonicalised) |
 | D | Fit Score | `score` (1-10) |
-| E | Resume Path | `resume_link` (authenticated dashboard URL for new GCS artifacts; historical Drive URLs are preserved), or `desktop_file` / `resume_path` for old rows |
+| E | Resume Path | `resume_link` (personal Drive `webViewLink`; historical Drive URLs are preserved), or `desktop_file` / `resume_path` for old rows |
 | F | Status | starts `"Not Applied"`; then one of Not Applied, Applied, Interviewing, Offer, Rejected (manual / dashboard) |
 | G | Timestamp | run date |
 | H | Company Notes | `company_notes` |
