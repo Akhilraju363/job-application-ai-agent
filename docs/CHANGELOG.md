@@ -2,6 +2,8 @@
 
 Newest first. One line per change. Entries up to 2026-09-28 come from `git log`; 2026-09-29 entries are uncommitted.
 
+- 2026-11-12 fix(storage): restore personal Google OAuth for Drive and Sheets; remove GCS backend, renderer, dependencies, and Modal enforcement; restore authenticated Drive retrieval; gate OAuth Sheets writes; add regression tests and secure OAuth setup guidance
+- 2026-11-12 fix(storage): default Modal artifact storage to GCS and reject explicit Drive backend selection; add regressions for GCS resume uploads without GWS calls
 - 2026-11-11 fix(storage): centralize service-account Sheets mutation gating (including Interviews), require explicit spreadsheet IDs without Drive lookup, encode and validate GCS resume filenames with `+`/`#`/Unicode support, redact GWS diagnostics, and restore the approved master-resume name header
 
 - 2026-11-11 fix(resume): use OS-managed temporary directories for Drive upload copies; sanitize local resume path components for Windows invalid/reserved names and long/colliding company-role combinations

@@ -53,7 +53,6 @@ import dashboard_auth as da  # noqa: E402
 import dashboard_data as dd  # noqa: E402
 import dashboard_tasks as tasks  # noqa: E402
 import drive_resumes  # noqa: E402
-import artifact_storage  # noqa: E402
 import google_auth  # noqa: E402
 import jd_analysis  # noqa: E402
 import log_reader  # noqa: E402
@@ -301,20 +300,6 @@ def google_health(req):
     return google_auth.health_check(write_sheet.gws)
 
 
-@route("GET", "/api/artifacts/(?P<key>generated_resumes/[0-9a-f]{12}/[A-Za-z0-9_-]+/v[1-9][0-9]*/(?:[A-Za-z0-9_.-]|%[0-9A-Fa-f]{2})+\\.(?:pdf|docx))")
-def artifact_download(req):
-    """Serve private GCS resume artifacts through the dashboard's authenticated session."""
-    try:
-        artifact_storage.check_configuration()
-        key = artifact_storage.decode_resume_object_key(req.params["key"])
-        body = artifact_storage.download_bytes(key)
-    except artifact_storage.ArtifactStorageError:
-        logger.exception("Private artifact retrieval failed")
-        raise ApiError(502, "Resume artifact is temporarily unavailable", "artifact_unavailable") from None
-    content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
-    return FileResponse(body, content_type, Path(key).name, disposition="inline")
-
-
 # ---------------------------------------------------------------------------
 # jobs (Find Jobs)
 # ---------------------------------------------------------------------------
@@ -515,7 +500,7 @@ def resume_export(req):
 
 
 def _export_local(rid, n, fmt):
-    """Markdown -> Google Doc -> local v<n>.<fmt> (the dashboard download + the file Drive gets)."""
+    """Render Markdown to local v<n>.<fmt> for dashboard download and artifact upload."""
     import tailor_job  # gws + Docs export shared with the Drive pipeline
 
     ctx = {"resume_id": rid, "version": n, "format": fmt}
@@ -530,10 +515,7 @@ def _export_local(rid, n, fmt):
     except Exception as e:  # noqa: BLE001 -- gws missing / not signed in / Docs API error
         tailoring_log.error("Resume export failed", exc_info=True, extra=ctx)
         detail = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
-        backend = artifact_storage.backend()
-        hint = ("Check that local resume renderer dependencies are installed."
-                if backend == "gcs" else
-                "Check that the Google Workspace CLI (gws) is signed in, or download the Markdown.")
+        hint = "Check that the Google Workspace CLI (gws) OAuth identity has Docs and Drive access, or download the Markdown."
         raise RuntimeError(f"{'PDF' if fmt == 'pdf' else 'DOCX'} generation failed: {detail}. {hint}") from e
     resume_store.mark_export(rid, n, fmt)
     tailoring_log.info(f"{fmt.upper()} export completed", extra=ctx)
@@ -557,7 +539,7 @@ def resume_download(req):
     if fmt != "md":
         _require_ok(v)
     path = resume_store.version_path(meta["id"], v["n"], fmt)
-    if not path.exists():
+    if fmt == "md" and not path.exists():
         raise ApiError(404, "That file hasn't been exported yet", "not_exported")
     ctype = {"md": "text/markdown; charset=utf-8", **EXPORT_FORMATS}[fmt]
     if fmt == "md":
@@ -570,8 +552,18 @@ def resume_download(req):
     if fmt == "md":
         import tailor_job  # same fixed header + contact line as the PDF/DOCX exports
         body = tailor_job.render_markdown(path.read_text(encoding="utf-8")).encode("utf-8")
-    else:
+    elif path.exists():
         body = path.read_bytes()
+    else:
+        stored = ((v.get("drive") or {}).get(fmt) or {})
+        if stored.get("status") != "uploaded" or not stored.get("file_id"):
+            raise ApiError(404, "That file hasn't been exported or saved to Drive yet", "not_exported")
+        try:
+            body = drive_resumes.download_file(stored["file_id"])
+        except drive_resumes.DriveUploadError:
+            logger.exception("Google Drive resume retrieval failed",
+                             extra={"resume_id": meta["id"], "version": v["n"], "format": fmt})
+            raise ApiError(502, "Resume is temporarily unavailable", "artifact_unavailable") from None
     return FileResponse(body, ctype, _safe_filename(meta, v, fmt))
 
 

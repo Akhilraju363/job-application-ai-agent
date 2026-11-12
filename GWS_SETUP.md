@@ -1,137 +1,83 @@
-# Google Workspace authentication and storage
+# Google Workspace OAuth and personal Drive storage
 
-The tracker uses GWS CLI 0.22.5 with an explicitly selected Google identity. New artifacts use
-private Google Cloud Storage (GCS), not personal Google Drive. OAuth remains an opt-in compatibility
-path for existing Drive storage only. Explicit credentials use an isolated GWS config directory;
-an invalid service-account configuration never falls back to OAuth.
+The pipeline uses one personal Google OAuth identity through GWS CLI for Google Drive and Google
+Sheets. Generated PDF/DOCX resumes and pipeline recovery artifacts are stored in the existing
+personal Drive folder. No service account, GCS bucket, or paid cloud storage is required.
 
-## Dependency map
+## Google OAuth credential setup
 
-| Flow | Implementation | Google resource |
-|---|---|---|
-| Job tracker reads/writes | `scripts/write_sheet.py`, `scripts/tracker_service.py` | Existing spreadsheet ID, `Jobs!A:M` |
-| Interview records | `scripts/interview_store.py` | `Interviews` tab in the same spreadsheet |
-| Resume uploads and pipeline mirror | `scripts/artifact_storage.py`, `scripts/drive_resumes.py`, `scripts/artifacts.py` | Private GCS bucket; Drive only in explicit legacy mode |
-| Resume download | `scripts/dashboard_server.py` | Authenticated dashboard proxy to private GCS objects |
-| Dashboard status | `scripts/google_auth.py`, `/api/health/google` | Read-only tracker range and GCS bucket checks |
-| Credential selection | `scripts/google_auth.py`, `modal_app.py` | `GOOGLE_AUTH_MODE`, `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` |
-
-## Service-account setup
-
-1. Enable the Google Sheets API and Cloud Storage API in a Google Cloud project, create a service
-   account, and issue a key through your approved key-management process. Never put the JSON in
-   this repository or print it.
-2. Share the **existing tracker spreadsheet** directly with the service-account email as a Viewer
-   first. Keep its spreadsheet ID and tabs unchanged. Project IAM roles do not grant access to a
-   spreadsheet shared with a different Google identity.
-3. Configure the local identity and storage settings:
+1. Use the existing Google Cloud OAuth project/client that owns the personal OAuth grant. In the
+   Google Cloud Console, confirm the OAuth client is a **Desktop app**, your Google account is an
+   allowed test user if the consent screen is in Testing, and the Drive, Docs, and Sheets APIs are
+   enabled. No GCS bucket or service-account key is needed.
+2. On a trusted local machine with the `gws` CLI installed, authorize the account with the scopes
+   the application uses:
 
    ```powershell
-   $env:GOOGLE_AUTH_MODE = 'service_account'
-   $env:GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE = 'C:\secure\job-agent-service-account.json'
-   $env:google_sheet_id = '<existing tracker spreadsheet id>'
-   $env:ARTIFACT_STORAGE_BACKEND = 'gcs'
-   $env:GCS_BUCKET = '<private bucket name>'
-   $env:ARTIFACT_PUBLIC_BASE_URL = 'https://<stable dashboard host>'
-   $env:GOOGLE_SHEETS_WRITE_ENABLED = 'false'
+   gws auth login -s drive,docs,sheets
    ```
 
-   `.env` may also contain these settings, but the JSON key itself must stay outside the repository.
-   Do not set a Drive parent for GCS mode.
-4. With writes disabled, run `python scripts/google_auth.py` or check **Google Service Health**
-   in the dashboard. This reads the configured spreadsheet metadata and `Jobs!A1:M1`, then checks
-   GCS access; it does not create, rename, or modify anything. Confirm Sheets and artifact storage
-   report `available` before explicitly setting `GOOGLE_SHEETS_WRITE_ENABLED=true`.
+   Complete the browser consent flow as the personal Google account that can access both the
+   existing Drive folder and tracker spreadsheet.
+3. Export the authorized-user credentials directly to a protected local file. Do not send the
+   output to a terminal, chat, source control, or an unprotected location:
 
-The centralized write classifier in `write_sheet.gws` gates Sheets append, value updates/clears,
-spreadsheet creation, and every `spreadsheets.batchUpdate` request (including interview appends,
-row deletion, and worksheet changes). Before the first service-account write in each process, the
-code repeats the read-only spreadsheet and `Jobs!A1:M1` checks. A failed read blocks the write.
-Read-only calls continue to work while writes are disabled. OAuth mode keeps its existing behavior.
-`google_sheet_id` is mandatory; the app never finds or creates a replacement sheet.
+   ```powershell
+   gws auth export --unmasked > "$env:USERPROFILE\gws-authorized-user.json"
+   ```
 
-Interviews use the existing `Interviews` worksheet in that exact configured spreadsheet. The
-application will not search Drive when `google_sheet_id` is missing or empty.
+   The export should contain `type=authorized_user` and the `client_id`, `client_secret`, and
+   `refresh_token` fields. Confirm only the field names and `type`; never print or log their values.
+   Store the file securely and delete temporary copies after securely configuring the Modal secret.
+4. For a local read-only preflight, set `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` to that file and
+   `GOOGLE_AUTH_MODE=oauth`, then run `python scripts/google_auth.py`. This makes read-only calls
+   against the configured spreadsheet and Drive parent folder; it does not upload, create, update,
+   or delete files or rows. Keep `GOOGLE_SHEETS_WRITE_ENABLED=false`.
 
-## Private GCS artifacts and historical Drive links
+### OAuth `invalid_grant`
 
-The service account never creates files or folders in personal Google Drive; personal Gmail does
-not provide the Shared Drive membership option. GCS stores new resume
-exports and pipeline recovery snapshots with private objects, stable filenames, per-resume object
-prefixes, and resume metadata. Resume PDF/DOCX exports are rendered locally; the GCS path does not
-create a temporary Google Doc.
+`invalid_grant` means Google rejected the refresh grant. From that error alone it is not possible
+to tell whether the refresh token was revoked/expired, the OAuth client changed, or the credentials
+do not belong together. The application reports safe reauthorization guidance and never logs token
+values. If Google rejects the refresh token, code cannot repair it: repeat the browser authorization
+and export a fresh authorized-user credential file, then replace the protected Modal credentials.
+If the OAuth app is still in Testing, check Google's current refresh-token lifetime policy for
+testing apps; an authorized token can expire even if the application code is unchanged.
 
-Set `ARTIFACT_STORAGE_BACKEND=gcs`, `GCS_BUCKET`, and `ARTIFACT_PUBLIC_BASE_URL` (the stable HTTPS
-dashboard origin). Keep the bucket private and grant the service account the minimum bucket/object
-permissions needed to read metadata and create, read, and update objects. The health check verifies
-configuration and bucket access without uploading or modifying any object.
+## Modal secrets
 
-The tracker stores an authenticated dashboard URL for a new GCS artifact. The dashboard streams
-the private object only to a signed-in session; it does not issue public or expiring GCS URLs.
-Therefore `ARTIFACT_PUBLIC_BASE_URL` must be the same stable dashboard host users can sign in to.
+Use the protected Modal secret manager; do not put credential values in this repository, command
+history, deployment arguments, or chat. Do not change the schedule, deploy, or enable Sheets writes
+as part of credential rotation.
 
-Existing Drive URLs in the tracker and old `tailored_jobs.json` records are left unchanged and are
-not migrated, rewritten, copied, or deleted. Their existing Drive targets remain directly usable.
-`google_drive_folder_id` is not used in GCS mode. The optional legacy backend
-`ARTIFACT_STORAGE_BACKEND=drive` is only for an explicitly selected authorized-user OAuth identity
-and requires `HISTORICAL_DRIVE_ARTIFACTS=true`; service-account credentials are rejected for Drive
-uploads. Do not select this mode for personal My Drive with a service account.
+| Secret | Required settings |
+|---|---|
+| `gws-credentials` | `GOOGLE_AUTH_MODE=oauth`, `client_id`, `client_secret`, `refresh_token`, `type=authorized_user` |
+| `job-apply-agent-secrets` | Existing `google_sheet_id`, `google_drive_folder_id`, `ARTIFACT_STORAGE_BACKEND=drive` (or unset), and `GOOGLE_SHEETS_WRITE_ENABLED=false`; retain existing LLM, Apify, contact, and alert settings |
+| `job-apply-agent-dashboard-secrets` | Keep existing `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD_HASH`, and `DASHBOARD_ALLOWED_HOSTS` unchanged |
 
-`artifact_sync=0` disables stage-artifact mirroring. Otherwise, GCS storage errors are surfaced and
-fail the pipeline rather than being treated as a successful recovery.
-Resume filenames retain readable role names, including `+`, `#`, spaces, and Unicode. Dashboard
-links URL-encode these characters and validate the decoded key before accessing the private object;
-path separators and traversal components remain rejected.
+`modal_app.py` materializes the four OAuth fields from `gws-credentials` into a temporary,
+permission-restricted credential file at process startup and points GWS at an isolated config
+directory. `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` is generated internally; do not set it in the
+secret. `GOOGLE_SERVICE_ACCOUNT_JSON`, `GCS_BUCKET`, `ARTIFACT_PUBLIC_BASE_URL`, and
+`HISTORICAL_DRIVE_ARTIFACTS` are obsolete and can be removed from Modal configuration after the
+code change is reviewed. Keep `GOOGLE_SHEETS_WRITE_ENABLED=false` until the owner explicitly
+authorizes spreadsheet mutations.
 
-Service-account Sheets writes are initially disabled. After the read-only tracker check passes and
-you verify the service account has edit access, set `GOOGLE_SHEETS_WRITE_ENABLED=true`. Tracker
-updates and interview CRUD share this spreadsheet and both require this explicit opt-in.
+## Storage and compatibility
 
-## Modal setup
+- New resumes are exported through Google Docs, uploaded to the configured personal Drive folder,
+  and linked with the Drive `webViewLink`. Uploads are idempotent by resume id, version, and format.
+- The authenticated dashboard serves its local cached export and, if that file is absent, retrieves
+  the recorded Drive file using the same OAuth identity.
+- Pipeline stage JSON artifacts use the existing Drive `pipeline-artifacts` folder. Disable this
+  optional mirror with `artifact_sync=0`.
+- Existing Drive files and links are not migrated, rewritten, deleted, or recreated. Historical
+  Drive URLs in the tracker remain direct Drive links.
+- Explicit `ARTIFACT_STORAGE_BACKEND=gcs` is rejected. There is no GCS fallback or GCS dependency.
+- Google Sheets access uses the same GWS OAuth identity, but the centralized write gate blocks all
+  Sheets mutations—including OAuth mutations—unless `GOOGLE_SHEETS_WRITE_ENABLED=true`.
 
-The Modal functions continue to reference existing secrets; this change does not create, update,
-or deploy any production secret. Before an operator-approved rollout, configure
-`GOOGLE_AUTH_MODE=service_account`, add `GOOGLE_SERVICE_ACCOUNT_JSON` to the protected credentials
-secret, and configure `ARTIFACT_STORAGE_BACKEND=gcs`, `GCS_BUCKET`, `ARTIFACT_PUBLIC_BASE_URL`,
-`google_sheet_id`, and `GOOGLE_SHEETS_WRITE_ENABLED=false` in the appropriate protected settings.
-At startup, the app validates the credential type, writes it to a temporary directory outside the
-repository with restrictive permissions where supported, and selects it explicitly. Never put the
-JSON in image files, source control, logs, or deployment artifacts.
-
-To explicitly select OAuth compatibility, set `GOOGLE_AUTH_MODE=oauth`; the existing `client_id`,
-`client_secret`, `refresh_token`, and `type` fields remain available. The Modal bootstrap never
-switches between these modes implicitly. Service-account mode without service-account JSON fails
-closed instead of attempting an old OAuth refresh token.
-
-## OAuth migration and rollback
-
-- Local read-only rollout: keep `GOOGLE_SHEETS_WRITE_ENABLED=false`, run the health check, confirm
-  the exact spreadsheet and bucket, then explicitly enable writes only after the owner approves.
-- Before any GCS URL is written to the Sheet, rollback is to keep writes disabled and restore the
-  prior application release/configuration; leave GCS objects and historical Drive files untouched.
-- After a GCS URL is written to the Sheet, do **not** roll back to code that lacks the authenticated
-  `/api/artifacts/` retrieval route. Keep the route, service-account read access, bucket, and stable
-  dashboard host available so those URLs continue working. Turning off writes does not require
-  changing or migrating any stored URL.
-- OAuth is never an automatic fallback. An operator may explicitly select the legacy Drive backend
-  only before enabling a service account, using a valid authorized-user credential and an accessible
-  Drive folder. Do not select service-account uploads to personal My Drive.
-- Credential rotation: issue a replacement key through the organization’s approved process,
-  update the protected local file or Modal secret, verify health, then revoke the old key. Never
-  print the JSON as a verification step.
-
-## Troubleshooting
-
-The dashboard status endpoint distinguishes missing/invalid credentials, insufficient scopes,
-disabled APIs, permission denial, network errors, and unavailable storage. For `permission_denied`,
-share the exact spreadsheet with the selected service-account email and grant the required bucket
-permissions in GCS mode. In legacy OAuth Drive mode, grant the authorized user access to the
-configured Drive parent. For `insufficient_scopes`, the selected OAuth credentials need Sheets and
-Drive scopes; a service account does not use user OAuth scopes. Interviews use a worksheet in the
-tracker spreadsheet and are checked independently, so a missing `Interviews` tab is reported
-separately from general Sheets access.
-
-The pipeline performs read-only Sheets and configured artifact-storage checks before scraping or
-tailoring, and stops if the required services are unavailable or the service-account Sheet write
-opt-in remains disabled. Health checks do not create files, write spreadsheet cells, or upload
-objects.
+The Modal schedule remains `0 7 * * 1-5` in `Asia/Kolkata`. Do not deploy until the OAuth secret has
+been updated securely, the read-only health check succeeds, the write gate has been explicitly
+authorized if needed, and the local changes have been reviewed.

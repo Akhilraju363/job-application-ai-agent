@@ -11,7 +11,7 @@ A clean list of everything in the tracker (the Google Sheet) and where each appl
   (`page-size-select`). The controls wrap on narrow screens.
 - Result count above the table (`role="status"`): “Showing 1–10 of 88 applications”, or “7 applications” on a single page.
 - Table: page-scoped Select All checkbox · per-row selection checkbox · Role (bold) · Company · Fit (score badge) ·
-  Status (inline select) · Suitability (inline select) · Resume (authenticated GCS link, historical Drive link, local file, or “—”) · Date
+  Status (inline select) · Suitability (inline select) · Resume (personal Drive link, local file, or “—”) · Date
   (the application/log date, Sheet column G `timestamp`, as `MM/DD/YYYY` — e.g. 2026-01-05 → `01/05/2026`; never relative;
   “—” when missing or invalid) · Source · Open · individual Delete. `formatDateMMDDYYYY()` in `trackerView.js` parses the
   value (ISO dates as UTC calendar dates, so no timezone shift; impossible dates like 2026-02-30 are invalid) and is

@@ -29,7 +29,7 @@ class GwsCommandTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertFalse(write_sheet.is_sheets_write_operation(command))
 
-    def test_all_service_account_sheets_mutations_are_blocked_when_opt_in_is_false(self):
+    def test_all_sheets_mutations_are_blocked_when_opt_in_is_false(self):
         writes = (
             ("sheets", "+append", "--spreadsheet", "sid"),
             ("sheets", "spreadsheets", "values", "append"),
@@ -38,52 +38,44 @@ class GwsCommandTests(unittest.TestCase):
             ("sheets", "spreadsheets", "values", "clear"),
             ("sheets", "spreadsheets", "batchUpdate"),
         )
-        with mock.patch.object(write_sheet.google_auth, "is_service_account", return_value=True), \
-                mock.patch.object(write_sheet.subprocess, "run") as run, \
+        with mock.patch.object(write_sheet.subprocess, "run") as run, \
                 mock.patch.dict("os.environ", {"GOOGLE_SHEETS_WRITE_ENABLED": "false"}):
             for command in writes:
                 with self.subTest(command=command), self.assertRaisesRegex(RuntimeError, "writes are disabled"):
                     write_sheet.gws(*command)
         run.assert_not_called()
 
-    def test_service_account_reads_work_with_writes_disabled(self):
+    def test_read_only_sheets_calls_work_with_writes_disabled(self):
         command = subprocess.CompletedProcess([], 0, stdout='{"values": []}', stderr="")
-        with mock.patch.object(write_sheet.google_auth, "is_service_account", return_value=True), \
-                mock.patch.object(write_sheet.subprocess, "run", return_value=command) as run, \
+        with mock.patch.object(write_sheet.subprocess, "run", return_value=command) as run, \
                 mock.patch.dict("os.environ", {"GOOGLE_SHEETS_WRITE_ENABLED": "false"}):
             self.assertEqual(write_sheet.gws("sheets", "+read", "--spreadsheet", "sid"), {"values": []})
         run.assert_called_once()
 
-    def test_oauth_compatibility_writes_are_not_gated_by_service_account_opt_in(self):
-        command = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
-        with mock.patch.object(write_sheet.google_auth, "is_service_account", return_value=False), \
-                mock.patch.object(write_sheet.subprocess, "run", return_value=command) as run, \
+    def test_oauth_writes_are_also_blocked_when_opt_in_is_false(self):
+        with mock.patch.object(write_sheet.subprocess, "run") as run, \
                 mock.patch.dict("os.environ", {"GOOGLE_SHEETS_WRITE_ENABLED": "false"}):
-            write_sheet.gws("sheets", "spreadsheets", "values", "append")
-        run.assert_called_once()
+            with self.assertRaisesRegex(RuntimeError, "writes are disabled"):
+                write_sheet.gws("sheets", "spreadsheets", "values", "append")
+        run.assert_not_called()
 
-    def test_service_account_writes_require_explicit_opt_in_and_read_verification(self):
+    def test_oauth_write_succeeds_after_explicit_opt_in(self):
         calls = []
 
         def fake_run(command, **kwargs):
             calls.append(tuple(command))
             return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
 
-        with mock.patch.object(write_sheet, "_SERVICE_ACCOUNT_SHEETS_READ_VERIFIED", False), \
-                mock.patch.object(write_sheet.google_auth, "is_service_account", return_value=True), \
-                mock.patch.object(write_sheet.subprocess, "run", side_effect=fake_run), \
+        with mock.patch.object(write_sheet.subprocess, "run", side_effect=fake_run), \
                 mock.patch.dict("os.environ", {"google_sheet_id": "existing-sheet",
                                                "GOOGLE_SHEETS_WRITE_ENABLED": "true"}):
             write_sheet.gws("sheets", "+append", "--spreadsheet", "existing-sheet", "--json-values", "[]")
         calls = [c[len(write_sheet.GWS_CMD):] for c in calls]
-        self.assertEqual(calls[0][:3], ("sheets", "spreadsheets", "get"))
-        self.assertEqual(calls[1][:2], ("sheets", "+read"))
-        self.assertEqual(calls[2][:2], ("sheets", "+append"))
-        self.assertIn("Jobs!A1:M1", calls[1])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ("sheets", "+append"))
 
-    def test_service_account_write_opt_in_must_be_explicit(self):
-        with mock.patch.object(write_sheet.google_auth, "is_service_account", return_value=True), \
-                mock.patch.object(write_sheet.subprocess, "run") as run, \
+    def test_write_opt_in_must_be_explicit(self):
+        with mock.patch.object(write_sheet.subprocess, "run") as run, \
                 mock.patch.dict("os.environ", {"google_sheet_id": "existing-sheet",
                                                "GOOGLE_SHEETS_WRITE_ENABLED": "false"}):
             with self.assertRaisesRegex(RuntimeError, "writes are disabled"):
@@ -243,10 +235,10 @@ class GwsCommandTests(unittest.TestCase):
         )
         with mock.patch.object(write_sheet.subprocess, "run", return_value=completed):
             with self.assertRaisesRegex(RuntimeError, r"exit code 17"):
-                write_sheet.gws("sheets", "+append", "--spreadsheet", "spreadsheet-id")
+                write_sheet.gws("sheets", "spreadsheets", "get", "--spreadsheet", "spreadsheet-id")
         with mock.patch.object(write_sheet.subprocess, "run", return_value=completed):
             try:
-                write_sheet.gws("sheets", "+append", "--spreadsheet", "spreadsheet-id")
+                write_sheet.gws("sheets", "spreadsheets", "get", "--spreadsheet", "spreadsheet-id")
             except RuntimeError as exc:
                 message = str(exc)
         self.assertIn('stdout: {"error":"details"}', message)

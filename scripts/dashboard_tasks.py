@@ -186,8 +186,7 @@ def run_pipeline(mode, on_done=None):
                         for key in required if health[key]["status"] != "available"]
             if failures:
                 raise RuntimeError("Google preflight failed: " + "; ".join(failures))
-            if google_auth.is_service_account() and \
-                    os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+            if os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
                 raise RuntimeError("Google Sheets read-only preflight passed, but writes remain disabled; "
                                    "set GOOGLE_SHEETS_WRITE_ENABLED=true only after verifying the tracker read")
         for script, _label in steps:

@@ -1,18 +1,16 @@
-"""Persist a generated resume's PDF/DOCX in Google Drive and hand back a shareable link.
+"""Persist a generated resume's PDF/DOCX in personal Google Drive using GWS OAuth.
 
 The dashboard writes resumes to output/generated_resumes/<id>/v<n>.<fmt> -- a local cache that
-means nothing off this machine. The tracker Sheet must link to Drive instead, so every
-exported resume is uploaded here (through the same `gws` CLI + auth as the rest of the
-project; no second auth system, no credentials handled in this module).
+means nothing off this machine. The tracker links to the corresponding Drive file, uploaded using
+the same explicitly selected GWS OAuth identity as Sheets.
 
+Drive layout:
     <google_drive_folder_id>/                  the existing "Job Applications" parent
         {company}-{job-title-slug}/            same per-job folder name the pipeline uses
             {resume_id}-v{n}.pdf | .docx
 
-Idempotent: a file's identity is (resume_id, version, format), stored in the Drive file's
-appProperties and looked up before any upload -- independent of the folder -- so a retried
-export, a retried Sheet write, or a re-run Modal job reuses the existing file instead of
-creating a copy. Failures raise DriveUploadError; nothing here ever fabricates a link.
+Uploads are idempotent by resume id, version, and format, stored in the Drive file's appProperties.
+Failures raise DriveUploadError; nothing here fabricates a link or falls back to another backend.
 """
 import json
 import os
@@ -55,12 +53,15 @@ def _gws(args, cwd=None):
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
-def _explain(exc):
-    first = (str(exc).strip().splitlines() or [type(exc).__name__])[0][:200]
+def _explain(exc, operation="upload"):
+    detail = google_auth.safe_gws_error(exc)
     if isinstance(exc, artifact_storage.ArtifactStorageError):
-        return f"Artifact storage upload failed: {first}"
-    hint = f" {AUTH_HINT}" if _AUTH_WORDS.search(str(exc)) else ""
-    return f"Google Drive upload failed: {first}.{hint}"
+        return f"Artifact storage upload failed: {detail}"
+    category = google_auth.classify_error(exc)
+    hint = google_auth.actionable_error(category) if category == "invalid_credentials" else \
+        AUTH_HINT if _AUTH_WORDS.search(str(exc)) else ""
+    suffix = f" {hint}" if hint else ""
+    return f"Google Drive {operation} failed: {detail}.{suffix}"
 
 
 def _q(value):
@@ -135,29 +136,10 @@ def upload_resume(rid, n, fmt, job=None):
     key, name = resume_key(rid, n, fmt), drive_file_name(rid, n, fmt, job)
 
     try:
-        selected_backend = artifact_storage.backend()
+        artifact_storage.backend()
     except artifact_storage.ArtifactStorageError as exc:
         raise DriveUploadError(_explain(exc)) from exc
-    log.info("Resume artifact upload started" if selected_backend == "gcs" else "Drive upload started",
-             extra=ctx)
-    if selected_backend == "gcs":
-        try:
-            object_key = artifact_storage.resume_object_key(rid, n, name, folder_name(job))
-            url = artifact_storage.public_url(object_key)
-            version = next((v for v in resume_store.get(rid, with_markdown=False)["versions"]
-                            if int(v["n"]) == int(n)), {})
-            md_sha1 = ((version.get("artifacts") or {}).get(fmt) or {}).get("md_sha1", "")
-            result = artifact_storage.upload_file(
-                path, object_key, content_type=MIME[fmt],
-                metadata={"resume_key": key, "resume_id": rid, "version": n, "format": fmt,
-                          "md_sha1": md_sha1, "company": job.get("company", ""),
-                          "job_title": job.get("title", "")})
-        except artifact_storage.ArtifactStorageError as exc:
-            raise DriveUploadError(_explain(exc)) from exc
-        log.info("Resume artifact stored", extra={**ctx, "backend": "gcs", "reused": result["reused"]})
-        return {"file_id": object_key, "url": url, "name": name,
-                "folder_id": f"generated_resumes/{rid}/v{int(n)}", "reused": result["reused"],
-                "backend": "gcs", "key": object_key}
+    log.info("Drive upload started", extra=ctx)
 
     with _lock:
         last = None
@@ -197,26 +179,38 @@ def upload_and_record(rid, n, fmt):
     """upload_resume + remember the outcome on the resume (success or failure) so the UI and the
     tracker can tell 'in Drive' from 'not in Drive'. Re-raises DriveUploadError."""
     try:
-        selected_backend = artifact_storage.backend()
+        artifact_storage.backend()
     except artifact_storage.ArtifactStorageError as exc:
         raise DriveUploadError(_explain(exc)) from exc
     try:
         out = upload_resume(rid, n, fmt)
     except DriveUploadError as e:
         failed = {"status": "failed", "error": str(e), "at": _now()}
-        if selected_backend == "gcs":
-            resume_store.mark_storage(rid, n, fmt, {**failed, "backend": "gcs"})
-        else:
-            resume_store.mark_drive(rid, n, fmt, failed)
+        resume_store.mark_drive(rid, n, fmt, failed)
         raise
-    info = {"status": "uploaded", "backend": out.get("backend", "drive"), "file_id": out["file_id"],
+    info = {"status": "uploaded", "backend": "drive", "file_id": out["file_id"],
             "url": out["url"], "name": out["name"], "at": _now()}
-    if selected_backend == "gcs":
-        info["key"] = out["key"]
-        resume_store.mark_storage(rid, n, fmt, info)
-    else:
-        resume_store.mark_drive(rid, n, fmt, info)
+    resume_store.mark_drive(rid, n, fmt, info)
     return out
+
+
+def download_file(file_id):
+    """Fetch one Drive file's bytes using the configured OAuth identity."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", str(file_id)):
+        raise DriveUploadError("Google Drive download failed: invalid file id")
+    try:
+        env = google_auth.configure_environment()
+        result = subprocess.run(
+            [*write_sheet.GWS_CMD, "drive", "files", "get", "--params",
+             json.dumps({"fileId": file_id, "alt": "media"})],
+            capture_output=True, env=env,
+        )
+    except (google_auth.GoogleAuthError, OSError) as exc:
+        raise DriveUploadError(_explain(exc, operation="download")) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or b"Google Drive download failed").decode("utf-8", errors="replace")
+        raise DriveUploadError(_explain(RuntimeError(detail), operation="download"))
+    return result.stdout
 
 
 def _now():
